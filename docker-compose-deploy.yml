@@ -1,0 +1,27 @@
+services:
+  app:
+    build:
+      context: .
+    volumes:
+      - static_data:/vol/web
+      - db_data:/app/db
+    environment:
+      - SECRET_KEY=changeSECRET
+      - ALLOWED_HOSTS=127.0.0.1,api.odt.org.pl
+      - CORS_ALLOWED_ORIGINS=http://127.0.0.1:5500,https://odt.org.pl,https://api.odt.org.pl
+      - CSRF_TRUSTED_ORIGINS=http://127.0.0.1:8001,https://odt.org.pl,https://api.odt.org.pl
+      - DEBUG=0
+
+  proxy:
+    build:
+      context: ./proxy
+    volumes:
+      - static_data:/vol/static
+    ports:
+      - "8001:8001"
+    depends_on:
+      - app
+
+volumes:
+  static_data:
+  db_data:
