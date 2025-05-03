@@ -21,7 +21,8 @@ RUN mkdir -p /vol/web/static
 RUN adduser -D user
 RUN chown -R user:user /vol/*
 
-RUN chown -R user:user /app
+RUN mkdir -p /app/db
+RUN chown -R user:user /app/*
 
 USER user
 
