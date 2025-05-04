@@ -9,5 +9,5 @@ router.register(r"status", PublicTransportViewSet, basename="case")
 router.register(r"data", DataFeedbackViewSet, basename="data")
 router.register(r'feed-status', PublicTransportFeedStatusViewSet, basename='feed-status')
 urlpatterns = [
-    path("api/", include(router.urls)),
+    path("/", include(router.urls)),
 ]
