@@ -16,9 +16,9 @@ class DataProviderAdmin(admin.ModelAdmin):
 
 @admin.register(CaseStatus)
 class CaseStatusAdmin(admin.ModelAdmin):
-    list_display = ('id', 'status', 'date', 'description')
-    search_fields = ('status',)
-    ordering = ('-date',)
+    list_display = ('id', 'case__region', 'case__transport_organization', 'status', 'date', 'description')
+    search_fields = ('status', 'case__region', 'case__transport_organization')
+    ordering = ('-date', 'case__region', 'case__transport_organization')
     date_hierarchy = 'date'
 
 @admin.register(DataFeedback)

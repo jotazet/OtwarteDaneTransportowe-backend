@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 
 class CaseStatus(models.Model):
     STATUS_CHOICES = [
@@ -22,7 +22,7 @@ class CaseStatus(models.Model):
         return self.status
 
 class DataProvider(models.Model):
-    name = models.CharField(max_length=50)
+    name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
     website = models.URLField(blank=True, null=True)
     contact_email = models.EmailField(blank=True, null=True)
@@ -41,7 +41,14 @@ class PublicTransport(models.Model):
 
     def __str__(self):
         return f"{self.region} ({self.transport_organization or 'N/A'})"
-
+        
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        is_new = self.pk is None
+        super(PublicTransport, self).save(*args, **kwargs)
+        if is_new:
+            CaseStatus.objects.create(case=self, status='0') 
+            
 class DataFeedback(models.Model):
     DATA_TYPE = [
         ('GTFS', 'GTFS'),

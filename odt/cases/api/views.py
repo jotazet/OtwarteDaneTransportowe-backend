@@ -3,14 +3,13 @@ from cases.models import PublicTransport, DataFeedback
 from cases.api.serializers import PublicTransportSerializer, DataFeedbackSerializer, PublicTransportFeedStatusSerializer
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound
 from rest_framework import status
 
 class PublicTransportViewSet(ModelViewSet):
     queryset = PublicTransport.objects.all()
     serializer_class = PublicTransportSerializer
     http_method_names = ['get']
-
-from rest_framework.exceptions import NotFound
 
 class DataFeedbackViewSet(ModelViewSet):
     queryset = DataFeedback.objects.all()
