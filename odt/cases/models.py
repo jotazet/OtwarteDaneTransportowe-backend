@@ -36,7 +36,7 @@ class PublicTransport(models.Model):
     transport_organization = models.CharField(max_length=100, blank=True, null=True)
     website = models.URLField(blank=True, null=True)
     contact_email = models.EmailField(blank=True, null=True)
-    provision = models.TextField(max_length=1000, blank=True, null=True)
+    provision = models.TextField(max_length=1024, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
