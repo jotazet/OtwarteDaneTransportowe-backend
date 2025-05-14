@@ -44,5 +44,5 @@ class PublicTransportFeedStatusSerializer(serializers.ModelSerializer):
     data_feeds = BasicDataFeedbackSerializer(many=True, read_only=True, source='feedback')
     class Meta:
         model = PublicTransport
-        fields = ['id', 'region', 'transport_organization', 'data_feeds']
-        read_only_fields = ['id', 'region', 'transport_organization', 'data_feeds'] 
+        fields = ['id', 'region', 'transport_organization', 'provision', 'data_feeds']
+        read_only_fields = ['id', 'region', 'transport_organization', 'provision', 'data_feeds']
