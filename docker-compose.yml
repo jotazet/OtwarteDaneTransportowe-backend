@@ -7,7 +7,7 @@ services:
       - db_data:/app/db
     ports:
       - "8000:8000"
-    command: sh -c "python manage.py runserver 0.0.0.0:8000"
+    command: sh -c "python manage.py makemigrations && python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
     environment:
       - SECRET_KEY=changeSECRET
       - ALLOWED_HOSTS=127.0.0.1,api.odt.org.pl

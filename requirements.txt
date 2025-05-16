@@ -4,3 +4,5 @@ markdown
 django-filter
 django-cors-headers
 uwsgi
+pytest
+pytest-django
