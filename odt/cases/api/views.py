@@ -1,6 +1,6 @@
 from rest_framework.viewsets import ModelViewSet
 from cases.models import PublicTransport, DataFeedback
-from cases.api.serializers import PublicTransportSerializer, DataFeedbackSerializer, PublicTransportFeedStatusSerializer
+from cases.api.serializers import PublicTransportSerializer, DataFeedbackSerializer, PublicTransportFeedStatusSerializer, RegionDataFeedbackSerializer
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
@@ -21,8 +21,9 @@ class DataFeedbackViewSet(ModelViewSet):
         queryset = self.get_queryset().filter(transport_organization__id=region_id)
         if not queryset.exists():
             raise NotFound(detail=f"Not found.")
-        serializer = self.get_serializer(queryset, many=True)
+        serializer = RegionDataFeedbackSerializer(queryset, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class PublicTransportFeedStatusViewSet(ModelViewSet):
     queryset = PublicTransport.objects.all()

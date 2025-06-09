@@ -24,6 +24,12 @@ class PublicTransportSerializer(serializers.ModelSerializer):
 class BasicPublicTransportSerializer(serializers.ModelSerializer):
     class Meta:
         model = PublicTransport
+        fields = ['id', 'region', 'transport_organization']
+        read_only_fields = ['id', 'region', 'transport_organization']
+
+class DetailPublicTransportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PublicTransport
         fields = ['id', 'region', 'transport_organization', 'provision']
         read_only_fields = ['id', 'region', 'transport_organization', 'provision']
 
@@ -46,3 +52,10 @@ class PublicTransportFeedStatusSerializer(serializers.ModelSerializer):
         model = PublicTransport
         fields = ['id', 'region', 'transport_organization', 'data_feeds']
         read_only_fields = ['id', 'region', 'transport_organization', 'data_feeds']
+
+class RegionDataFeedbackSerializer(serializers.ModelSerializer):
+    transport_organization = DetailPublicTransportSerializer(read_only=True)
+    class Meta:
+        model = DataFeedback
+        fields = ['id', 'data_foramt', 'url_to_data', 'file', 'uploaded_at', 'updated_at', 'transport_organization']
+        read_only_fields = ['id', 'data_foramt', 'url_to_data', 'file', 'uploaded_at', 'updated_at', 'transport_organization']
