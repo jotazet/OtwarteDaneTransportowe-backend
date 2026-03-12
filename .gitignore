@@ -1,0 +1,135 @@
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# =============================================================================
+# Virtual environments
+# =============================================================================
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# =============================================================================
+# Django
+# =============================================================================
+
+# Local settings override (never commit secrets)
+local_settings.py
+*/local_settings.py
+
+# Collected static files
+staticfiles/
+
+# Uploaded/cached feed files – stored in MEDIA_ROOT, not in repo
+uploaded_data/
+static_feeds/
+
+# SQLite dev database
+*.sqlite3
+db.sqlite3
+
+# Django migrations cache
+
+# =============================================================================
+# Environment & secrets
+# =============================================================================
+.env
+.env.*
+!.env.example
+*.env
+
+# =============================================================================
+# Docker
+# =============================================================================
+# Keep Dockerfile and docker-compose.yml in repo, ignore generated volumes/data
+docker-compose.override.yml
+docker-compose.local.yml
+.docker/
+
+# =============================================================================
+# IDE – JetBrains (PyCharm / IntelliJ)
+# =============================================================================
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# =============================================================================
+# IDE – VS Code
+# =============================================================================
+.vscode/
+*.code-workspace
+
+# =============================================================================
+# OS generated files
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# =============================================================================
+# Logs & temporary files
+# =============================================================================
+*.log
+logs/
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# =============================================================================
+# Test & coverage
+# =============================================================================
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.tox/
+nosetests.xml
+test-results/
+*.egg-info/
+dist/
+build/
+
+# =============================================================================
+# Celery (scheduler / task queue – used for feed refresh)
+# =============================================================================
+celerybeat-schedule
+celerybeat-schedule.*
+celerybeat.pid
+
+# =============================================================================
+# Type checking
+# =============================================================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyright/
+

@@ -1,0 +1,6 @@
+Django==6.0.1
+djangorestframework
+markdown
+django-filter
+psycopg2-binary>=2.9.9
+Pillow>=10.0.0
