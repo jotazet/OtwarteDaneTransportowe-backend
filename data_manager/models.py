@@ -13,6 +13,7 @@ class OverwriteStorage(FileSystemStorage):
             os.remove(os.path.join(settings.MEDIA_ROOT, name))
         return name
 
+
 def _build_base_path(submission) -> str:
     """
     Returns: 'uploaded_data/{user_id}/{org_id}'
@@ -62,9 +63,9 @@ class FeedSubmission(models.Model):
         # Static
         ('gtfs', 'GTFS'),
         ('netex', 'NeTEx'),
+        # Dynamic
         ('gbfs', 'GBFS'),
         ('siri', 'SIRI'),
-        # Dynamic
         ('gtfs_rt', 'GTFS-RT'),
         # Other
         ('other', 'Other'),
@@ -76,6 +77,8 @@ class FeedSubmission(models.Model):
         (FEED_KIND_STATIC, 'Static'),
         (FEED_KIND_DYNAMIC, 'Dynamic'),
     ]
+
+    DYNAMIC_DATA_TYPES = {'gtfs_rt', 'siri', 'gbfs'}
 
     # Relations
     transport_organization = models.ForeignKey(
@@ -93,31 +96,13 @@ class FeedSubmission(models.Model):
 
     # Feed metadata
     data_type = models.CharField(max_length=10, choices=DATA_TYPE_CHOICES)
-    feed_kind = models.CharField(max_length=10, choices=FEED_KIND_CHOICES)
+    feed_kind = models.CharField(max_length=10, choices=FEED_KIND_CHOICES, editable=False)
     name = models.CharField(max_length=255, blank=True, null=True)
     note = models.TextField(max_length=2048, blank=True, null=True)
 
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
-    # Progress stages (each set when the stage is reached)
-    stage_upload_at = models.DateTimeField(
-        null=True, blank=True,
-        verbose_name='Stage 1: Data upload date',
-    )
-    stage_verification_at = models.DateTimeField(
-        null=True, blank=True,
-        verbose_name='Stage 2: Data verification date',
-    )
-    stage_confirmation_at = models.DateTimeField(
-        null=True, blank=True,
-        verbose_name='Stage 3: Admin confirmation date',
-    )
-    stage_complete_at = models.DateTimeField(
-        null=True, blank=True,
-        verbose_name='Stage 4: Upload complete date',
-    )
 
     class Meta:
         ordering = ['-created_at']
@@ -127,21 +112,22 @@ class FeedSubmission(models.Model):
             models.Index(fields=['feed_kind']),
         ]
 
+    # ------------------------------------------------------------------
+    # Computed properties – derived from FeedSubmissionHistory
+    # ------------------------------------------------------------------
+
     @property
     def current_stage(self) -> int:
-        """Returns the current progress stage number (1–4, or 0 if not started)."""
-        if self.stage_complete_at:
-            return 4
-        if self.stage_confirmation_at:
-            return 3
-        if self.stage_verification_at:
-            return 2
-        if self.stage_upload_at:
-            return 1
-        return 0
+        """Returns the current stage (0–4) based on the latest history entry."""
+        latest = self.history.order_by('-created_at').first()
+        if latest is None:
+            return 0
+        return latest.stage_after
 
     @property
     def current_stage_label(self) -> str:
+        if self.is_rejected:
+            return 'Rejected'
         labels = {
             0: 'Not started',
             1: 'Step 1: Data uploaded',
@@ -149,19 +135,44 @@ class FeedSubmission(models.Model):
             3: 'Step 3: Admin confirmation',
             4: 'Step 4: Complete',
         }
-        return labels[self.current_stage]
+        return labels.get(self.current_stage, 'Unknown')
+
+    @property
+    def is_rejected(self) -> bool:
+        """True if the latest history entry is a rejection."""
+        latest = self.history.order_by('-created_at').first()
+        return latest is not None and latest.event_type == FeedSubmissionHistory.EVENT_REJECTED
+
+    @property
+    def rejection_cause(self):
+        """Returns cause from last rejected history entry, or None."""
+        if not self.is_rejected:
+            return None
+        latest = self.history.order_by('-created_at').first()
+        return latest.cause if latest else None
+
+    @property
+    def published_at(self):
+        """Returns created_at from the 'completed' history entry, or None."""
+        completed = self.history.filter(
+            event_type=FeedSubmissionHistory.EVENT_COMPLETED
+        ).order_by('-created_at').first()
+        return completed.created_at if completed else None
 
     def clean(self):
         super().clean()
         # Derive feed_kind from data_type automatically
-        # gtfs_rt and siri are dynamic (real-time) feeds; all others are static
-        if self.data_type in ('gtfs_rt', 'siri'):
+        if self.data_type in self.DYNAMIC_DATA_TYPES:
             self.feed_kind = self.FEED_KIND_DYNAMIC
         else:
             self.feed_kind = self.FEED_KIND_STATIC
 
     def save(self, *args, **kwargs):
-        self.full_clean()
+        # Set feed_kind before saving (clean may not always be called via full_clean)
+        if self.data_type in self.DYNAMIC_DATA_TYPES:
+            self.feed_kind = self.FEED_KIND_DYNAMIC
+        else:
+            self.feed_kind = self.FEED_KIND_STATIC
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -170,7 +181,58 @@ class FeedSubmission(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# StaticFeedEntry – for static feeds (GTFS, NeTEx, GBFS, SIRI, other)
+# FeedSubmissionHistory – audit trail, sole source of truth for stages
+# ---------------------------------------------------------------------------
+
+class FeedSubmissionHistory(models.Model):
+    EVENT_UPLOADED = 'uploaded'
+    EVENT_STAGE_ADVANCED = 'stage_advanced'
+    EVENT_REJECTED = 'rejected'
+    EVENT_COMPLETED = 'completed'
+
+    EVENT_TYPE_CHOICES = [
+        (EVENT_UPLOADED, 'Uploaded'),
+        (EVENT_STAGE_ADVANCED, 'Stage Advanced'),
+        (EVENT_REJECTED, 'Rejected'),
+        (EVENT_COMPLETED, 'Completed'),
+    ]
+
+    submission = models.ForeignKey(
+        FeedSubmission,
+        on_delete=models.CASCADE,
+        related_name='history',
+    )
+    event_type = models.CharField(max_length=20, choices=EVENT_TYPE_CHOICES)
+    stage_before = models.IntegerField()
+    stage_after = models.IntegerField()
+    actor = models.ForeignKey(
+        get_user_model(),
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='feed_history_actions',
+    )
+    cause = models.TextField(
+        blank=True,
+        null=True,
+        help_text='Reason for rejection — only filled for event_type=rejected',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Feed Submission History'
+        verbose_name_plural = 'Feed Submission Histories'
+
+    def __str__(self):
+        return (
+            f"FeedSubmissionHistory(submission={self.submission_id}, "
+            f"event={self.event_type}, {self.stage_before}→{self.stage_after})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# StaticFeedEntry – for static feeds (GTFS, NeTEx, other)
 # ---------------------------------------------------------------------------
 
 class StaticFeedEntry(models.Model):
@@ -181,13 +243,13 @@ class StaticFeedEntry(models.Model):
         ('basic_auth', 'Basic Auth (user:pass)'),
     ]
 
-    submission = models.OneToOneField(
+    submission = models.ForeignKey(
         FeedSubmission,
         on_delete=models.CASCADE,
-        related_name='static_entry',
+        related_name='static_entries',
     )
 
-    license = models.CharField(max_length=255)
+    license = models.CharField(max_length=255, blank=True, null=True)
 
     # Source A: URL – server fetches periodically when hide_original=True,
     #           or exposed directly when hide_original=False.
@@ -200,6 +262,12 @@ class StaticFeedEntry(models.Model):
         blank=True,
         null=True,
         help_text='Static feed file uploaded directly by the user.',
+    )
+
+    # is_original – whether this agency is the original author of the feed
+    is_original = models.BooleanField(
+        default=False,
+        help_text='Whether this agency is the original author of the feed.',
     )
 
     # Source C: file downloaded automatically by the server (filled only when
@@ -256,7 +324,6 @@ class StaticFeedEntry(models.Model):
         super().clean()
         has_url = bool(self.url)
         has_file = bool(self.file)
-        has_cached_file = bool(self.cached_file)
 
         # User chooses exactly one input source: url XOR file.
         if has_url and has_file:
@@ -264,11 +331,9 @@ class StaticFeedEntry(models.Model):
         if not has_url and not has_file:
             raise ValidationError('Either a URL or a file upload must be provided.')
 
-        # Only one stored file may exist in static/: manual upload OR server-downloaded copy.
-        if has_file and has_cached_file:
-            raise ValidationError(
-                'Static feed can store either the uploaded file or the server-downloaded file, not both.'
-            )
+        # Auto-set hide_original when auth_type != none
+        if self.auth_type != 'none':
+            self.hide_original = True
 
         # URL-specific rules
         if has_url:
@@ -291,34 +356,35 @@ class StaticFeedEntry(models.Model):
                     'Server-downloaded static file fields cannot be used for a manual file upload.'
                 )
 
-        # For URL submissions, cached_file is server-managed and is the only stored file copy when present.
-        if has_url and has_cached_file and has_file:
-            raise ValidationError(
-                'For URL submissions, only the server-downloaded file should be stored.'
-            )
-
     def __str__(self):
         source = self.url or getattr(self.file, 'name', '')
         return f"StaticFeedEntry(id={self.id}, submission={self.submission_id}, source='{source}')"
 
 
 # ---------------------------------------------------------------------------
-# RealtimeFeedEntry – shared container for GTFS-RT and SIRI
+# RealtimeFeedEntry – shared container for GTFS-RT, SIRI, and GBFS
 # ---------------------------------------------------------------------------
 
 class RealtimeFeedEntry(models.Model):
     PROTOCOL_GTFS_RT = 'gtfs_rt'
     PROTOCOL_SIRI = 'siri'
+    PROTOCOL_GBFS = 'gbfs'
     PROTOCOL_CHOICES = [
         (PROTOCOL_GTFS_RT, 'GTFS-RT'),
         (PROTOCOL_SIRI, 'SIRI'),
+        (PROTOCOL_GBFS, 'GBFS'),
     ]
 
     # Endpoint types per protocol
     GTFS_RT_ENDPOINT_TYPES = {'trip_update', 'vehicle_position', 'service_alert'}
     SIRI_ENDPOINT_TYPES = {'sx', 'sm', 'vm', 'et', 'gm'}
+    GBFS_ENDPOINT_TYPES = {
+        'gbfs', 'gbfs_versions', 'system_information', 'vehicle_types',
+        'station_information', 'station_status', 'free_bike_status',
+        'system_hours', 'system_alerts',
+    }
 
-    license = models.CharField(max_length=255)
+    license = models.CharField(max_length=255, blank=True, null=True)
 
     submission = models.OneToOneField(
         FeedSubmission,
@@ -334,7 +400,11 @@ class RealtimeFeedEntry(models.Model):
     def allowed_endpoint_types(self) -> set:
         if self.protocol == self.PROTOCOL_GTFS_RT:
             return self.GTFS_RT_ENDPOINT_TYPES
-        return self.SIRI_ENDPOINT_TYPES
+        if self.protocol == self.PROTOCOL_SIRI:
+            return self.SIRI_ENDPOINT_TYPES
+        if self.protocol == self.PROTOCOL_GBFS:
+            return self.GBFS_ENDPOINT_TYPES
+        return set()
 
     def clean(self):
         super().clean()
@@ -363,27 +433,47 @@ class RealtimeEndpoint(models.Model):
     ]
 
     # GTFS-RT endpoint types
-    ENDPOINT_TRIP_UPDATE      = 'trip_update'
+    ENDPOINT_TRIP_UPDATE = 'trip_update'
     ENDPOINT_VEHICLE_POSITION = 'vehicle_position'
-    ENDPOINT_SERVICE_ALERT    = 'service_alert'
+    ENDPOINT_SERVICE_ALERT = 'service_alert'
     # SIRI endpoint types
     ENDPOINT_SX = 'sx'
     ENDPOINT_SM = 'sm'
     ENDPOINT_VM = 'vm'
     ENDPOINT_ET = 'et'
     ENDPOINT_GM = 'gm'
+    # GBFS endpoint types
+    ENDPOINT_GBFS = 'gbfs'
+    ENDPOINT_GBFS_VERSIONS = 'gbfs_versions'
+    ENDPOINT_SYSTEM_INFORMATION = 'system_information'
+    ENDPOINT_VEHICLE_TYPES = 'vehicle_types'
+    ENDPOINT_STATION_INFORMATION = 'station_information'
+    ENDPOINT_STATION_STATUS = 'station_status'
+    ENDPOINT_FREE_BIKE_STATUS = 'free_bike_status'
+    ENDPOINT_SYSTEM_HOURS = 'system_hours'
+    ENDPOINT_SYSTEM_ALERTS = 'system_alerts'
 
     ENDPOINT_TYPE_CHOICES = [
         # GTFS-RT
-        (ENDPOINT_TRIP_UPDATE,      'Trip Update (GTFS-RT)'),
+        (ENDPOINT_TRIP_UPDATE, 'Trip Update (GTFS-RT)'),
         (ENDPOINT_VEHICLE_POSITION, 'Vehicle Position (GTFS-RT)'),
-        (ENDPOINT_SERVICE_ALERT,    'Service Alert (GTFS-RT)'),
+        (ENDPOINT_SERVICE_ALERT, 'Service Alert (GTFS-RT)'),
         # SIRI
         (ENDPOINT_SX, 'Situation Exchange – SX (SIRI)'),
         (ENDPOINT_SM, 'Stop Monitoring – SM (SIRI)'),
         (ENDPOINT_VM, 'Vehicle Monitoring – VM (SIRI)'),
         (ENDPOINT_ET, 'Estimated Timetable – ET (SIRI)'),
         (ENDPOINT_GM, 'General Message – GM (SIRI)'),
+        # GBFS
+        (ENDPOINT_GBFS, 'GBFS – Main file'),
+        (ENDPOINT_GBFS_VERSIONS, 'GBFS Versions'),
+        (ENDPOINT_SYSTEM_INFORMATION, 'System Information'),
+        (ENDPOINT_VEHICLE_TYPES, 'Vehicle Types'),
+        (ENDPOINT_STATION_INFORMATION, 'Station Information'),
+        (ENDPOINT_STATION_STATUS, 'Station Status'),
+        (ENDPOINT_FREE_BIKE_STATUS, 'Free Bike Status'),
+        (ENDPOINT_SYSTEM_HOURS, 'System Hours'),
+        (ENDPOINT_SYSTEM_ALERTS, 'System Alerts'),
     ]
 
     entry = models.ForeignKey(
@@ -391,11 +481,15 @@ class RealtimeEndpoint(models.Model):
         on_delete=models.CASCADE,
         related_name='endpoints',
     )
-    endpoint_type = models.CharField(max_length=20, choices=ENDPOINT_TYPE_CHOICES)
+    endpoint_type = models.CharField(max_length=30, choices=ENDPOINT_TYPE_CHOICES)
     url = models.URLField()
     hide_original = models.BooleanField(
         default=False,
         help_text='Server acts as a proxy and hides the original URL.',
+    )
+    is_original = models.BooleanField(
+        default=False,
+        help_text='Whether this agency is the original author of the feed.',
     )
     # Populated automatically when server fetches the feed (hide_original=True)
     cached_file = models.FileField(
@@ -408,6 +502,9 @@ class RealtimeEndpoint(models.Model):
     cached_at = models.DateTimeField(
         null=True, blank=True,
         help_text='When the cached copy was last downloaded.',
+    )
+    interval = models.PositiveIntegerField(
+        help_text='Refresh interval in seconds (e.g. 30, 60). Required.',
     )
     auth_type = models.CharField(
         max_length=20,
@@ -428,6 +525,10 @@ class RealtimeEndpoint(models.Model):
 
     def clean(self):
         super().clean()
+        # Auto-set hide_original when auth_type != none
+        if self.auth_type != 'none':
+            self.hide_original = True
+
         # Validate endpoint_type is allowed for the parent protocol
         if self.entry_id:
             allowed = self.entry.allowed_endpoint_types()
@@ -446,3 +547,69 @@ class RealtimeEndpoint(models.Model):
             f"RealtimeEndpoint(id={self.id}, type={self.endpoint_type}, "
             f"entry={self.entry_id})"
         )
+
+
+# ---------------------------------------------------------------------------
+# FeedFetchError – immutable error log for feed download failures
+# ---------------------------------------------------------------------------
+
+class FeedFetchError(models.Model):
+    ERROR_HTTP = 'http_error'
+    ERROR_TIMEOUT = 'timeout'
+    ERROR_CONNECTION = 'connection_error'
+    ERROR_INVALID_CONTENT = 'invalid_content'
+    ERROR_AUTH = 'auth_error'
+
+    ERROR_TYPE_CHOICES = [
+        (ERROR_HTTP, 'HTTP Error (4xx/5xx)'),
+        (ERROR_TIMEOUT, 'Timeout'),
+        (ERROR_CONNECTION, 'Connection Error'),
+        (ERROR_INVALID_CONTENT, 'Invalid Content'),
+        (ERROR_AUTH, 'Authentication Error'),
+    ]
+
+    static_entry = models.ForeignKey(
+        StaticFeedEntry,
+        on_delete=models.CASCADE,
+        related_name='fetch_errors',
+        null=True,
+        blank=True,
+    )
+    endpoint = models.ForeignKey(
+        RealtimeEndpoint,
+        on_delete=models.CASCADE,
+        related_name='fetch_errors',
+        null=True,
+        blank=True,
+    )
+    error_type = models.CharField(max_length=20, choices=ERROR_TYPE_CHOICES)
+    http_status_code = models.IntegerField(
+        null=True, blank=True,
+        help_text='HTTP response code — filled only for error_type=http_error',
+    )
+    message = models.TextField(help_text='Detailed error message or exception description.')
+    url_attempted = models.URLField(help_text='URL from which the file was attempted to download.')
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-occurred_at']
+        verbose_name = 'Feed Fetch Error'
+        verbose_name_plural = 'Feed Fetch Errors'
+
+    def clean(self):
+        super().clean()
+        has_static = bool(self.static_entry_id)
+        has_endpoint = bool(self.endpoint_id)
+        if has_static and has_endpoint:
+            raise ValidationError(
+                'A FeedFetchError must be linked to either a StaticFeedEntry or a RealtimeEndpoint, not both.'
+            )
+        if not has_static and not has_endpoint:
+            raise ValidationError(
+                'A FeedFetchError must be linked to either a StaticFeedEntry or a RealtimeEndpoint.'
+            )
+
+    def __str__(self):
+        source = f'static_entry={self.static_entry_id}' if self.static_entry_id else f'endpoint={self.endpoint_id}'
+        return f"FeedFetchError(id={self.id}, {source}, {self.error_type}, {self.occurred_at})"
+

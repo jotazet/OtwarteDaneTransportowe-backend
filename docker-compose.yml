@@ -16,11 +16,26 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: odt-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   web:
     build: .
     container_name: odt-web
     user: "${UID:-1000}:${GID:-1000}"
+    depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       POSTGRES_DB: otwarte_dane_transportowe
@@ -28,10 +43,65 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
-      # Optional
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
       DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings
     ports:
       - "8000:8000"
+    volumes:
+      - .:/app
+
+  celery_worker:
+    build: .
+    container_name: odt-celery-worker
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    command: >
+      .venv/bin/celery -A OtwarteDaneTransportowe worker
+      --loglevel=info
+      --queues=feeds,default
+      --concurrency=4
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: otwarte_dane_transportowe
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings
+    volumes:
+      - .:/app
+
+  celery_beat:
+    build: .
+    container_name: odt-celery-beat
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    # DatabaseScheduler — harmonogram trzymany w PostgreSQL (tabela PeriodicTask)
+    command: >
+      .venv/bin/celery -A OtwarteDaneTransportowe beat
+      --loglevel=info
+      --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: otwarte_dane_transportowe
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings
     volumes:
       - .:/app
 

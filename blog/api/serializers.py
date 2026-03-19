@@ -88,6 +88,7 @@ class PostListSerializer(PostSerializer):
 class ReactionSerializer(serializers.ModelSerializer):
     # ip_address is read-only: it will always be set from request.META in the view
     ip_address = serializers.IPAddressField(read_only=True)
+    post = serializers.PrimaryKeyRelatedField(read_only=True)
     # Allow sending empty/nullable reaction to indicate "remove/hide" action.
     # Use ChoiceField to show available options in API
     reaction = serializers.ChoiceField(
@@ -100,4 +101,4 @@ class ReactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Reaction
         fields = ['id', 'post', 'ip_address', 'reaction', 'date']
-        read_only_fields = ['ip_address', 'date']
+        read_only_fields = ['post', 'ip_address', 'date']

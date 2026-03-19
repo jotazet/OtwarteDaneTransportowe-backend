@@ -43,6 +43,8 @@ INSTALLED_APPS = [
     # Third-party
     'rest_framework',
     'django_filters',
+    'drf_spectacular',
+    'drf_spectacular_sidecar',
 
     # Local apps
     'blog.apps.BlogConfig',
@@ -79,6 +81,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'OtwarteDaneTransportowe.wsgi.application'
 
+SPECTACULAR_SETTINGS = {
+    'SWAGGER_UI_DIST': 'SIDECAR',  # shorthand to use the sidecar instead
+    'SWAGGER_UI_FAVICON_HREF': 'SIDECAR',
+    'REDOC_DIST': 'SIDECAR',
+    # OTHER SETTINGS
+}
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
@@ -158,4 +166,58 @@ MEDIA_ROOT = '/app/uploaded_data'
 # Django REST framework
 REST_FRAMEWORK = {
     'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
+
+# ---------------------------------------------------------------------------
+# Celery
+# ---------------------------------------------------------------------------
+# Broker i backend pobieramy ze zmiennych środowiskowych — domyślnie Redis
+# na localhost (dev). W docker-compose serwis nazywa się "redis".
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/1')
+
+# Serializacja
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_ACCEPT_CONTENT = ['json']
+
+# Strefa czasowa zgodna z Django
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
+
+# Harmonogram — django-celery-beat przechowuje go w bazie danych
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+# Domyślny harmonogram (Bootstrap) — nadpisywany w bazie przez Beat Admin.
+# Po pierwszym `migrate` Beat sam wypełni tabelę PeriodicTask.
+from celery.schedules import crontab  # noqa: E402
+
+CELERY_BEAT_SCHEDULE = {
+    # Feedy statyczne — sprawdzaj co minutę (download_time_1/2)
+    'refresh-static-feeds': {
+        'task': 'data_manager.refresh_static_feeds',
+        'schedule': crontab(),          # * * * * *
+        'options': {'queue': 'feeds'},
+    },
+    # Realtime — jednorazowy bootstrap przy starcie; potem każdy task
+    # planuje siebie sam przez apply_async(countdown=endpoint.interval).
+    # Uruchamiamy co 5 minut jako "watchdog" — na wypadek gdyby nowy
+    # endpoint został dodany lub pętla taskowa zgasła po nieoczekiwanym błędzie.
+    'bootstrap-realtime-tasks': {
+        'task': 'data_manager.bootstrap_realtime_tasks',
+        'schedule': crontab(minute='*/5'),   # co 5 minut
+        'options': {'queue': 'feeds'},
+    },
+}
+
+# Kolejki — "feeds" dla schedulingu, "default" dla reszty
+CELERY_TASK_QUEUES = {
+    'default': {},
+    'feeds': {},
+}
+CELERY_TASK_DEFAULT_QUEUE = 'default'
+
+# Maksymalny czas na wykonanie pojedynczego taska pobierania (s)
+CELERY_TASK_SOFT_TIME_LIMIT = 90    # soft limit — task dostaje SoftTimeLimitExceeded
+CELERY_TASK_TIME_LIMIT = 120        # hard limit — worker zabija task

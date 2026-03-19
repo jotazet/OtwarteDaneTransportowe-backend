@@ -132,7 +132,7 @@ Powiązany relacją `OneToOne` z `FeedSubmission`. Jeden feed statyczny = jeden 
 | `submission` | `OneToOneField` → `FeedSubmission` | Powiązane zgłoszenie |
 | `url` | `URLField` | URL źródłowy feeda (wyklucza się z `file`) |
 | `file` | `FileField` | Plik przesłany ręcznie przez użytkownika (wyklucza się z `url`) |
-| `is_original` | `BooleanField` | Czy plik pochodzi bezpośrednio od użytkownika (domyślnie `False`; auto `True` gdy użytkownik przesyła `file`) |
+| `is_original` | `BooleanField` | Czy dane są oryginalne (domyślnie `False`) |
 | `cached_file` | `FileField` | Kopia pobrana automatycznie przez serwer (wypełniana przez scheduler) |
 | `cached_at` | `DateTimeField` | Kiedy serwer ostatnio pobrał kopię |
 | `hide_original` | `BooleanField` | Czy ukrywać oryginalny URL (serwer działa jako proxy). Automatycznie ustawiane na `True` gdy `auth_type != none`. |
@@ -149,7 +149,7 @@ Powiązany relacją `OneToOne` z `FeedSubmission`. Jeden feed statyczny = jeden 
 - Jeśli `url` + `hide_original=True`: `auth_type` musi być różny od `none`
 - Jeśli `auth_type != none`: `hide_original` jest automatycznie ustawiane na `True`
 - `cached_file` jest zarządzany wyłącznie przez serwer, nigdy przez użytkownika
-- `is_original` jest ustawiane automatycznie na `True` gdy pole `file` jest wypełnione przez użytkownika
+- `is_original` jest ustawiane automatycznie na `False`. Dotyczy czy dana agencja jest orginalnym autorem feedu.
 
 **Ścieżki plików:**
 ```

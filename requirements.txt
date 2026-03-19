@@ -4,3 +4,8 @@ markdown
 django-filter
 psycopg2-binary>=2.9.9
 Pillow>=10.0.0
+requests>=2.32.0
+drf-spectacular[sidecar]
+# Celery + broker
+celery[redis]>=5.4.0
+django-celery-beat>=2.7.0

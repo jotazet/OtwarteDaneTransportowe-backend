@@ -6,7 +6,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticatedOrReadOnly
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.decorators import action
+from django.shortcuts import get_object_or_404
 
 from blog.api.serializers import PostSerializer, ReactionSerializer, PostListSerializer
 from blog.models import Post, Reaction
@@ -36,22 +36,12 @@ class PostViewSet(viewsets.ModelViewSet):
         return PostSerializer
 
     def list(self, request, *args, **kwargs):
-        # If no `page` param is provided, return only 4 newest (no pagination envelope)
+        # If no `page` param is provided, return all posts without pagination envelope
         if 'page' not in request.query_params:
-            qs = self.get_queryset()[:4]
+            qs = self.get_queryset()
             serializer = self.get_serializer(qs, many=True)
             return Response(serializer.data)
         return super().list(request, *args, **kwargs)
-
-    @action(detail=False, methods=['get'], url_path='all')
-    def all_posts(self, request, *args, **kwargs):
-        """Return ALL posts without pagination/limits and with full content.
-
-        Endpoint: /api/blog/posts/all/
-        """
-        qs = self.get_queryset()
-        serializer = PostSerializer(qs, many=True, context={'request': request})
-        return Response(serializer.data)
 
     def perform_create(self, serializer):
         serializer.save(author=self.request.user)
@@ -102,10 +92,14 @@ class ReactionViewSet(viewsets.ModelViewSet):
         if not client_ip:
             return Response({'detail': 'Unable to determine client IP.'}, status=400)
 
+        post_id = kwargs.get('post_id')
+        if not post_id:
+            return Response({'detail': 'post_id is required in the URL.'}, status=400)
+        post = get_object_or_404(Post, pk=post_id)
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        post = serializer.validated_data.get('post')
         new_reaction = serializer.validated_data.get('reaction')
         is_empty = new_reaction in (None, '')
 

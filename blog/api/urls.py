@@ -5,9 +5,8 @@ from blog.api.views import PostViewSet, ReactionViewSet
 
 router = DefaultRouter()
 router.register(r'posts', PostViewSet)
-router.register(r'reactions', ReactionViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('reactions/<int:post_id>/', ReactionViewSet.as_view({'post': 'create'}), name='post-reactions'),
 ]
-

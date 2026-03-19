@@ -1,155 +1,199 @@
 from django.http import FileResponse, Http404
-from django.utils import timezone
-from rest_framework import mixins, status, viewsets
+from django.shortcuts import get_object_or_404
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import BasePermission, IsAdminUser, IsAuthenticated
+from rest_framework.permissions import IsAdminUser, IsAuthenticated, AllowAny, BasePermission
 from rest_framework.response import Response
-from rest_framework.views import APIView
+from django.core.exceptions import ValidationError
 
 from data_manager.api.serializers import (
+    AdminFeedSubmissionSerializer,
     FeedSubmissionListSerializer,
     FeedSubmissionSerializer,
     FeedSubmissionWriteSerializer,
-    PublishedFeedSerializer,
+    FeedListSerializer,
+    FeedDetailSerializer,
 )
-from data_manager.models import FeedSubmission, RealtimeEndpoint, StaticFeedEntry
+from data_manager.models import (
+    FeedSubmission,
+    FeedSubmissionHistory,
+    RealtimeEndpoint,
+    StaticFeedEntry,
+)
 
 
-# ---------------------------------------------------------------------------
-# Custom permissions
-# ---------------------------------------------------------------------------
-
-class IsOwner(BasePermission):
-    """Allows access only to the user who submitted the feed."""
+class IsAdminOrOwnerReadOnly(BasePermission):
     def has_object_permission(self, request, view, obj):
-        return obj.submitted_by == request.user
-
-
-class IsOwnerOrAdmin(BasePermission):
-    """Allows access to the owner or any admin user."""
-    def has_object_permission(self, request, view, obj):
-        return request.user.is_staff or obj.submitted_by == request.user
+        if request.user and request.user.is_staff:
+            return True
+        return obj.submitted_by_id == getattr(request.user, 'id', None)
 
 
 # ---------------------------------------------------------------------------
-# My submissions – private, owner-only
+# FeedSubmissionViewSet – central permissions
 # ---------------------------------------------------------------------------
 
-class MyFeedSubmissionViewSet(
-    mixins.CreateModelMixin,
-    mixins.RetrieveModelMixin,
-    mixins.ListModelMixin,
-    viewsets.GenericViewSet,
-):
+class FeedSubmissionViewSet(viewsets.ModelViewSet):
     """
-    Private endpoint – authenticated user sees and manages ONLY their own submissions.
+    Central endpoint – owners read their submissions; admins can manage all.
 
-    GET  /my-feed-submissions/                    → list own submissions (all stages)
-    POST /my-feed-submissions/                    → create new submission
-    GET  /my-feed-submissions/{id}/               → detail of own submission
-    POST /my-feed-submissions/{id}/advance-stage/ → admin-only: advance to next stage
+    GET    /feed-submissions/                      → list submissions
+    POST   /feed-submissions/                      → create new submission
+    GET    /feed-submissions/{id}/                 → detail of submission
+    PUT    /feed-submissions/{id}/                 → full edit (admin can move stage)
+    PATCH  /feed-submissions/{id}/                 → partial edit (admin can move stage)
+    DELETE /feed-submissions/{id}/                 → delete
     """
-
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminOrOwnerReadOnly]
 
     def get_queryset(self):
         qs = (
-            FeedSubmission.objects.filter(submitted_by=self.request.user)
+            FeedSubmission.objects
             .select_related('transport_organization', 'submitted_by')
-            .prefetch_related('static_entry', 'realtime_entry__endpoints')
-            .order_by('-created_at')
+            .prefetch_related(
+                'history',
+                'static_entries',
+                'realtime_entry__endpoints',
+            )
         )
+        if not self.request.user.is_staff:
+            qs = qs.filter(submitted_by=self.request.user)
         data_type = self.request.query_params.get('data_type')
         if data_type:
             qs = qs.filter(data_type=data_type)
         feed_kind = self.request.query_params.get('feed_kind')
         if feed_kind:
             qs = qs.filter(feed_kind=feed_kind)
+        transport_org = self.request.query_params.get('transport_organization')
+        if transport_org:
+            qs = qs.filter(transport_organization_id=transport_org)
         return qs
-
-    def get_permissions(self):
-        if self.action == 'advance_stage':
-            return [IsAuthenticated(), IsAdminUser()]
-        return [IsAuthenticated()]
 
     def get_serializer_class(self):
         if self.action == 'list':
             return FeedSubmissionListSerializer
-        if self.action in ('retrieve', 'advance_stage'):
-            return FeedSubmissionSerializer
-        return FeedSubmissionWriteSerializer
+        if self.action in ('create', 'update', 'partial_update'):
+            return FeedSubmissionWriteSerializer
+        if self.request.user and self.request.user.is_staff:
+            return AdminFeedSubmissionSerializer
+        return FeedSubmissionSerializer
 
-    def get_object(self):
-        obj = super().get_object()
-        # Extra safety: non-admin users can only touch their own objects
-        if not self.request.user.is_staff and obj.submitted_by != self.request.user:
-            raise PermissionDenied('You do not have permission to access this submission.')
-        return obj
+    def perform_create(self, serializer):
+        submission = serializer.save(submitted_by=self.request.user)
+        FeedSubmissionHistory.objects.create(
+            submission=submission,
+            event_type=FeedSubmissionHistory.EVENT_UPLOADED,
+            stage_before=0,
+            stage_after=1,
+            actor=self.request.user,
+        )
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
-        submission = serializer.save()
-        output = FeedSubmissionSerializer(submission, context={'request': request})
+        self.perform_create(serializer)
+        instance = serializer.instance
+        output = FeedSubmissionSerializer(instance, context={'request': request})
         return Response(output.data, status=status.HTTP_201_CREATED)
 
-    @action(detail=True, methods=['post'], url_path='advance-stage',
-            permission_classes=[IsAuthenticated, IsAdminUser])
-    def advance_stage(self, request, pk=None):
-        """Admin-only: advance a submission to the next stage."""
-        submission = self.get_object()
-        current = submission.current_stage
-        now = timezone.now()
+    def update(self, request, *args, **kwargs):
+        return self._update_with_history(request, partial=False, *args, **kwargs)
 
-        stage_fields = [
-            'stage_upload_at',
-            'stage_verification_at',
-            'stage_confirmation_at',
-            'stage_complete_at',
-        ]
-        if current >= 4:
-            return Response(
-                {'detail': 'Submission is already at the final stage.'},
-                status=status.HTTP_400_BAD_REQUEST,
+    def partial_update(self, request, *args, **kwargs):
+        return self._update_with_history(request, partial=True, *args, **kwargs)
+
+    def _update_with_history(self, request, partial: bool, *args, **kwargs):
+        instance = self.get_object()
+
+        if not request.user.is_staff:
+            if instance.current_stage > 1 or instance.is_rejected:
+                return Response(
+                    {'detail': 'Cannot edit a submission that has been reviewed or rejected.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        serializer = self.get_serializer(instance, data=request.data, partial=partial, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        submission = serializer.save()
+
+        if request.user.is_staff:
+            self._admin_stage_transition(request, submission)
+
+        output = FeedSubmissionSerializer(submission, context={'request': request})
+        return Response(output.data)
+
+    def _admin_stage_transition(self, request, submission: FeedSubmission):
+        rejection_cause = request.data.get('rejection_cause', '').strip()
+        desired_stage = request.data.get('stage')
+
+        if rejection_cause:
+            current = submission.current_stage
+            FeedSubmissionHistory.objects.create(
+                submission=submission,
+                event_type=FeedSubmissionHistory.EVENT_REJECTED,
+                stage_before=current,
+                stage_after=current,
+                actor=request.user,
+                cause=rejection_cause,
             )
+            return
 
-        FeedSubmission.objects.filter(pk=submission.pk).update(
-            **{stage_fields[current]: now}
+        if desired_stage is None:
+            return
+
+        try:
+            desired_stage = int(desired_stage)
+        except (TypeError, ValueError):
+            raise ValidationError({'stage': 'Stage must be an integer.'})
+
+        if desired_stage < 0 or desired_stage > 4:
+            raise ValidationError({'stage': 'Stage must be between 0 and 4.'})
+
+        current = submission.current_stage
+        if desired_stage == current:
+            return
+
+        event_type = (
+            FeedSubmissionHistory.EVENT_COMPLETED
+            if desired_stage == 4
+            else FeedSubmissionHistory.EVENT_STAGE_ADVANCED
         )
-        submission.refresh_from_db()
-        return Response(FeedSubmissionSerializer(submission, context={'request': request}).data)
+        FeedSubmissionHistory.objects.create(
+            submission=submission,
+            event_type=event_type,
+            stage_before=current,
+            stage_after=desired_stage,
+            actor=request.user,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if not request.user.is_staff:
+            if instance.current_stage > 1 or instance.is_rejected:
+                return Response(
+                    {'detail': 'Cannot delete a submission that has been reviewed or rejected.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        return super().destroy(request, *args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
-# Public endpoint – only fully approved feeds, no sensitive fields
+# FeedViewSet – list/detail with filtering; admin manages
 # ---------------------------------------------------------------------------
 
-class PublishedFeedViewSet(
-    mixins.RetrieveModelMixin,
-    mixins.ListModelMixin,
-    viewsets.GenericViewSet,
-):
-    """
-    Public read-only endpoint.
-    Returns ONLY feeds that have passed all 4 stages (stage_complete_at is set).
-    Never exposes auth credentials, original hidden URLs, or internal stage timestamps.
-
-    GET /feeds/          → list published feeds
-    GET /feeds/{id}/     → detail of a published feed
-    """
-
-    serializer_class = PublishedFeedSerializer
-    # No authentication required – these are intentionally public
-    permission_classes = []
+class FeedViewSet(viewsets.ModelViewSet):
+    def get_permissions(self):
+        if self.action in ('update', 'partial_update', 'destroy'):
+            return [IsAdminUser()]
+        if self.action in ('list', 'retrieve', 'download_static', 'download_realtime'):
+            return [AllowAny()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         qs = (
             FeedSubmission.objects
-            .filter(stage_complete_at__isnull=False)   # only fully approved
-            .select_related('transport_organization', 'submitted_by')
-            .prefetch_related('static_entry', 'realtime_entry__endpoints')
-            .order_by('-stage_complete_at')
+            .select_related('transport_organization')
+            .prefetch_related('static_entries', 'realtime_entry__endpoints')
         )
         org = self.request.query_params.get('transport_organization')
         if org:
@@ -162,37 +206,17 @@ class PublishedFeedViewSet(
             qs = qs.filter(feed_kind=feed_kind)
         return qs
 
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return FeedListSerializer
+        if self.action == 'retrieve':
+            return FeedDetailSerializer
+        return FeedSubmissionSerializer
 
-# ---------------------------------------------------------------------------
-# Secure file download views – gate-kept, never via raw MEDIA_URL
-# ---------------------------------------------------------------------------
-
-class _SecureFileDownloadBase(APIView):
-    """
-    Only serves files whose parent submission is fully approved
-    (stage_complete_at is set).  No auth required to download published feeds,
-    but the file is served through Django – the raw MEDIA_ROOT path is never
-    exposed publicly, so guessing a path does not grant access to unpublished files.
-    """
-    permission_classes = []
-
-    def _approved_or_404(self, submission):
-        if not submission.stage_complete_at:
-            raise Http404
-
-
-class StaticFeedDownloadView(_SecureFileDownloadBase):
-    """GET /api/data_manager/feeds/download/static/<pk>/"""
-
-    def get(self, request, pk):
-        try:
-            entry = StaticFeedEntry.objects.select_related('submission').get(pk=pk)
-        except StaticFeedEntry.DoesNotExist:
-            raise Http404
-
-        self._approved_or_404(entry.submission)
-
-        # hide_original=True → serve cached copy; file upload → serve the file
+    @action(detail=True, methods=['get'], url_path='download/static/(?P<endpoint_pk>[^/.]+)')
+    def download_static(self, request, pk=None, endpoint_pk=None):
+        submission = self.get_object()
+        entry = get_object_or_404(StaticFeedEntry, pk=endpoint_pk, submission=submission)
         feed_file = entry.cached_file or entry.file
         if not feed_file:
             raise Http404
@@ -203,20 +227,13 @@ class StaticFeedDownloadView(_SecureFileDownloadBase):
             filename=feed_file.name.split('/')[-1],
         )
 
-
-class RealtimeFeedDownloadView(_SecureFileDownloadBase):
-    """GET /api/data_manager/feeds/download/realtime/<pk>/"""
-
-    def get(self, request, pk):
-        try:
-            endpoint = RealtimeEndpoint.objects.select_related(
-                'entry__submission'
-            ).get(pk=pk)
-        except RealtimeEndpoint.DoesNotExist:
-            raise Http404
-
-        self._approved_or_404(endpoint.entry.submission)
-
+    @action(detail=True, methods=['get'], url_path='download/realtime/(?P<endpoint_pk>[^/.]+)')
+    def download_realtime(self, request, pk=None, endpoint_pk=None):
+        endpoint = get_object_or_404(
+            RealtimeEndpoint.objects.select_related('entry__submission'),
+            pk=endpoint_pk,
+            entry__submission_id=pk,
+        )
         if not endpoint.cached_file:
             raise Http404
 
