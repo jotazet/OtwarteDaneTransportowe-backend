@@ -16,6 +16,10 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Path to the project root on the HOST machine.
+# Necessary for mounting volumes into sibling Docker containers (validation).
+# Defaults to current directory if not set (for dev without env var).
+HOST_PROJECT_PATH = os.environ.get('HOST_PROJECT_PATH', str(BASE_DIR))
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/

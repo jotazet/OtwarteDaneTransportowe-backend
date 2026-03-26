@@ -9,3 +9,6 @@ drf-spectacular[sidecar]
 # Celery + broker
 celery[redis]>=5.4.0
 django-celery-beat>=2.7.0
+
+# Docker client
+docker>=7.1.0

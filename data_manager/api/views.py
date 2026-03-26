@@ -83,8 +83,8 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         FeedSubmissionHistory.objects.create(
             submission=submission,
             event_type=FeedSubmissionHistory.EVENT_UPLOADED,
-            stage_before=0,
-            stage_after=1,
+            stage_before=1,
+            stage_after=2,
             actor=self.request.user,
         )
 
@@ -132,7 +132,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
                 submission=submission,
                 event_type=FeedSubmissionHistory.EVENT_REJECTED,
                 stage_before=current,
-                stage_after=current,
+                stage_after=1,
                 actor=request.user,
                 cause=rejection_cause,
             )
@@ -146,8 +146,8 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         except (TypeError, ValueError):
             raise ValidationError({'stage': 'Stage must be an integer.'})
 
-        if desired_stage < 0 or desired_stage > 4:
-            raise ValidationError({'stage': 'Stage must be between 0 and 4.'})
+        if desired_stage < 1 or desired_stage > 4:
+            raise ValidationError({'stage': 'Stage must be between 1 and 4.'})
 
         current = submission.current_stage
         if desired_stage == current:

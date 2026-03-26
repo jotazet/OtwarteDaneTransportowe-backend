@@ -55,9 +55,13 @@ services:
     build: .
     container_name: odt-celery-worker
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    # user: "${UID:-1000}:${GID:-1000}"  # Uncomment this line to run as non-root user
+    # Mount docker socket to allow running sibling containers (DinD/DooD)
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
     command: >
-      .venv/bin/celery -A OtwarteDaneTransportowe worker
+      celery -A OtwarteDaneTransportowe worker
       --loglevel=info
       --queues=feeds,default
       --concurrency=4
@@ -75,8 +79,11 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings
-    volumes:
-      - .:/app
+      UID: "${UID:-1000}"
+      GID: "${GID:-1000}"
+      C_FORCE_ROOT: '1'  # Allow running celery as root
+      HOST_PROJECT_PATH: "${PWD}" # Path on host for DinD mounts
+      HOST_MEDIA_ROOT: "${PWD}/uploaded_data"
 
   celery_beat:
     build: .
@@ -85,7 +92,7 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     # DatabaseScheduler — harmonogram trzymany w PostgreSQL (tabela PeriodicTask)
     command: >
-      .venv/bin/celery -A OtwarteDaneTransportowe beat
+      celery -A OtwarteDaneTransportowe beat
       --loglevel=info
       --scheduler django_celery_beat.schedulers:DatabaseScheduler
     depends_on:
@@ -104,6 +111,13 @@ services:
       DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings
     volumes:
       - .:/app
+
+  gtfs-realtime-validator:
+    image: ghcr.io/mobilitydata/gtfs-realtime-validator:latest
+    container_name: gtfs-realtime-validator
+    ports:
+      - "8082:8080"
+    restart: unless-stopped
 
 volumes:
   odt_pgdata:

@@ -16,18 +16,18 @@ class OverwriteStorage(FileSystemStorage):
 
 def _build_base_path(submission) -> str:
     """
-    Returns: 'uploaded_data/{user_id}/{org_id}'
+    Returns: '{user_id}/{org_id}'
     Falls back to 'unknown' when IDs are not yet set (pre-save).
     """
     user_id = getattr(submission.submitted_by, 'id', None) or 'unknown'
     org_id = submission.transport_organization_id or 'unknown'
-    return f'uploaded_data/{user_id}/{org_id}'
+    return f'{user_id}/{org_id}'
 
 
 def static_feed_file_upload_to(instance, filename):
     """
     For files uploaded directly by the user.
-    uploaded_data/{user_id}/{org_id}/static/{original_filename}
+    {user_id}/{org_id}/static/{original_filename}
     """
     base = _build_base_path(instance.submission)
     return f'{base}/static/{filename}'
@@ -36,7 +36,7 @@ def static_feed_file_upload_to(instance, filename):
 def static_feed_cached_upload_to(instance, filename):
     """
     For files downloaded automatically by the server (hide_original=True).
-    uploaded_data/{user_id}/{org_id}/static/{original_filename}
+    {user_id}/{org_id}/static/{original_filename}
     """
     base = _build_base_path(instance.submission)
     return f'{base}/static/{filename}'
@@ -45,7 +45,7 @@ def static_feed_cached_upload_to(instance, filename):
 def realtime_feed_cached_upload_to(instance, filename):
     """
     For realtime feed files downloaded automatically by the server (hide_original=True).
-    uploaded_data/{user_id}/{org_id}/realtime/{endpoint_type}/{original_filename}
+    {user_id}/{org_id}/realtime/{endpoint_type}/{original_filename}
     """
     entry = instance.entry
     submission = entry.submission
@@ -118,10 +118,10 @@ class FeedSubmission(models.Model):
 
     @property
     def current_stage(self) -> int:
-        """Returns the current stage (0–4) based on the latest history entry."""
+        """Returns the current stage (1–4) based on the latest history entry."""
         latest = self.history.order_by('-created_at').first()
         if latest is None:
-            return 0
+            return 1
         return latest.stage_after
 
     @property
@@ -129,8 +129,7 @@ class FeedSubmission(models.Model):
         if self.is_rejected:
             return 'Rejected'
         labels = {
-            0: 'Not started',
-            1: 'Step 1: Data uploaded',
+            1: 'Step 1: Upload data',
             2: 'Step 2: Data verification',
             3: 'Step 3: Admin confirmation',
             4: 'Step 4: Complete',
@@ -284,6 +283,16 @@ class StaticFeedEntry(models.Model):
         help_text='When the cached copy was last downloaded by the server.',
     )
 
+    # Validation Report
+    # Stores the last validation result (if any).
+    validation_report = models.OneToOneField(
+        'FeedValidationReport',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='static_entry',
+    )
+
     # Proxy/hide original URL (only relevant when url is set)
     hide_original = models.BooleanField(
         default=False,
@@ -359,6 +368,24 @@ class StaticFeedEntry(models.Model):
     def __str__(self):
         source = self.url or getattr(self.file, 'name', '')
         return f"StaticFeedEntry(id={self.id}, submission={self.submission_id}, source='{source}')"
+
+
+# ---------------------------------------------------------------------------
+# FeedValidationReport – stores output of the GTFS validator
+# ---------------------------------------------------------------------------
+
+class FeedValidationReport(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True)
+    report_json = models.JSONField(
+        blank=True,
+        null=True,
+        help_text='Full JSON output from the validator.'
+    )
+    error_count = models.PositiveIntegerField(default=0)
+    warning_count = models.PositiveIntegerField(default=0)
+
+    def __str__(self):
+        return f"ValidationReport(errors={self.error_count}, warnings={self.warning_count})"
 
 
 # ---------------------------------------------------------------------------
@@ -613,3 +640,39 @@ class FeedFetchError(models.Model):
         source = f'static_entry={self.static_entry_id}' if self.static_entry_id else f'endpoint={self.endpoint_id}'
         return f"FeedFetchError(id={self.id}, {source}, {self.error_type}, {self.occurred_at})"
 
+# ---------------------------------------------------------------------------
+# Scheduler helpers
+# ---------------------------------------------------------------------------
+
+def completed_submission_ids() -> list[int]:
+    """Returns IDs of all submissions that are in 'completed' stage (4)."""
+    # Assuming stage 4 is the final 'published' stage.
+    # We can optimize by querying history: find submissions where latest history entry is stage_after=4.
+    # However, a simpler way for now:
+    # Filter submissions where current_stage property returns 4.
+    # Since current_stage is a property computed from history, doing it in Python for all might be slow.
+    # Better: Use a subquery or annotation if possible.
+    # But let's stick to the simplest correct implementation:
+
+    # We can fetch IDs of submissions that have *ever* reached stage 4,
+    # and haven't been reverted/rejected later?
+    # Actually, let's keep it simple: fetch all submissions and filter in python if count is low,
+    # or rely on a specific optimized query.
+
+    # Optimized query:
+    # Submissions where the latest history entry has stage_after=4.
+
+    from django.db.models import Subquery, OuterRef
+
+    latest_history = FeedSubmissionHistory.objects.filter(
+        submission=OuterRef('pk')
+    ).order_by('-created_at')
+
+    # This filters submissions where the *very last* history entry is stage 4.
+    return list(
+        FeedSubmission.objects.annotate(
+            current_stage_val=Subquery(latest_history.values('stage_after')[:1])
+        ).filter(
+            current_stage_val=4
+        ).values_list('id', flat=True)
+    )

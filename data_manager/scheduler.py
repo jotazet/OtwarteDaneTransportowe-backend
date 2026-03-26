@@ -57,17 +57,40 @@ def _completed_submission_ids() -> list[int]:
 
 def _fetch_static_entry(entry: StaticFeedEntry) -> None:
     """Pobiera plik z URL i zapisuje jako cached_file. Błędy trafiają do FeedFetchError."""
+    # Import deferred to avoid circular dependency
+    from data_manager.tasks import validate_gtfs_feed_task
+
     headers = _build_auth_headers(entry.auth_type, entry.auth_value)
     try:
         response = requests.get(entry.url, headers=headers, timeout=60)
         response.raise_for_status()
-        filename = entry.url.rstrip('/').split('/')[-1] or 'feed.zip'
+
+        # Determine filename
+        import os
+        from urllib.parse import urlparse
+        parsed = urlparse(entry.url)
+        filename = os.path.basename(parsed.path) or 'feed.zip'
+
+        # Save file to storage
+        # Note: entry.cached_file.save() saves to storage backend.
+        # But we want to update the DB field 'cached_file' as well.
+        # The 'save=True' arg (default) triggers model.save(), which triggers signals.
+        # However, original code used save=False + update(), probably to avoid signals or other side effects.
+        # But signals are REQUIRED for validation if we rely on signals.py.
+        # If we use update(), we MUST manually trigger the task.
+
         entry.cached_file.save(filename, ContentFile(response.content), save=False)
+
+        # Update timestamp and file path in DB
         StaticFeedEntry.objects.filter(pk=entry.pk).update(
             cached_file=entry.cached_file.name,
             cached_at=timezone.now(),
         )
         logger.info('Refreshed static entry=%d  url=%s', entry.pk, entry.url)
+
+        # Trigger validation manually since update() bypassed signals
+        validate_gtfs_feed_task.delay(entry.pk)
+
     except requests.exceptions.Timeout as exc:
         _log_static_error(entry, FeedFetchError.ERROR_TIMEOUT, exc)
     except requests.exceptions.HTTPError as exc:

@@ -211,7 +211,7 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
 
 class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
     static_entries = StaticFeedEntrySerializer(required=False, many=True)
-    realtime_entry = RealtimeFeedEntryWriteSerializer(required=False)
+    realtime_entry = RealtimeFeedEntryWriteSerializer(required=False, allow_null=True)
 
     class Meta:
         model = FeedSubmission
@@ -285,11 +285,24 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 
         if static_entries_data:
             for static_data in static_entries_data:
+                # If cached_file is not set but file is provided -> file upload
+                # If cached_file is not set but url is provided -> URL setup (validation will happen after download task)
+                # But wait, we want to download immediately if URL is provided and allow validator to run.
+
+                # Check auth_type logic
                 if static_data.get('auth_type', 'none') != 'none':
                     static_data['hide_original'] = True
+
                 entry = StaticFeedEntry(submission=submission, **static_data)
                 entry.full_clean()
                 entry.save()
+
+                # If URL is provided and hide_original is True, we should probably schedule a download task immediately
+                # so validation can happen on the downloaded file.
+                if entry.url:
+                     from data_manager.tasks import fetch_static_entry_task
+                     fetch_static_entry_task.delay(entry.id)
+
         elif realtime_data:
             endpoints_data = realtime_data.pop('endpoints')
             rt_entry = RealtimeFeedEntry(submission=submission, **realtime_data)
