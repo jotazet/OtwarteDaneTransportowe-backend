@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAdminUser, IsAuthenticated, AllowAny, BasePermission
 from rest_framework.response import Response
 from django.core.exceptions import ValidationError
+from django.db.models import OuterRef, Subquery, Prefetch
 
 from data_manager.api.serializers import (
     AdminFeedSubmissionSerializer,
@@ -13,13 +14,18 @@ from data_manager.api.serializers import (
     FeedSubmissionWriteSerializer,
     FeedListSerializer,
     FeedDetailSerializer,
+    OrganizationFeedsSerializer,
+    OrganizationFeedsSummarySerializer,
 )
 from data_manager.models import (
     FeedSubmission,
     FeedSubmissionHistory,
     RealtimeEndpoint,
     StaticFeedEntry,
+    completed_submission_ids,
 )
+from cases.models import TransportOrganization
+from cases.api.serializers import TransportOrganizationSerializer
 
 
 class IsAdminOrOwnerReadOnly(BasePermission):
@@ -30,34 +36,72 @@ class IsAdminOrOwnerReadOnly(BasePermission):
 
 
 # ---------------------------------------------------------------------------
-# FeedSubmissionViewSet – central permissions
+# OrganizationViewSet – for public, read-only feed listings
+# ---------------------------------------------------------------------------
+
+class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Public, read-only endpoint for browsing feeds grouped by Transport Organization.
+    - List view (`/api/data_manager/feeds/`) provides a summary of available feed types.
+    - Detail view (`/api/data_manager/feeds/{org_id}/`) provides full links to approved feeds.
+    """
+    permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        approved_ids = completed_submission_ids()
+        latest_history = FeedSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by('-created_at')
+        feeds_qs = (
+            FeedSubmission.objects
+            .filter(pk__in=approved_ids)
+            .annotate(latest_event=Subquery(latest_history.values('event_type')[:1]))
+            .exclude(latest_event=FeedSubmissionHistory.EVENT_REJECTED)
+            .select_related('transport_organization', 'submitted_by', 'realtime_entry')
+            .prefetch_related('static_entries', 'realtime_entry__endpoints')
+            .order_by('id')
+        )
+        org_qs = (
+            TransportOrganization.objects
+            .prefetch_related(
+                'data_providers', 'case_status',
+                Prefetch('feed_submissions', queryset=feeds_qs, to_attr='feeds'),
+            )
+            .order_by('region', 'transport_organization')
+        )
+        return org_qs
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return OrganizationFeedsSummarySerializer
+        if self.action == 'retrieve':
+            return OrganizationFeedsSerializer
+        return OrganizationFeedsSerializer # Default
+
+
+# ---------------------------------------------------------------------------
+# FeedSubmissionViewSet – for owners and admins to manage submissions
 # ---------------------------------------------------------------------------
 
 class FeedSubmissionViewSet(viewsets.ModelViewSet):
     """
-    Central endpoint – owners read their submissions; admins can manage all.
-
-    GET    /feed-submissions/                      → list submissions
-    POST   /feed-submissions/                      → create new submission
-    GET    /feed-submissions/{id}/                 → detail of submission
-    PUT    /feed-submissions/{id}/                 → full edit (admin can move stage)
-    PATCH  /feed-submissions/{id}/                 → partial edit (admin can move stage)
-    DELETE /feed-submissions/{id}/                 → delete
+    Central endpoint for owners to manage their submissions and for admins to manage all.
+    - GET    /api/data_manager/feed-submissions/
+    - POST   /api/data_manager/feed-submissions/
+    - GET    /api/data_manager/feed-submissions/{id}/
+    - PATCH  /api/data_manager/feed-submissions/{id}/
+    - DELETE /api/data_manager/feed-submissions/{id}/
     """
     permission_classes = [IsAuthenticated, IsAdminOrOwnerReadOnly]
+    queryset = FeedSubmission.objects.all().select_related(
+        'transport_organization', 'submitted_by'
+    ).prefetch_related(
+        'history', 'static_entries', 'realtime_entry__endpoints'
+    )
 
     def get_queryset(self):
-        qs = (
-            FeedSubmission.objects
-            .select_related('transport_organization', 'submitted_by')
-            .prefetch_related(
-                'history',
-                'static_entries',
-                'realtime_entry__endpoints',
-            )
-        )
+        qs = super().get_queryset()
         if not self.request.user.is_staff:
             qs = qs.filter(submitted_by=self.request.user)
+        # Filtering based on query params
         data_type = self.request.query_params.get('data_type')
         if data_type:
             qs = qs.filter(data_type=data_type)
@@ -175,43 +219,6 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_403_FORBIDDEN,
                 )
         return super().destroy(request, *args, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# FeedViewSet – list/detail with filtering; admin manages
-# ---------------------------------------------------------------------------
-
-class FeedViewSet(viewsets.ModelViewSet):
-    def get_permissions(self):
-        if self.action in ('update', 'partial_update', 'destroy'):
-            return [IsAdminUser()]
-        if self.action in ('list', 'retrieve', 'download_static', 'download_realtime'):
-            return [AllowAny()]
-        return [IsAuthenticated()]
-
-    def get_queryset(self):
-        qs = (
-            FeedSubmission.objects
-            .select_related('transport_organization')
-            .prefetch_related('static_entries', 'realtime_entry__endpoints')
-        )
-        org = self.request.query_params.get('transport_organization')
-        if org:
-            qs = qs.filter(transport_organization_id=org)
-        data_type = self.request.query_params.get('data_type')
-        if data_type:
-            qs = qs.filter(data_type=data_type)
-        feed_kind = self.request.query_params.get('feed_kind')
-        if feed_kind:
-            qs = qs.filter(feed_kind=feed_kind)
-        return qs
-
-    def get_serializer_class(self):
-        if self.action == 'list':
-            return FeedListSerializer
-        if self.action == 'retrieve':
-            return FeedDetailSerializer
-        return FeedSubmissionSerializer
 
     @action(detail=True, methods=['get'], url_path='download/static/(?P<endpoint_pk>[^/.]+)')
     def download_static(self, request, pk=None, endpoint_pk=None):

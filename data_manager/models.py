@@ -14,46 +14,27 @@ class OverwriteStorage(FileSystemStorage):
         return name
 
 
-def _build_base_path(submission) -> str:
+def feed_file_path(instance, filename):
     """
-    Returns: '{user_id}/{org_id}'
-    Falls back to 'unknown' when IDs are not yet set (pre-save).
+    file will be uploaded to MEDIA_ROOT/<submission_id>/static/<filename>
     """
-    user_id = getattr(submission.submitted_by, 'id', None) or 'unknown'
-    org_id = submission.transport_organization_id or 'unknown'
-    return f'{user_id}/{org_id}'
+    submission_id = instance.submission.id if hasattr(instance, 'submission') else 'unknown'
+    return f'{submission_id}/static/{filename}'
 
 
-def static_feed_file_upload_to(instance, filename):
+def realtime_feed_cached_file_path(instance, filename):
     """
-    For files uploaded directly by the user.
-    {user_id}/{org_id}/static/{original_filename}
+    file will be uploaded to MEDIA_ROOT/<submission_id>/dynamic/cached/<filename>
     """
-    base = _build_base_path(instance.submission)
-    return f'{base}/static/{filename}'
+    submission_id = instance.entry.submission.id if hasattr(instance, 'entry') else 'unknown'
+    return f'{submission_id}/dynamic/cached/{filename}'
 
 
-def static_feed_cached_upload_to(instance, filename):
+def validation_file_path(instance, filename):
     """
-    For files downloaded automatically by the server (hide_original=True).
-    {user_id}/{org_id}/static/{original_filename}
+    file will be uploaded to MEDIA_ROOT/<submission_id>/validation/<filename>
     """
-    base = _build_base_path(instance.submission)
-    return f'{base}/static/{filename}'
-
-
-def realtime_feed_cached_upload_to(instance, filename):
-    """
-    For realtime feed files downloaded automatically by the server (hide_original=True).
-    {user_id}/{org_id}/realtime/{endpoint_type}/{original_filename}
-    """
-    entry = instance.entry
-    submission = entry.submission
-    base = _build_base_path(submission)
-    endpoint_type = instance.endpoint_type or 'unknown'
-    return f'{base}/realtime/{endpoint_type}/{filename}'
-
-
+    submission_id = 'unknown'
 # ---------------------------------------------------------------------------
 # FeedSubmission – top-level submission by a user
 # ---------------------------------------------------------------------------
@@ -256,7 +237,7 @@ class StaticFeedEntry(models.Model):
 
     # Source B: file uploaded manually by the user.
     file = models.FileField(
-        upload_to=static_feed_file_upload_to,
+        upload_to=feed_file_path,
         storage=OverwriteStorage(),
         blank=True,
         null=True,
@@ -272,7 +253,7 @@ class StaticFeedEntry(models.Model):
     # Source C: file downloaded automatically by the server (filled only when
     #           url is set and hide_original=True — never set by the user).
     cached_file = models.FileField(
-        upload_to=static_feed_cached_upload_to,
+        upload_to=feed_cached_file_path,
         storage=OverwriteStorage(),
         blank=True,
         null=True,
@@ -376,10 +357,12 @@ class StaticFeedEntry(models.Model):
 
 class FeedValidationReport(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
-    report_json = models.JSONField(
+    report_file = models.FileField(
+        upload_to=validation_file_path,
+        storage=OverwriteStorage(),
         blank=True,
         null=True,
-        help_text='Full JSON output from the validator.'
+        help_text='Full JSON output from the validator, stored as a file.'
     )
     error_count = models.PositiveIntegerField(default=0)
     warning_count = models.PositiveIntegerField(default=0)
@@ -520,7 +503,7 @@ class RealtimeEndpoint(models.Model):
     )
     # Populated automatically when server fetches the feed (hide_original=True)
     cached_file = models.FileField(
-        upload_to=realtime_feed_cached_upload_to,
+        upload_to=realtime_feed_cached_file_path,
         storage=OverwriteStorage(),
         blank=True,
         null=True,

@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'django_filters',
     'drf_spectacular',
     'drf_spectacular_sidecar',
+    'django_celery_beat',
 
     # Local apps
     'blog.apps.BlogConfig',

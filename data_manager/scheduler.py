@@ -13,6 +13,9 @@ import logging
 import requests
 from django.core.files.base import ContentFile
 from django.utils import timezone
+from django.db import models
+from django_celery_beat.models import CrontabSchedule, PeriodicTask
+import json
 
 from data_manager.models import (
     FeedFetchError,
@@ -150,3 +153,44 @@ def _log_endpoint_error(endpoint, error_type, exc, http_code=None) -> None:
         url_attempted=endpoint.url,
     )
     logger.warning('Fetch error endpoint=%d type=%s: %s', endpoint.pk, error_type, exc)
+
+
+# ---------------------------------------------------------------------------
+# Okresowe zadaania pobierania
+# ---------------------------------------------------------------------------
+
+def setup_periodic_tasks(sender, **kwargs) -> None:
+    """Tworzy zadania okresowe dla aktywnych statycznych źródeł danych."""
+    from data_manager.models import StaticFeedEntry
+
+    # Usuwa istniejące zadania, które mogły zostać utworzone przez ten mechanizm
+    PeriodicTask.objects.filter(name__startswith='fetch-static-entry-').delete()
+
+    # Aktywne źródła danych, które mają ustawiony przynajmniej jeden czas pobierania
+    entries = StaticFeedEntry.objects.filter(
+        models.Q(download_time_1__isnull=False) | models.Q(download_time_2__isnull=False),
+        submission__is_rejected=False,
+        hide_original=True
+    ).select_related('submission')
+
+    for entry in entries:
+        times = [entry.download_time_1, entry.download_time_2]
+        for i, time in enumerate(times, 1):
+            if time:
+                # Tworzenie harmonogramu Crontab
+                schedule, _ = CrontabSchedule.objects.get_or_create(
+                    minute=time.minute,
+                    hour=time.hour,
+                    day_of_week='*',
+                    day_of_month='*',
+                    month_of_year='*',
+                )
+
+                # Tworzenie zadania okresowego
+                PeriodicTask.objects.create(
+                    crontab=schedule,
+                    name=f'fetch-static-entry-{entry.id}-time-{i}',
+                    task='data_manager.tasks.fetch_static_entry_task',
+                    args=json.dumps([entry.id]),
+                )
+                logger.info(f"Scheduled static fetch for entry {entry.id} at {time.hour}:{time.minute}")

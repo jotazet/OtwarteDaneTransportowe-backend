@@ -9,6 +9,7 @@ from data_manager.models import (
     RealtimeFeedEntry,
     StaticFeedEntry,
 )
+from cases.models import TransportOrganization
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +496,8 @@ class FeedListSerializer(serializers.ModelSerializer):
     def get_static_summary(self, obj):
         entries = getattr(obj, 'static_entries', None)
         if entries is None:
-            entries = obj.static_entries.all()
+            return {'has_static': False, 'count': 0, 'sources': []}
+        entries = entries.all() if hasattr(entries, 'all') else entries
         if not entries:
             return {'has_static': False, 'count': 0, 'sources': []}
         sources = set()
@@ -531,4 +533,61 @@ class FeedDetailSerializer(FeedSubmissionSerializer):
             'static_entries', 'realtime_entry',
         ]
         read_only_fields = FeedSubmissionSerializer.Meta.read_only_fields
+
+
+# ---------------------------------------------------------------------------
+# Organization-level feed serializers
+# ---------------------------------------------------------------------------
+
+class OrganizationFeedSubmissionSerializer(serializers.ModelSerializer):
+    submitted_by = serializers.SerializerMethodField()
+    static_feeds = PublishedStaticEntrySerializer(source='static_entries', many=True, read_only=True)
+    realtime_feed = PublishedRealtimeEntrySerializer(source='realtime_entry', read_only=True)
+
+    class Meta:
+        model = FeedSubmission
+        fields = [
+            'id', 'name', 'data_type', 'feed_kind',
+            'submitted_by', 'created_at', 'updated_at',
+            'static_feeds', 'realtime_feed',
+        ]
+        read_only_fields = fields
+
+    def get_submitted_by(self, obj):
+        return obj.submitted_by.username if obj.submitted_by else None
+
+
+class OrganizationFeedsSerializer(serializers.ModelSerializer):
+    feeds = OrganizationFeedSubmissionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = TransportOrganization
+        fields = [
+            'id', 'region', 'transport_organization', 'website', 'contact_email', 'phone_number', 'is_public',
+            'feeds',
+        ]
+        read_only_fields = fields
+
+
+class OrganizationFeedsSummarySerializer(serializers.ModelSerializer):
+    static_types = serializers.SerializerMethodField()
+    dynamic_types = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TransportOrganization
+        fields = [
+            'id', 'region', 'transport_organization', 'website', 'contact_email', 'phone_number', 'is_public',
+            'static_types', 'dynamic_types',
+        ]
+        read_only_fields = fields
+
+    def _feeds(self, obj):
+        return getattr(obj, 'feeds', []) or []
+
+    def get_static_types(self, obj):
+        return sorted({f.data_type for f in self._feeds(obj) if f.feed_kind == FeedSubmission.FEED_KIND_STATIC})
+
+    def get_dynamic_types(self, obj):
+        return sorted({f.data_type for f in self._feeds(obj) if f.feed_kind == FeedSubmission.FEED_KIND_DYNAMIC})
+
 

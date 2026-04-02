@@ -1,11 +1,11 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from data_manager.api.views import FeedSubmissionViewSet, FeedViewSet
+from data_manager.api.views import FeedSubmissionViewSet, OrganizationViewSet
 
 router = DefaultRouter()
-router.register(r'feed-submissions', FeedSubmissionViewSet, basename='feed-submission')
-router.register(r'feeds', FeedViewSet, basename='feed')
+router.register(r'feed-submissions', FeedSubmissionViewSet, basename='feed-submissions')
+router.register(r'feeds', OrganizationViewSet, basename='feeds')
 
 urlpatterns = [
     path('', include(router.urls)),

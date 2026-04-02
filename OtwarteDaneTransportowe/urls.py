@@ -21,6 +21,7 @@ from drf_spectacular.views import (
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
+from cases.api.views import DataProviderViewSet, TransportOrganizationViewSet
 
 urlpatterns = [
     path('admin/', admin.site.urls),
