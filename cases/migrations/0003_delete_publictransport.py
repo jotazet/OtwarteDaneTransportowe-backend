@@ -7,7 +7,6 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('cases', '0002_transportorganization_and_more'),
-        ('data_manager', '0002_alter_feedpackage_transport_organization'),
     ]
 
     operations = [

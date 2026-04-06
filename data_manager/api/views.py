@@ -2,8 +2,9 @@ from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAdminUser, IsAuthenticated, AllowAny, BasePermission
+from rest_framework.permissions import IsAuthenticated, AllowAny, BasePermission
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from django.core.exceptions import ValidationError
 from django.db.models import OuterRef, Subquery, Prefetch
 
@@ -26,6 +27,68 @@ from data_manager.models import (
 )
 from cases.models import TransportOrganization
 from cases.api.serializers import TransportOrganizationSerializer
+
+
+class PublicFeedDownloadView(APIView):
+    """
+    Handles downloading files securely or listing available files for a feed.
+    - GET /feed/<id>/ -> lists available files (static/dynamic) with original urls if applicable.
+    - GET /feed/<id>/<filename> -> downloads a specific file.
+    Only feeds in 'completed' stage are accessible.
+    """
+    permission_classes = [AllowAny]
+
+    def _get_submission_or_404(self, pk):
+        submission = get_object_or_404(FeedSubmission, pk=pk)
+        # Verify it's approved / published
+        if submission.id not in completed_submission_ids():
+            raise Http404("Feed not found or not published.")
+        return submission
+
+    def get(self, request, pk=None, filename=None):
+        if pk is None:
+            return Response({"detail": "Specify a feed ID."}, status=status.HTTP_400_BAD_REQUEST)
+
+        submission = self._get_submission_or_404(pk)
+
+        static_file = None
+        dynamic_files = {}
+
+        if hasattr(submission, 'static_entry'):
+            entry = submission.static_entry
+            static_file = entry.cached_file or entry.file
+
+        if hasattr(submission, 'realtime_entry'):
+            for ep in submission.realtime_entry.endpoints.all():
+                if ep.cached_file:
+                    ep_filename = ep.cached_file.name.split('/')[-1]
+                    dynamic_files[ep.endpoint_type] = {
+                        'filename': ep_filename,
+                        'file': ep.cached_file,
+                    }
+
+        # Handle Directory / Listing request
+        if not filename:
+            base = request.build_absolute_uri(f'/feed/{submission.id}/')
+            result = {}
+            if static_file:
+                result['static'] = f"{base}{static_file.name.split('/')[-1]}"
+            if dynamic_files:
+                result['dynamic'] = {
+                    endpoint_type: f"{base}{payload['filename']}"
+                    for endpoint_type, payload in dynamic_files.items()
+                }
+            return Response(result)
+
+        # Handle File Download request
+        if static_file and static_file.name.split('/')[-1] == filename:
+            return FileResponse(static_file.open('rb'), as_attachment=True, filename=filename)
+
+        for payload in dynamic_files.values():
+            if payload['filename'] == filename:
+                return FileResponse(payload['file'].open('rb'), as_attachment=True, filename=filename)
+
+        raise Http404("File not found.")
 
 
 class IsAdminOrOwnerReadOnly(BasePermission):
@@ -56,7 +119,8 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
             .annotate(latest_event=Subquery(latest_history.values('event_type')[:1]))
             .exclude(latest_event=FeedSubmissionHistory.EVENT_REJECTED)
             .select_related('transport_organization', 'submitted_by', 'realtime_entry')
-            .prefetch_related('static_entries', 'realtime_entry__endpoints')
+            .select_related('static_entry')
+            .prefetch_related('realtime_entry__endpoints')
             .order_by('id')
         )
         org_qs = (
@@ -92,9 +156,9 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
     """
     permission_classes = [IsAuthenticated, IsAdminOrOwnerReadOnly]
     queryset = FeedSubmission.objects.all().select_related(
-        'transport_organization', 'submitted_by'
+        'transport_organization', 'submitted_by', 'static_entry'
     ).prefetch_related(
-        'history', 'static_entries', 'realtime_entry__endpoints'
+        'history', 'realtime_entry__endpoints'
     )
 
     def get_queryset(self):
@@ -105,9 +169,6 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         data_type = self.request.query_params.get('data_type')
         if data_type:
             qs = qs.filter(data_type=data_type)
-        feed_kind = self.request.query_params.get('feed_kind')
-        if feed_kind:
-            qs = qs.filter(feed_kind=feed_kind)
         transport_org = self.request.query_params.get('transport_organization')
         if transport_org:
             qs = qs.filter(transport_organization_id=transport_org)

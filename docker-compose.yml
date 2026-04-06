@@ -61,10 +61,10 @@ services:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock
     command: >
-      celery -A OtwarteDaneTransportowe worker
+      bash -lc "python manage.py migrate && celery -A OtwarteDaneTransportowe worker
       --loglevel=info
       --queues=feeds,default
-      --concurrency=4
+      --concurrency=4"
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,9 +92,9 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     # DatabaseScheduler — harmonogram trzymany w PostgreSQL (tabela PeriodicTask)
     command: >
-      celery -A OtwarteDaneTransportowe beat
+      bash -lc "python manage.py migrate && celery -A OtwarteDaneTransportowe beat
       --loglevel=info
-      --scheduler django_celery_beat.schedulers:DatabaseScheduler
+      --scheduler django_celery_beat.schedulers:DatabaseScheduler"
     depends_on:
       postgres:
         condition: service_healthy

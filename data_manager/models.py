@@ -18,15 +18,30 @@ def feed_file_path(instance, filename):
     """
     file will be uploaded to MEDIA_ROOT/<submission_id>/static/<filename>
     """
-    submission_id = instance.submission.id if hasattr(instance, 'submission') else 'unknown'
+    submission_id = getattr(getattr(instance, 'submission', None), 'id', 'unknown')
     return f'{submission_id}/static/{filename}'
+
+
+def feed_cached_file_path(instance, filename):
+    """Return path for cached static feed files.
+
+    Files are stored alongside other static submission files under::
+
+        MEDIA_ROOT/<submission_id>/static/cached/<filename>
+
+    This mirrors the structure used for dynamic feeds in
+    ``realtime_feed_cached_file_path`` but for static feeds ``instance``
+    is a ``StaticFeedEntry`` and has a direct ``submission`` FK.
+    """
+    submission_id = getattr(getattr(instance, 'submission', None), 'id', 'unknown')
+    return f'{submission_id}/static/cached/{filename}'
 
 
 def realtime_feed_cached_file_path(instance, filename):
     """
     file will be uploaded to MEDIA_ROOT/<submission_id>/dynamic/cached/<filename>
     """
-    submission_id = instance.entry.submission.id if hasattr(instance, 'entry') else 'unknown'
+    submission_id = getattr(getattr(getattr(instance, 'entry', None), 'submission', None), 'id', 'unknown')
     return f'{submission_id}/dynamic/cached/{filename}'
 
 
@@ -34,7 +49,9 @@ def validation_file_path(instance, filename):
     """
     file will be uploaded to MEDIA_ROOT/<submission_id>/validation/<filename>
     """
-    submission_id = 'unknown'
+    submission_id = getattr(getattr(getattr(instance, 'static_entry', None), 'submission', None), 'id', 'unknown')
+    return f'{submission_id}/validation/{filename}'
+
 # ---------------------------------------------------------------------------
 # FeedSubmission – top-level submission by a user
 # ---------------------------------------------------------------------------
@@ -52,15 +69,6 @@ class FeedSubmission(models.Model):
         ('other', 'Other'),
     ]
 
-    FEED_KIND_STATIC = 'static'
-    FEED_KIND_DYNAMIC = 'dynamic'
-    FEED_KIND_CHOICES = [
-        (FEED_KIND_STATIC, 'Static'),
-        (FEED_KIND_DYNAMIC, 'Dynamic'),
-    ]
-
-    DYNAMIC_DATA_TYPES = {'gtfs_rt', 'siri', 'gbfs'}
-
     # Relations
     transport_organization = models.ForeignKey(
         'cases.TransportOrganization',
@@ -77,7 +85,6 @@ class FeedSubmission(models.Model):
 
     # Feed metadata
     data_type = models.CharField(max_length=10, choices=DATA_TYPE_CHOICES)
-    feed_kind = models.CharField(max_length=10, choices=FEED_KIND_CHOICES, editable=False)
     name = models.CharField(max_length=255, blank=True, null=True)
     note = models.TextField(max_length=2048, blank=True, null=True)
 
@@ -90,7 +97,6 @@ class FeedSubmission(models.Model):
         indexes = [
             models.Index(fields=['transport_organization', '-created_at']),
             models.Index(fields=['data_type']),
-            models.Index(fields=['feed_kind']),
         ]
 
     # ------------------------------------------------------------------
@@ -138,22 +144,6 @@ class FeedSubmission(models.Model):
             event_type=FeedSubmissionHistory.EVENT_COMPLETED
         ).order_by('-created_at').first()
         return completed.created_at if completed else None
-
-    def clean(self):
-        super().clean()
-        # Derive feed_kind from data_type automatically
-        if self.data_type in self.DYNAMIC_DATA_TYPES:
-            self.feed_kind = self.FEED_KIND_DYNAMIC
-        else:
-            self.feed_kind = self.FEED_KIND_STATIC
-
-    def save(self, *args, **kwargs):
-        # Set feed_kind before saving (clean may not always be called via full_clean)
-        if self.data_type in self.DYNAMIC_DATA_TYPES:
-            self.feed_kind = self.FEED_KIND_DYNAMIC
-        else:
-            self.feed_kind = self.FEED_KIND_STATIC
-        super().save(*args, **kwargs)
 
     def __str__(self):
         label = self.name or f"org_id={self.transport_organization_id}"
@@ -217,16 +207,26 @@ class FeedSubmissionHistory(models.Model):
 
 class StaticFeedEntry(models.Model):
     AUTH_TYPE_CHOICES = [
-        ('none', 'None'),
         ('api_key', 'API Key'),
         ('bearer_token', 'Bearer Token'),
         ('basic_auth', 'Basic Auth (user:pass)'),
     ]
 
-    submission = models.ForeignKey(
+    VALIDATION_PENDING = 'pending'
+    VALIDATION_VALID = 'valid'
+    VALIDATION_INVALID = 'invalid'
+    VALIDATION_ERROR = 'error'
+    VALIDATION_STATUS_CHOICES = [
+        (VALIDATION_PENDING, 'Pending'),
+        (VALIDATION_VALID, 'Valid'),
+        (VALIDATION_INVALID, 'Invalid'),
+        (VALIDATION_ERROR, 'Error'),
+    ]
+
+    submission = models.OneToOneField(
         FeedSubmission,
         on_delete=models.CASCADE,
-        related_name='static_entries',
+        related_name='static_entry',
     )
 
     license = models.CharField(max_length=255, blank=True, null=True)
@@ -264,6 +264,13 @@ class StaticFeedEntry(models.Model):
         help_text='When the cached copy was last downloaded by the server.',
     )
 
+    validation_status = models.CharField(
+        max_length=20,
+        choices=VALIDATION_STATUS_CHOICES,
+        default=VALIDATION_PENDING,
+    )
+    validation_message = models.TextField(blank=True, null=True)
+
     # Validation Report
     # Stores the last validation result (if any).
     validation_report = models.OneToOneField(
@@ -271,7 +278,7 @@ class StaticFeedEntry(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='static_entry',
+        related_name='static_entry_report',
     )
 
     # Proxy/hide original URL (only relevant when url is set)
@@ -284,7 +291,7 @@ class StaticFeedEntry(models.Model):
     auth_type = models.CharField(
         max_length=20,
         choices=AUTH_TYPE_CHOICES,
-        default='none',
+        null=True, blank=True
     )
     auth_value = models.CharField(
         max_length=512,
@@ -321,13 +328,25 @@ class StaticFeedEntry(models.Model):
         if not has_url and not has_file:
             raise ValidationError('Either a URL or a file upload must be provided.')
 
-        # Auto-set hide_original when auth_type != none
-        if self.auth_type != 'none':
+        # download_time_1 required if url, forbidden if file
+        if has_url:
+            if self.download_time_1 is None:
+                raise ValidationError({'download_time_1': 'This field is required when a URL is provided.'})
+            if self.download_time_2 is not None and self.download_time_1 is None:
+                raise ValidationError({'download_time_2': 'download_time_2 can only be set if download_time_1 is set.'})
+        if has_file:
+            if self.download_time_1 is not None:
+                raise ValidationError({'download_time_1': 'This field must be empty when a file is provided.'})
+            if self.download_time_2 is not None:
+                raise ValidationError({'download_time_2': 'This field must be empty when a file is provided.'})
+
+        # Auto-set hide_original when auth_type is set
+        if self.auth_type:
             self.hide_original = True
 
         # URL-specific rules
         if has_url:
-            if self.hide_original and self.auth_type == 'none':
+            if self.hide_original and not self.auth_type:
                 raise ValidationError(
                     'Authentication is required when "hide original" is enabled.'
                 )
@@ -349,6 +368,20 @@ class StaticFeedEntry(models.Model):
     def __str__(self):
         source = self.url or getattr(self.file, 'name', '')
         return f"StaticFeedEntry(id={self.id}, submission={self.submission_id}, source='{source}')"
+
+    @property
+    def validation_source_file(self):
+        return self.cached_file or self.file
+
+    def validation_ready(self) -> bool:
+        return bool(self.validation_source_file)
+
+    def cleanup_validation_artifacts(self):
+        if self.validation_report and self.validation_report.report_file:
+            storage = self.validation_report.report_file.storage
+            name = self.validation_report.report_file.name
+            if name and storage.exists(name):
+                storage.delete(name)
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +469,6 @@ class RealtimeFeedEntry(models.Model):
 
 class RealtimeEndpoint(models.Model):
     AUTH_TYPE_CHOICES = [
-        ('none', 'None'),
         ('api_key', 'API Key'),
         ('bearer_token', 'Bearer Token'),
         ('basic_auth', 'Basic Auth (user:pass)'),
@@ -519,7 +551,7 @@ class RealtimeEndpoint(models.Model):
     auth_type = models.CharField(
         max_length=20,
         choices=AUTH_TYPE_CHOICES,
-        default='none',
+        null=True, blank=True
     )
     auth_value = models.CharField(
         max_length=512,
@@ -535,8 +567,8 @@ class RealtimeEndpoint(models.Model):
 
     def clean(self):
         super().clean()
-        # Auto-set hide_original when auth_type != none
-        if self.auth_type != 'none':
+        # Auto-set hide_original when auth_type is set
+        if self.auth_type:
             self.hide_original = True
 
         # Validate endpoint_type is allowed for the parent protocol
@@ -547,7 +579,7 @@ class RealtimeEndpoint(models.Model):
                     f"Endpoint type '{self.endpoint_type}' is not valid for "
                     f"protocol '{self.entry.protocol}'. Allowed: {sorted(allowed)}."
                 )
-        if self.hide_original and self.auth_type == 'none':
+        if self.hide_original and not self.auth_type:
             raise ValidationError(
                 'Authentication is required when "hide original" is enabled.'
             )

@@ -150,17 +150,17 @@ class FeedFetchErrorAdmin(admin.ModelAdmin):
 @admin.register(FeedSubmission)
 class FeedSubmissionAdmin(admin.ModelAdmin):
     list_display = (
-        'id', 'transport_organization', 'data_type', 'feed_kind',
+        'id', 'transport_organization', 'data_type',
         'name', 'get_current_stage', 'get_is_rejected', 'created_at',
     )
-    list_filter = ('data_type', 'feed_kind', 'created_at')
+    list_filter = ('data_type', 'created_at')
     search_fields = (
         'name',
         'transport_organization__region',
         'transport_organization__transport_organization',
     )
     readonly_fields = (
-        'feed_kind', 'created_at', 'updated_at',
+        'created_at', 'updated_at',
         'get_current_stage', 'get_current_stage_label', 'get_is_rejected', 'get_rejection_cause',
     )
     date_hierarchy = 'created_at'
@@ -175,7 +175,7 @@ class FeedSubmissionAdmin(admin.ModelAdmin):
         ('Submission Info', {
             'fields': (
                 'transport_organization', 'submitted_by',
-                'data_type', 'feed_kind', 'name', 'note',
+                'data_type', 'name', 'note',
             )
         }),
         ('Current Status (computed from history)', {
