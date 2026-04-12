@@ -3,7 +3,6 @@ from django.core.exceptions import ValidationError
 from django.core.files.storage import FileSystemStorage
 from django.conf import settings
 from django.contrib.auth import get_user_model
-
 import os
 
 
@@ -39,9 +38,9 @@ def feed_cached_file_path(instance, filename):
 
 def realtime_feed_cached_file_path(instance, filename):
     """
-    file will be uploaded to MEDIA_ROOT/<submission_id>/dynamic/cached/<filename>
+    MEDIA_ROOT/<realtime_submission_id>/dynamic/cached/<filename>
     """
-    submission_id = getattr(getattr(getattr(instance, 'entry', None), 'submission', None), 'id', 'unknown')
+    submission_id = getattr(getattr(instance, 'submission', None), 'id', 'unknown')
     return f'{submission_id}/dynamic/cached/{filename}'
 
 
@@ -57,15 +56,11 @@ def validation_file_path(instance, filename):
 # ---------------------------------------------------------------------------
 
 class FeedSubmission(models.Model):
+    """Static schedule feeds only. Realtime uses :class:`RealtimeSubmission`."""
+
     DATA_TYPE_CHOICES = [
-        # Static
         ('gtfs', 'GTFS'),
         ('netex', 'NeTEx'),
-        # Dynamic
-        ('gbfs', 'GBFS'),
-        ('siri', 'SIRI'),
-        ('gtfs_rt', 'GTFS-RT'),
-        # Other
         ('other', 'Other'),
     ]
 
@@ -144,6 +139,9 @@ class FeedSubmission(models.Model):
             event_type=FeedSubmissionHistory.EVENT_COMPLETED
         ).order_by('-created_at').first()
         return completed.created_at if completed else None
+
+    # NOTE: realtime is handled via separate RealtimeSubmission flow
+    # (see data_manager.models.RealtimeSubmission).
 
     def __str__(self):
         label = self.name or f"org_id={self.transport_organization_id}"
@@ -405,193 +403,6 @@ class FeedValidationReport(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# RealtimeFeedEntry – shared container for GTFS-RT, SIRI, and GBFS
-# ---------------------------------------------------------------------------
-
-class RealtimeFeedEntry(models.Model):
-    PROTOCOL_GTFS_RT = 'gtfs_rt'
-    PROTOCOL_SIRI = 'siri'
-    PROTOCOL_GBFS = 'gbfs'
-    PROTOCOL_CHOICES = [
-        (PROTOCOL_GTFS_RT, 'GTFS-RT'),
-        (PROTOCOL_SIRI, 'SIRI'),
-        (PROTOCOL_GBFS, 'GBFS'),
-    ]
-
-    # Endpoint types per protocol
-    GTFS_RT_ENDPOINT_TYPES = {'trip_update', 'vehicle_position', 'service_alert'}
-    SIRI_ENDPOINT_TYPES = {'sx', 'sm', 'vm', 'et', 'gm'}
-    GBFS_ENDPOINT_TYPES = {
-        'gbfs', 'gbfs_versions', 'system_information', 'vehicle_types',
-        'station_information', 'station_status', 'free_bike_status',
-        'system_hours', 'system_alerts',
-    }
-
-    license = models.CharField(max_length=255, blank=True, null=True)
-
-    submission = models.OneToOneField(
-        FeedSubmission,
-        on_delete=models.CASCADE,
-        related_name='realtime_entry',
-    )
-    protocol = models.CharField(max_length=10, choices=PROTOCOL_CHOICES)
-    uploaded_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['-uploaded_at']
-
-    def allowed_endpoint_types(self) -> set:
-        if self.protocol == self.PROTOCOL_GTFS_RT:
-            return self.GTFS_RT_ENDPOINT_TYPES
-        if self.protocol == self.PROTOCOL_SIRI:
-            return self.SIRI_ENDPOINT_TYPES
-        if self.protocol == self.PROTOCOL_GBFS:
-            return self.GBFS_ENDPOINT_TYPES
-        return set()
-
-    def clean(self):
-        super().clean()
-        # Cross-check: protocol must match submission data_type
-        if self.submission_id:
-            expected = self.submission.data_type
-            if expected != self.protocol:
-                raise ValidationError(
-                    f"Protocol '{self.protocol}' does not match submission data_type '{expected}'."
-                )
-
-    def __str__(self):
-        return f"RealtimeFeedEntry(id={self.id}, protocol={self.protocol}, submission={self.submission_id})"
-
-
-# ---------------------------------------------------------------------------
-# RealtimeEndpoint – one URL per endpoint type within a RealtimeFeedEntry
-# ---------------------------------------------------------------------------
-
-class RealtimeEndpoint(models.Model):
-    AUTH_TYPE_CHOICES = [
-        ('api_key', 'API Key'),
-        ('bearer_token', 'Bearer Token'),
-        ('basic_auth', 'Basic Auth (user:pass)'),
-    ]
-
-    # GTFS-RT endpoint types
-    ENDPOINT_TRIP_UPDATE = 'trip_update'
-    ENDPOINT_VEHICLE_POSITION = 'vehicle_position'
-    ENDPOINT_SERVICE_ALERT = 'service_alert'
-    # SIRI endpoint types
-    ENDPOINT_SX = 'sx'
-    ENDPOINT_SM = 'sm'
-    ENDPOINT_VM = 'vm'
-    ENDPOINT_ET = 'et'
-    ENDPOINT_GM = 'gm'
-    # GBFS endpoint types
-    ENDPOINT_GBFS = 'gbfs'
-    ENDPOINT_GBFS_VERSIONS = 'gbfs_versions'
-    ENDPOINT_SYSTEM_INFORMATION = 'system_information'
-    ENDPOINT_VEHICLE_TYPES = 'vehicle_types'
-    ENDPOINT_STATION_INFORMATION = 'station_information'
-    ENDPOINT_STATION_STATUS = 'station_status'
-    ENDPOINT_FREE_BIKE_STATUS = 'free_bike_status'
-    ENDPOINT_SYSTEM_HOURS = 'system_hours'
-    ENDPOINT_SYSTEM_ALERTS = 'system_alerts'
-
-    ENDPOINT_TYPE_CHOICES = [
-        # GTFS-RT
-        (ENDPOINT_TRIP_UPDATE, 'Trip Update (GTFS-RT)'),
-        (ENDPOINT_VEHICLE_POSITION, 'Vehicle Position (GTFS-RT)'),
-        (ENDPOINT_SERVICE_ALERT, 'Service Alert (GTFS-RT)'),
-        # SIRI
-        (ENDPOINT_SX, 'Situation Exchange – SX (SIRI)'),
-        (ENDPOINT_SM, 'Stop Monitoring – SM (SIRI)'),
-        (ENDPOINT_VM, 'Vehicle Monitoring – VM (SIRI)'),
-        (ENDPOINT_ET, 'Estimated Timetable – ET (SIRI)'),
-        (ENDPOINT_GM, 'General Message – GM (SIRI)'),
-        # GBFS
-        (ENDPOINT_GBFS, 'GBFS – Main file'),
-        (ENDPOINT_GBFS_VERSIONS, 'GBFS Versions'),
-        (ENDPOINT_SYSTEM_INFORMATION, 'System Information'),
-        (ENDPOINT_VEHICLE_TYPES, 'Vehicle Types'),
-        (ENDPOINT_STATION_INFORMATION, 'Station Information'),
-        (ENDPOINT_STATION_STATUS, 'Station Status'),
-        (ENDPOINT_FREE_BIKE_STATUS, 'Free Bike Status'),
-        (ENDPOINT_SYSTEM_HOURS, 'System Hours'),
-        (ENDPOINT_SYSTEM_ALERTS, 'System Alerts'),
-    ]
-
-    entry = models.ForeignKey(
-        RealtimeFeedEntry,
-        on_delete=models.CASCADE,
-        related_name='endpoints',
-    )
-    endpoint_type = models.CharField(max_length=30, choices=ENDPOINT_TYPE_CHOICES)
-    url = models.URLField()
-    hide_original = models.BooleanField(
-        default=False,
-        help_text='Server acts as a proxy and hides the original URL.',
-    )
-    is_original = models.BooleanField(
-        default=False,
-        help_text='Whether this agency is the original author of the feed.',
-    )
-    # Populated automatically when server fetches the feed (hide_original=True)
-    cached_file = models.FileField(
-        upload_to=realtime_feed_cached_file_path,
-        storage=OverwriteStorage(),
-        blank=True,
-        null=True,
-        help_text='Server-cached copy of the feed (filled automatically).',
-    )
-    cached_at = models.DateTimeField(
-        null=True, blank=True,
-        help_text='When the cached copy was last downloaded.',
-    )
-    interval = models.PositiveIntegerField(
-        help_text='Refresh interval in seconds (e.g. 30, 60). Required.',
-    )
-    auth_type = models.CharField(
-        max_length=20,
-        choices=AUTH_TYPE_CHOICES,
-        null=True, blank=True
-    )
-    auth_value = models.CharField(
-        max_length=512,
-        blank=True,
-        null=True,
-        help_text='API key, bearer token, or "username:password" for basic auth.',
-    )
-
-    class Meta:
-        # One endpoint_type per entry (e.g. only one trip_update per submission)
-        unique_together = [('entry', 'endpoint_type')]
-        ordering = ['entry', 'endpoint_type']
-
-    def clean(self):
-        super().clean()
-        # Auto-set hide_original when auth_type is set
-        if self.auth_type:
-            self.hide_original = True
-
-        # Validate endpoint_type is allowed for the parent protocol
-        if self.entry_id:
-            allowed = self.entry.allowed_endpoint_types()
-            if self.endpoint_type not in allowed:
-                raise ValidationError(
-                    f"Endpoint type '{self.endpoint_type}' is not valid for "
-                    f"protocol '{self.entry.protocol}'. Allowed: {sorted(allowed)}."
-                )
-        if self.hide_original and not self.auth_type:
-            raise ValidationError(
-                'Authentication is required when "hide original" is enabled.'
-            )
-
-    def __str__(self):
-        return (
-            f"RealtimeEndpoint(id={self.id}, type={self.endpoint_type}, "
-            f"entry={self.entry_id})"
-        )
-
-
-# ---------------------------------------------------------------------------
 # FeedFetchError – immutable error log for feed download failures
 # ---------------------------------------------------------------------------
 
@@ -617,8 +428,8 @@ class FeedFetchError(models.Model):
         null=True,
         blank=True,
     )
-    endpoint = models.ForeignKey(
-        RealtimeEndpoint,
+    endpoint_rt = models.ForeignKey(
+        'RealtimeEndpointRT',
         on_delete=models.CASCADE,
         related_name='fetch_errors',
         null=True,
@@ -641,19 +452,246 @@ class FeedFetchError(models.Model):
     def clean(self):
         super().clean()
         has_static = bool(self.static_entry_id)
-        has_endpoint = bool(self.endpoint_id)
+        has_endpoint = bool(self.endpoint_rt_id)
         if has_static and has_endpoint:
             raise ValidationError(
-                'A FeedFetchError must be linked to either a StaticFeedEntry or a RealtimeEndpoint, not both.'
+                'A FeedFetchError must be linked to either a StaticFeedEntry or a RealtimeEndpointRT, not both.'
             )
         if not has_static and not has_endpoint:
             raise ValidationError(
-                'A FeedFetchError must be linked to either a StaticFeedEntry or a RealtimeEndpoint.'
+                'A FeedFetchError must be linked to either a StaticFeedEntry or a RealtimeEndpointRT.'
             )
 
     def __str__(self):
-        source = f'static_entry={self.static_entry_id}' if self.static_entry_id else f'endpoint={self.endpoint_id}'
+        source = f'static_entry={self.static_entry_id}' if self.static_entry_id else f'endpoint_rt={self.endpoint_rt_id}'
         return f"FeedFetchError(id={self.id}, {source}, {self.error_type}, {self.occurred_at})"
+
+
+# ---------------------------------------------------------------------------
+# RealtimeSubmission – realtime flow attached to a published static submission
+# ---------------------------------------------------------------------------
+
+class RealtimeSubmission(models.Model):
+    """
+    Separate workflow for realtime feeds.
+
+    Rules (business):
+    - For GTFS / NeTEx: can be created only after static submission is published (stage 4).
+    - For GBFS: can be created without static submission.
+    - Admin confirms realtime separately; only then it is visible publicly.
+    """
+
+    PROTOCOL_GTFS_RT = 'gtfs_rt'
+    PROTOCOL_SIRI = 'siri'
+    PROTOCOL_GBFS = 'gbfs'
+    PROTOCOL_CHOICES = [
+        (PROTOCOL_GTFS_RT, 'GTFS-RT'),
+        (PROTOCOL_SIRI, 'SIRI'),
+        (PROTOCOL_GBFS, 'GBFS'),
+    ]
+
+    transport_organization = models.ForeignKey(
+        'cases.TransportOrganization',
+        related_name='realtime_submissions',
+        on_delete=models.CASCADE,
+    )
+    submitted_by = models.ForeignKey(
+        get_user_model(),
+        related_name='realtime_submissions',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+
+    protocol = models.CharField(max_length=10, choices=PROTOCOL_CHOICES)
+    static_submission = models.ForeignKey(
+        FeedSubmission,
+        related_name='realtime_submissions',
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        help_text='Published static submission this realtime depends on (required for GTFS-RT and SIRI).',
+    )
+
+    name = models.CharField(max_length=255, blank=True, null=True)
+    note = models.TextField(max_length=2048, blank=True, null=True)
+    license = models.CharField(max_length=255, blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['transport_organization', '-created_at']),
+            models.Index(fields=['protocol']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['static_submission', 'protocol'],
+                name='unique_realtime_protocol_per_static_submission',
+            )
+        ]
+
+    def allowed_endpoint_types(self) -> set:
+        if self.protocol == self.PROTOCOL_GTFS_RT:
+            return {'trip_update', 'vehicle_position', 'service_alert'}
+        if self.protocol == self.PROTOCOL_SIRI:
+            return {'sx', 'sm', 'vm', 'et', 'gm'}
+        if self.protocol == self.PROTOCOL_GBFS:
+            return {
+                'gbfs', 'gbfs_versions', 'system_information', 'vehicle_types',
+                'station_information', 'station_status', 'free_bike_status',
+                'system_hours', 'system_alerts',
+            }
+        return set()
+
+    def clean(self):
+        super().clean()
+        if self.protocol in {self.PROTOCOL_GTFS_RT, self.PROTOCOL_SIRI} and not self.static_submission_id:
+            raise ValidationError({'static_submission': 'This field is required for GTFS-RT and SIRI.'})
+        if self.protocol == self.PROTOCOL_GBFS and self.static_submission_id:
+            raise ValidationError({'static_submission': 'GBFS must not be linked to a static submission.'})
+
+    @property
+    def current_stage(self) -> int:
+        latest = self.history.order_by('-created_at').first()
+        if latest is None:
+            return 1
+        return latest.stage_after
+
+    @property
+    def is_rejected(self) -> bool:
+        latest = self.history.order_by('-created_at').first()
+        return latest is not None and latest.event_type == RealtimeSubmissionHistory.EVENT_REJECTED
+
+    @property
+    def rejection_cause(self):
+        if not self.is_rejected:
+            return None
+        latest = self.history.order_by('-created_at').first()
+        return latest.cause if latest else None
+
+    @property
+    def published_at(self):
+        completed = self.history.filter(
+            event_type=RealtimeSubmissionHistory.EVENT_COMPLETED
+        ).order_by('-created_at').first()
+        return completed.created_at if completed else None
+
+    def __str__(self):
+        return f"RealtimeSubmission(id={self.id}, protocol={self.protocol}, org={self.transport_organization_id})"
+
+
+class RealtimeSubmissionHistory(models.Model):
+    EVENT_UPLOADED = 'uploaded'
+    EVENT_STAGE_ADVANCED = 'stage_advanced'
+    EVENT_REJECTED = 'rejected'
+    EVENT_COMPLETED = 'completed'
+
+    EVENT_TYPE_CHOICES = [
+        (EVENT_UPLOADED, 'Uploaded'),
+        (EVENT_STAGE_ADVANCED, 'Stage Advanced'),
+        (EVENT_REJECTED, 'Rejected'),
+        (EVENT_COMPLETED, 'Completed'),
+    ]
+
+    submission = models.ForeignKey(
+        RealtimeSubmission,
+        on_delete=models.CASCADE,
+        related_name='history',
+    )
+    event_type = models.CharField(max_length=20, choices=EVENT_TYPE_CHOICES)
+    stage_before = models.IntegerField()
+    stage_after = models.IntegerField()
+    actor = models.ForeignKey(
+        get_user_model(),
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='realtime_history_actions',
+    )
+    cause = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return (
+            f"RealtimeSubmissionHistory(submission={self.submission_id}, "
+            f"event={self.event_type}, {self.stage_before}→{self.stage_after})"
+        )
+
+
+class RealtimeEndpointRT(models.Model):
+    RT_ENDPOINT_TYPE_CHOICES = [
+        ('trip_update', 'Trip Update (GTFS-RT)'),
+        ('vehicle_position', 'Vehicle Position (GTFS-RT)'),
+        ('service_alert', 'Service Alert (GTFS-RT)'),
+        ('sx', 'Situation Exchange – SX (SIRI)'),
+        ('sm', 'Stop Monitoring – SM (SIRI)'),
+        ('vm', 'Vehicle Monitoring – VM (SIRI)'),
+        ('et', 'Estimated Timetable – ET (SIRI)'),
+        ('gm', 'General Message – GM (SIRI)'),
+        ('gbfs', 'GBFS – Main file'),
+        ('gbfs_versions', 'GBFS Versions'),
+        ('system_information', 'System Information'),
+        ('vehicle_types', 'Vehicle Types'),
+        ('station_information', 'Station Information'),
+        ('station_status', 'Station Status'),
+        ('free_bike_status', 'Free Bike Status'),
+        ('system_hours', 'System Hours'),
+        ('system_alerts', 'System Alerts'),
+    ]
+
+    AUTH_TYPE_CHOICES = [
+        ('api_key', 'API Key'),
+        ('bearer_token', 'Bearer Token'),
+        ('basic_auth', 'Basic Auth (user:pass)'),
+    ]
+
+    submission = models.ForeignKey(
+        RealtimeSubmission,
+        on_delete=models.CASCADE,
+        related_name='endpoints',
+    )
+    endpoint_type = models.CharField(max_length=30, choices=RT_ENDPOINT_TYPE_CHOICES)
+    url = models.URLField()
+    hide_original = models.BooleanField(default=False)
+    is_original = models.BooleanField(default=False)
+    interval = models.PositiveIntegerField(help_text='Refresh interval in seconds.', default=60)
+    auth_type = models.CharField(max_length=20, choices=AUTH_TYPE_CHOICES, null=True, blank=True)
+    auth_value = models.CharField(max_length=512, blank=True, null=True)
+    cached_file = models.FileField(
+        upload_to=realtime_feed_cached_file_path,
+        storage=OverwriteStorage(),
+        blank=True,
+        null=True,
+        help_text='Server-cached copy when hide_original=True.',
+    )
+    cached_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = [('submission', 'endpoint_type')]
+        ordering = ['submission', 'endpoint_type']
+
+    def clean(self):
+        super().clean()
+        if self.auth_type:
+            self.hide_original = True
+        if self.submission_id:
+            allowed = self.submission.allowed_endpoint_types()
+            if self.endpoint_type not in allowed:
+                raise ValidationError(
+                    f"Endpoint type '{self.endpoint_type}' is not valid for "
+                    f"protocol '{self.submission.protocol}'. Allowed: {sorted(allowed)}."
+                )
+        if self.hide_original and not self.auth_type:
+            raise ValidationError('Authentication is required when "hide original" is enabled.')
+
+    def __str__(self):
+        return f"RealtimeEndpointRT(id={self.id}, type={self.endpoint_type}, submission={self.submission_id})"
 
 # ---------------------------------------------------------------------------
 # Scheduler helpers
@@ -686,6 +724,23 @@ def completed_submission_ids() -> list[int]:
     # This filters submissions where the *very last* history entry is stage 4.
     return list(
         FeedSubmission.objects.annotate(
+            current_stage_val=Subquery(latest_history.values('stage_after')[:1])
+        ).filter(
+            current_stage_val=4
+        ).values_list('id', flat=True)
+    )
+
+
+def completed_realtime_submission_ids() -> list[int]:
+    """PKs of RealtimeSubmission whose latest history row is stage 4 (published)."""
+    from django.db.models import Subquery, OuterRef
+
+    latest_history = RealtimeSubmissionHistory.objects.filter(
+        submission=OuterRef('pk')
+    ).order_by('-created_at')
+
+    return list(
+        RealtimeSubmission.objects.annotate(
             current_stage_val=Subquery(latest_history.values('stage_after')[:1])
         ).filter(
             current_stage_val=4

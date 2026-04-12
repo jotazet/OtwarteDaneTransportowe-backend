@@ -48,11 +48,17 @@ RT_BOOTSTRAP_JITTER_MAX_SECONDS = 2
 def _scheduler():
     """Leniwy import — unika circular imports przy starcie Celery."""
     from data_manager.scheduler import (
-        _fetch_realtime_endpoint,
+        _fetch_realtime_endpoint_rt,
         _fetch_static_entry,
         _completed_submission_ids,
+        _completed_realtime_submission_ids,
     )
-    return _fetch_static_entry, _fetch_realtime_endpoint, _completed_submission_ids
+    return (
+        _fetch_static_entry,
+        _fetch_realtime_endpoint_rt,
+        _completed_submission_ids,
+        _completed_realtime_submission_ids,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +74,7 @@ def refresh_static_feeds_task() -> dict:
     """
     from data_manager.models import StaticFeedEntry
     from django.db.models import Q
-    _, _, _completed = _scheduler()
+    _, _, _completed, _ = _scheduler()
 
     now_time = timezone.now().time().replace(second=0, microsecond=0)
     completed_ids = _completed()
@@ -100,7 +106,7 @@ def refresh_static_feeds_task() -> dict:
 def fetch_static_entry_task(entry_id: int) -> dict:
     """Pobiera i zapisuje cache dla jednego StaticFeedEntry."""
     from data_manager.models import StaticFeedEntry
-    _fetch, _, _ = _scheduler()
+    _fetch, _, _, _ = _scheduler()
 
     try:
         entry = StaticFeedEntry.objects.get(pk=entry_id)
@@ -126,14 +132,14 @@ def bootstrap_realtime_tasks() -> dict:
     Bezpieczny do wielokrotnego wywolania: uruchomienia sa rozkladane
     w czasie, ale deduplikacja kolejek nie opiera sie na task_id.
     """
-    from data_manager.models import RealtimeEndpoint
-    _, _, _completed = _scheduler()
+    from data_manager.models import RealtimeEndpointRT
+    _, _, _, _completed_rt = _scheduler()
 
-    completed_ids = _completed()
+    completed_ids = _completed_rt()
     endpoint_ids = list(
-        RealtimeEndpoint.objects.filter(
+        RealtimeEndpointRT.objects.filter(
             hide_original=True,
-            entry__submission_id__in=completed_ids,
+            submission_id__in=completed_ids,
         ).values_list('id', flat=True)
     )
 
@@ -157,36 +163,35 @@ def bootstrap_realtime_tasks() -> dict:
 )
 def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
     """
-    Pobiera cache dla jednego RealtimeEndpoint, a nastepnie planuje
+    Pobiera cache dla jednego RealtimeEndpointRT, a nastepnie planuje
     siebie na za `interval` sekund (self-scheduling loop).
 
     Bledy sieciowe sa zapisywane do FeedFetchError — petla kontynuuje,
     ale rownolegle wykonania tego samego endpointu sa blokowane lockiem.
     """
-    from data_manager.models import RealtimeEndpoint
-    _, _fetch, _completed = _scheduler()
+    from data_manager.models import RealtimeEndpointRT
+    _, _fetch, _, _completed_rt = _scheduler()
 
     lock_key = f'rt-endpoint-lock:{endpoint_id}'
     # cache.add zwroci False, jesli lock juz istnieje.
     lock_acquired = cache.add(lock_key, '1', timeout=RT_ENDPOINT_LOCK_TTL_SECONDS)
     if not lock_acquired:
-        logger.info('RealtimeEndpoint id=%d already running, skipping overlap', endpoint_id)
+        logger.info('RealtimeEndpointRT id=%d already running, skipping overlap', endpoint_id)
         return {'status': 'skipped_overlap', 'endpoint_id': endpoint_id}
 
     try:
         try:
-            endpoint = RealtimeEndpoint.objects.select_related(
-                'entry__submission'
+            endpoint = RealtimeEndpointRT.objects.select_related(
+                'submission'
             ).get(pk=endpoint_id)
-        except RealtimeEndpoint.DoesNotExist:
-            logger.info('RealtimeEndpoint id=%d deleted, stopping loop', endpoint_id)
+        except RealtimeEndpointRT.DoesNotExist:
+            logger.info('RealtimeEndpointRT id=%d deleted, stopping loop', endpoint_id)
             return {'status': 'stopped', 'endpoint_id': endpoint_id}
 
-        # Sprawdz czy submission wciaz jest aktywne (stage 4, nie cofniete).
-        completed_ids = set(_completed())
-        if endpoint.entry.submission_id not in completed_ids:
+        completed_ids = set(_completed_rt())
+        if endpoint.submission_id not in completed_ids:
             logger.info(
-                'RealtimeEndpoint id=%d submission no longer completed, stopping loop',
+                'RealtimeEndpointRT id=%d realtime submission no longer published, stopping loop',
                 endpoint_id,
             )
             return {'status': 'stopped', 'endpoint_id': endpoint_id}
@@ -196,8 +201,7 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
             _fetch(endpoint, now)
             status = 'ok'
         except Exception as exc:
-            # Blad jest zapisywany do FeedFetchError przez _fetch.
-            logger.warning('fetch_realtime_endpoint id=%d error: %s', endpoint_id, exc)
+            logger.warning('fetch_realtime_endpoint_rt id=%d error: %s', endpoint_id, exc)
             status = 'error'
         finally:
             # Planuj kolejne wykonanie niezaleznie od sukcesu/bledu.
@@ -484,144 +488,125 @@ def validate_gtfs_feed_task(self, entry_id: int):
             )
             logger.info(f"Submission {submission.id} advanced to Stage 3 (valid GTFS, awaiting admin).")
 
-@shared_task(name='data_manager.validate_gtfs_rt_feed', bind=True)
-def validate_gtfs_rt_task(self, entry_id: int):
-    """
-    Validates a GTFS-RT feed using 'ghcr.io/mobilitydata/gtfs-realtime-validator'
-    by fetching from endpoint over 60s at 10s intervals.
 
-    Steps:
-    1. Check for entry and endpoints.
-    2. Collect endpoints data and send directly to Validator using API or curl.
-    3. Update FeedValidationReport and Submission stage based on any critical errors.
+@shared_task(name='data_manager.validate_realtime_submission')
+def validate_realtime_submission_task(submission_id: int) -> dict:
     """
+    Krok 2 flow realtime: walidacja (link-check SIRI/GBFS; GTFS-RT — best-effort API walidatora).
+    Sukces: etap 1→2. Błąd: rejected z cause, etap pozostaje 1.
+    """
+    import json
+    import os
+
     import requests
-    import time
     from django.conf import settings
-    from data_manager.models import (
-        RealtimeFeedEntry,
-        FeedSubmissionHistory
-    )
 
-    logger.info(f"Starting GTFS-RT validation for RealtimeFeedEntry id={entry_id}")
+    from data_manager.models import (
+        RealtimeSubmission,
+        RealtimeSubmissionHistory,
+        completed_submission_ids,
+    )
+    from data_manager.scheduler import _build_auth_headers
 
     try:
-        entry = RealtimeFeedEntry.objects.select_related('submission').prefetch_related('endpoints').get(id=entry_id)
-    except RealtimeFeedEntry.DoesNotExist:
-        logger.warning(f"RealtimeFeedEntry {entry_id} not found. Aborting validation.")
-        return
+        rts = RealtimeSubmission.objects.select_related('static_submission').prefetch_related(
+            'endpoints'
+        ).get(pk=submission_id)
+    except RealtimeSubmission.DoesNotExist:
+        return {'status': 'not_found', 'id': submission_id}
 
-    def _reject_submission(reason: str) -> None:
-        submission = entry.submission
-        FeedSubmissionHistory.objects.create(
-            submission=submission,
-            event_type=FeedSubmissionHistory.EVENT_REJECTED,
-            stage_before=submission.current_stage,
+    def _reject(reason: str) -> None:
+        RealtimeSubmissionHistory.objects.create(
+            submission=rts,
+            event_type=RealtimeSubmissionHistory.EVENT_REJECTED,
+            stage_before=rts.current_stage,
             stage_after=1,
             cause=reason,
             actor=None,
         )
-        logger.warning(f"Submission {submission.id} rejected: {reason}")
 
-    endpoints = entry.endpoints.all()
-    if not endpoints:
-        _reject_submission("No realtime endpoints defined for validation.")
-        return
-
-    # Check static dependencies -> the protocol asks for published static GTFS.
-    submission = entry.submission
-    # Try fetching up to 6 times at 10 seconds intervals
-    max_attempts = 6
-    interval = 10
-
-    # Collect errors encountered over duration
-    critical_errors = []
-
-    for attempt in range(max_attempts):
-        logger.info(f"GTFS-RT validation attempt {attempt+1}/{max_attempts}")
-
-        for ep in endpoints:
-            # To actually validate using the docker container on 8082,
-            # this assumes the container acts as an API endpoint, though typically
-            # it might provide an interface.
-            # Usually gtfs-realtime-validator requires configuration or uploading.
-            # But the request indicates checking if it downloads OK and no major errors.
-            # A simple check: verify HTTP response and presence of valid content?
-            # Or if it's integrated with a local validator instance that accepts feeds via API:
-
-            # Since we may not have direct API usage from the validator Docker image defined strictly without custom params,
-            # We perform a basic liveness check based on instructions that 60s co 10s polling is required.
-            try:
-                # Basic fetch test
-                resp = requests.get(ep.url, timeout=5)
-                if resp.status_code >= 400:
-                    critical_errors.append(f"HTTP {resp.status_code} on {ep.endpoint_type} (attempt {attempt+1})")
-            except Exception as e:
-                critical_errors.append(f"Exception on {ep.endpoint_type} (attempt {attempt+1}): {e}")
-
-        time.sleep(interval)
-
-    if critical_errors:
-        _reject_submission(" | ".join(set(critical_errors)))
-    else:
-        submission.refresh_from_db()
-        current_stage = submission.current_stage
-        if current_stage < 3:
-            FeedSubmissionHistory.objects.create(
-                submission=submission,
-                event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
-                stage_before=current_stage,
-                stage_after=3,
-                actor=None,
-            )
-            logger.info(f"GTFS-RT Submission {submission.id} advanced to Stage 3.")
-
-    error_count, warning_count, error_code_counts = extract_notice_counts(report_data)
-
-    # Create/Update ValidationReport
-    # The FeedValidationReport model is not linked from the report side; StaticFeedEntry
-    # holds a OneToOneField `validation_report`. Update existing report if present,
-    # otherwise create a new FeedValidationReport and attach it to the entry.
-    if entry.validation_report_id:
-        val_report = entry.validation_report
-        val_report.report_json = report_data
-        val_report.error_count = error_count
-        val_report.warning_count = warning_count
-        val_report.save()
-    else:
-        val_report = FeedValidationReport.objects.create(
-            report_json=report_data,
-            error_count=error_count,
-            warning_count=warning_count,
-        )
-        # attach to entry
-        entry.validation_report = val_report
-        entry.save(update_fields=['validation_report'])
-
-    # Cleanup output dir
-    try:
-        # remove output directory to avoid leaving random reports on disk
-        shutil.rmtree(container_output_dir, ignore_errors=True)
-    except Exception as e:
-        logger.warning(f"Failed to cleanup {container_output_dir}: {e}")
-
-    # Update Submission Stage
-    submission = entry.submission
-
-    if error_count > 0:
-        # Build rejection_cause as "code: count" list
-        if error_code_counts:
-            parts = [f"{code}: {count}" for code, count in sorted(error_code_counts.items())]
-            cause = ", ".join(parts)
-        else:
-            cause = f"Validation failed with {error_count} errors."
-        _reject_submission(cause)
-    else:
-        FeedSubmissionHistory.objects.create(
-            submission=submission,
-            event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
-            stage_before=submission.current_stage,
-            stage_after=3,
+    def _advance_to_2() -> None:
+        RealtimeSubmissionHistory.objects.create(
+            submission=rts,
+            event_type=RealtimeSubmissionHistory.EVENT_STAGE_ADVANCED,
+            stage_before=1,
+            stage_after=2,
             actor=None,
         )
-        logger.info(f"Submission {submission.id} advanced to Stage 3 (valid GTFS, awaiting admin).")
+
+    if rts.protocol in (RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI):
+        if not rts.static_submission_id:
+            _reject('Brak powiązania ze statycznym zgłoszeniem.')
+            return {'status': 'rejected'}
+        if rts.static_submission_id not in completed_submission_ids():
+            _reject('Feed statyczny musi być opublikowany przed walidacją realtime.')
+            return {'status': 'rejected'}
+
+    endpoints = list(rts.endpoints.all())
+    if not endpoints:
+        _reject('Brak zdefiniowanych endpointów.')
+        return {'status': 'rejected'}
+
+    errors: list[str] = []
+
+    if rts.protocol == RealtimeSubmission.PROTOCOL_GTFS_RT:
+        base = getattr(settings, 'GTFS_RT_VALIDATOR_URL', os.environ.get(
+            'GTFS_RT_VALIDATOR_URL', 'http://gtfs-realtime-validator:8080'
+        ))
+        static = rts.static_submission.static_entry
+        static_url = None
+        if static:
+            if static.url and not static.hide_original:
+                static_url = static.url
+            elif static.url and static.cached_file:
+                public = getattr(settings, 'PUBLIC_BASE_URL', '').rstrip('/')
+                if public:
+                    static_url = f"{public}/feed/{rts.static_submission_id}/{static.cached_file.name.split('/')[-1]}"
+        for ep in endpoints:
+            try:
+                resp = requests.get(ep.url, headers=_build_auth_headers(ep.auth_type, ep.auth_value), timeout=15)
+                if resp.status_code >= 400:
+                    errors.append(f'{ep.endpoint_type}: HTTP {resp.status_code}')
+            except Exception as exc:
+                errors.append(f'{ep.endpoint_type}: {exc}')
+        if static_url:
+            try:
+                r0 = requests.post(
+                    f'{base.rstrip("/")}/api/gtfs',
+                    json={'url': static_url},
+                    timeout=60,
+                )
+                if r0.status_code >= 400:
+                    errors.append(f'validator GTFS: HTTP {r0.status_code}')
+                else:
+                    gtfs_id = (r0.json() or {}).get('id') or (r0.json() or {}).get('gtfsFeedId')
+                    for ep in endpoints:
+                        r1 = requests.post(
+                            f'{base.rstrip("/")}/api/gtfs-rt',
+                            json={'url': ep.url, 'gtfsFeedId': gtfs_id},
+                            timeout=60,
+                        )
+                        if r1.status_code >= 400:
+                            errors.append(f'{ep.endpoint_type}: validator RT HTTP {r1.status_code}')
+            except Exception as exc:
+                errors.append(f'validator: {exc}')
+    else:
+        for ep in endpoints:
+            try:
+                resp = requests.get(ep.url, headers=_build_auth_headers(ep.auth_type, ep.auth_value), timeout=15)
+                if resp.status_code >= 400:
+                    errors.append(f'{ep.endpoint_type}: HTTP {resp.status_code}')
+                if rts.protocol == RealtimeSubmission.PROTOCOL_GBFS and ep.endpoint_type == 'gbfs':
+                    try:
+                        json.loads(resp.content.decode('utf-8', errors='strict'))
+                    except Exception:
+                        errors.append('gbfs: odpowiedź nie jest poprawnym JSON')
+            except Exception as exc:
+                errors.append(f'{ep.endpoint_type}: {exc}')
+
+    if errors:
+        _reject(' | '.join(errors))
+        return {'status': 'rejected', 'errors': errors}
+
+    _advance_to_2()
+    return {'status': 'ok', 'id': submission_id}

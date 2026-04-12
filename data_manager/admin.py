@@ -5,15 +5,12 @@ from data_manager.models import (
     FeedFetchError,
     FeedSubmission,
     FeedSubmissionHistory,
-    RealtimeEndpoint,
-    RealtimeFeedEntry,
+    RealtimeEndpointRT,
+    RealtimeSubmission,
+    RealtimeSubmissionHistory,
     StaticFeedEntry,
 )
 
-
-# ---------------------------------------------------------------------------
-# Inlines
-# ---------------------------------------------------------------------------
 
 class StaticFeedEntryInline(admin.StackedInline):
     model = StaticFeedEntry
@@ -28,23 +25,15 @@ class StaticFeedEntryInline(admin.StackedInline):
     readonly_fields = ('cached_at', 'uploaded_at')
 
 
-class RealtimeEndpointInline(admin.TabularInline):
-    model = RealtimeEndpoint
+class RealtimeEndpointRTInline(admin.TabularInline):
+    model = RealtimeEndpointRT
+    fk_name = 'submission'
     extra = 0
     fields = (
         'endpoint_type', 'url', 'is_original', 'hide_original',
         'auth_type', 'auth_value', 'interval', 'cached_at',
     )
     readonly_fields = ('cached_at',)
-
-
-class RealtimeFeedEntryInline(admin.StackedInline):
-    model = RealtimeFeedEntry
-    extra = 0
-    max_num = 1
-    fields = ('protocol', 'license', 'uploaded_at')
-    readonly_fields = ('uploaded_at',)
-    show_change_link = True
 
 
 class FeedSubmissionHistoryInline(admin.TabularInline):
@@ -63,7 +52,7 @@ class FeedFetchErrorInline(admin.TabularInline):
     fk_name = 'static_entry'
     extra = 0
     fields = ('error_type', 'http_status_code', 'message', 'url_attempted', 'occurred_at')
-    readonly_fields = ('error_type', 'http_status_code', 'message', 'url_attempted', 'occurred_at')
+    readonly_fields = fields
     can_delete = False
     verbose_name = 'Fetch Error (Static)'
     verbose_name_plural = 'Fetch Errors (Static)'
@@ -72,36 +61,22 @@ class FeedFetchErrorInline(admin.TabularInline):
         return False
 
 
-class RealtimeEndpointFetchErrorInline(admin.TabularInline):
-    model = FeedFetchError
-    fk_name = 'endpoint'
+class RealtimeSubmissionHistoryInline(admin.TabularInline):
+    model = RealtimeSubmissionHistory
     extra = 0
-    fields = ('error_type', 'http_status_code', 'message', 'url_attempted', 'occurred_at')
-    readonly_fields = ('error_type', 'http_status_code', 'message', 'url_attempted', 'occurred_at')
+    fields = ('event_type', 'stage_before', 'stage_after', 'actor', 'cause', 'created_at')
+    readonly_fields = fields
     can_delete = False
-    verbose_name = 'Fetch Error (Realtime)'
-    verbose_name_plural = 'Fetch Errors (Realtime)'
 
     def has_add_permission(self, request, obj=None):
         return False
 
 
-# ---------------------------------------------------------------------------
-# ModelAdmins
-# ---------------------------------------------------------------------------
-
-@admin.register(RealtimeFeedEntry)
-class RealtimeFeedEntryAdmin(admin.ModelAdmin):
-    list_display = ('id', 'protocol', 'submission', 'uploaded_at')
+@admin.register(RealtimeSubmission)
+class RealtimeSubmissionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'protocol', 'transport_organization', 'static_submission', 'created_at')
     list_filter = ('protocol',)
-    inlines = [RealtimeEndpointInline]
-
-
-@admin.register(RealtimeEndpoint)
-class RealtimeEndpointAdmin(admin.ModelAdmin):
-    list_display = ('id', 'endpoint_type', 'url', 'hide_original', 'interval', 'cached_at')
-    list_filter = ('endpoint_type', 'auth_type', 'hide_original')
-    inlines = [RealtimeEndpointFetchErrorInline]
+    inlines = [RealtimeEndpointRTInline, RealtimeSubmissionHistoryInline]
 
 
 @admin.register(FeedSubmissionHistory)
@@ -127,7 +102,7 @@ class FeedFetchErrorAdmin(admin.ModelAdmin):
     list_filter = ('error_type', 'occurred_at')
     search_fields = ('url_attempted', 'message')
     readonly_fields = (
-        'static_entry', 'endpoint', 'error_type', 'http_status_code',
+        'static_entry', 'endpoint_rt', 'error_type', 'http_status_code',
         'message', 'url_attempted', 'occurred_at',
     )
 
@@ -166,7 +141,6 @@ class FeedSubmissionAdmin(admin.ModelAdmin):
     date_hierarchy = 'created_at'
     inlines = [
         StaticFeedEntryInline,
-        RealtimeFeedEntryInline,
         FeedSubmissionHistoryInline,
     ]
     actions = ['advance_to_next_stage']

@@ -6,8 +6,9 @@ from data_manager.models import (
     FeedFetchError,
     FeedSubmission,
     FeedSubmissionHistory,
-    RealtimeEndpoint,
-    RealtimeFeedEntry,
+    RealtimeEndpointRT,
+    RealtimeSubmission,
+    RealtimeSubmissionHistory,
     StaticFeedEntry,
 )
 from cases.models import TransportOrganization
@@ -32,6 +33,21 @@ class FeedSubmissionHistorySerializer(serializers.ModelSerializer):
         return obj.actor.username if obj.actor else None
 
 
+class RealtimeSubmissionHistorySerializer(serializers.ModelSerializer):
+    actor = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RealtimeSubmissionHistory
+        fields = [
+            'id', 'event_type', 'stage_before', 'stage_after',
+            'actor', 'cause', 'created_at',
+        ]
+        read_only_fields = fields
+
+    def get_actor(self, obj):
+        return obj.actor.username if obj.actor else None
+
+
 # ---------------------------------------------------------------------------
 # FeedFetchError
 # ---------------------------------------------------------------------------
@@ -43,7 +59,7 @@ class FeedFetchErrorSerializer(serializers.ModelSerializer):
     class Meta:
         model = FeedFetchError
         fields = [
-            'id', 'source', 'static_entry', 'endpoint', 'endpoint_type',
+            'id', 'source', 'static_entry', 'endpoint_rt', 'endpoint_type',
             'error_type', 'http_status_code', 'message', 'url_attempted', 'occurred_at',
         ]
         read_only_fields = fields
@@ -52,7 +68,7 @@ class FeedFetchErrorSerializer(serializers.ModelSerializer):
         return 'static' if obj.static_entry_id else 'realtime'
 
     def get_endpoint_type(self, obj):
-        return obj.endpoint.endpoint_type if obj.endpoint else None
+        return obj.endpoint_rt.endpoint_type if obj.endpoint_rt else None
 
 
 # ---------------------------------------------------------------------------
@@ -78,12 +94,12 @@ class StaticFeedEntrySerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# RealtimeEndpoint / RealtimeFeedEntry – private
+# RealtimeSubmission – realtime flow
 # ---------------------------------------------------------------------------
 
-class RealtimeEndpointSerializer(serializers.ModelSerializer):
+class RealtimeEndpointRTSerializer(serializers.ModelSerializer):
     class Meta:
-        model = RealtimeEndpoint
+        model = RealtimeEndpointRT
         fields = [
             'id', 'endpoint_type', 'url', 'is_original',
             'hide_original', 'auth_type', 'auth_value',
@@ -93,18 +109,9 @@ class RealtimeEndpointSerializer(serializers.ModelSerializer):
         extra_kwargs = {'auth_value': {'write_only': True}}
 
 
-class RealtimeFeedEntrySerializer(serializers.ModelSerializer):
-    endpoints = RealtimeEndpointSerializer(many=True, read_only=True)
-
+class RealtimeEndpointRTWriteSerializer(serializers.ModelSerializer):
     class Meta:
-        model = RealtimeFeedEntry
-        fields = ['id', 'protocol', 'license', 'uploaded_at', 'endpoints']
-        read_only_fields = ['id', 'uploaded_at']
-
-
-class RealtimeEndpointWriteSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = RealtimeEndpoint
+        model = RealtimeEndpointRT
         fields = [
             'endpoint_type', 'url', 'is_original',
             'hide_original', 'auth_type', 'auth_value', 'interval',
@@ -115,40 +122,103 @@ class RealtimeEndpointWriteSerializer(serializers.ModelSerializer):
         }
 
 
-class RealtimeFeedEntryWriteSerializer(serializers.ModelSerializer):
-    endpoints = RealtimeEndpointWriteSerializer(many=True)
+class RealtimeSubmissionSerializer(serializers.ModelSerializer):
+    endpoints = RealtimeEndpointRTSerializer(many=True, read_only=True)
+    current_stage = serializers.IntegerField(read_only=True)
+    current_stage_label = serializers.SerializerMethodField()
+    is_rejected = serializers.BooleanField(read_only=True)
+    rejection_cause = serializers.CharField(read_only=True, allow_null=True)
+    published_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    history = RealtimeSubmissionHistorySerializer(many=True, read_only=True)
+    static_submission = serializers.PrimaryKeyRelatedField(read_only=True)
 
     class Meta:
-        model = RealtimeFeedEntry
-        fields = ['protocol', 'license', 'endpoints']
+        model = RealtimeSubmission
+        fields = [
+            'id', 'transport_organization', 'submitted_by', 'static_submission',
+            'protocol', 'name', 'note', 'license',
+            'created_at', 'updated_at',
+            'current_stage', 'current_stage_label',
+            'is_rejected', 'rejection_cause', 'published_at',
+            'endpoints', 'history',
+        ]
+        read_only_fields = [
+            'id', 'created_at', 'updated_at', 'submitted_by',
+            'current_stage', 'current_stage_label',
+            'is_rejected', 'rejection_cause', 'published_at',
+            'history',
+        ]
+
+    def get_current_stage_label(self, obj):
+        if obj.is_rejected:
+            return 'Rejected'
+        labels = {
+            1: 'Step 1: Endpoints',
+            2: 'Step 2: Validated',
+            3: 'Step 3: Admin confirmation',
+            4: 'Step 4: Published',
+        }
+        return labels.get(obj.current_stage, 'Unknown')
+
+
+class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
+    endpoints = RealtimeEndpointRTWriteSerializer(many=True)
+    transport_organization = serializers.PrimaryKeyRelatedField(
+        queryset=TransportOrganization.objects.all(),
+    )
+    static_submission = serializers.PrimaryKeyRelatedField(
+        queryset=FeedSubmission.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = RealtimeSubmission
+        fields = [
+            'transport_organization', 'static_submission', 'protocol',
+            'name', 'note', 'license', 'endpoints',
+        ]
 
     def validate(self, data):
-        protocol = data.get('protocol', '')
-        endpoints = data.get('endpoints', [])
+        from data_manager.models import completed_submission_ids
 
-        if not endpoints:
-            raise serializers.ValidationError(
-                {'endpoints': 'At least one endpoint must be provided.'}
-            )
+        inst = getattr(self, 'instance', None)
+        protocol = data.get('protocol', inst.protocol if inst else '')
+        org = data.get('transport_organization', inst.transport_organization if inst else None)
+        ss = data.get('static_submission', inst.static_submission if inst else None)
+        endpoints = data.get('endpoints')
+        if endpoints is not None and not endpoints:
+            raise serializers.ValidationError({'endpoints': 'At least one endpoint is required.'})
+        if endpoints is None and inst is None:
+            raise serializers.ValidationError({'endpoints': 'At least one endpoint is required.'})
 
-        allowed = RealtimeFeedEntry(protocol=protocol).allowed_endpoint_types()
-        if not allowed:
-            raise serializers.ValidationError(
-                {'protocol': f"Unknown protocol '{protocol}'."}
-            )
-
-        types_seen = set()
-        for ep in endpoints:
-            t = ep.get('endpoint_type', '')
-            if t not in allowed:
+        if protocol == RealtimeSubmission.PROTOCOL_GBFS:
+            if ss is not None:
+                raise serializers.ValidationError({'static_submission': 'GBFS must not reference a static submission.'})
+        elif protocol in (RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI):
+            if ss is None:
+                raise serializers.ValidationError({'static_submission': 'This field is required for GTFS-RT and SIRI.'})
+            if org and ss.transport_organization_id != org.id:
                 raise serializers.ValidationError(
-                    {'endpoints': f"Endpoint type '{t}' is not valid for protocol '{protocol}'. Allowed: {sorted(allowed)}."}
+                    {'static_submission': 'Static submission must belong to the same organization.'}
                 )
-            if t in types_seen:
+            if ss.id not in completed_submission_ids():
                 raise serializers.ValidationError(
-                    {'endpoints': f"Duplicate endpoint_type '{t}'."}
+                    {'static_submission': 'Static feed must be published (completed) before adding realtime.'}
                 )
-            types_seen.add(t)
+        tmp = RealtimeSubmission(protocol=protocol)
+        allowed = tmp.allowed_endpoint_types()
+        if endpoints is not None:
+            seen = set()
+            for ep in endpoints:
+                t = ep.get('endpoint_type', '')
+                if t not in allowed:
+                    raise serializers.ValidationError(
+                        {'endpoints': f"Invalid endpoint_type '{t}' for protocol '{protocol}'. Allowed: {sorted(allowed)}."}
+                    )
+                if t in seen:
+                    raise serializers.ValidationError({'endpoints': f"Duplicate endpoint_type '{t}'."})
+                seen.add(t)
         return data
 
 
@@ -182,7 +252,7 @@ class FeedSubmissionListSerializer(serializers.ModelSerializer):
 
 class FeedSubmissionSerializer(serializers.ModelSerializer):
     static_entry = StaticFeedEntrySerializer(read_only=True)
-    realtime_entry = RealtimeFeedEntrySerializer(read_only=True)
+    realtime_submissions = RealtimeSubmissionSerializer(many=True, read_only=True)
     current_stage = serializers.IntegerField(read_only=True)
     current_stage_label = serializers.CharField(read_only=True)
     is_rejected = serializers.BooleanField(read_only=True)
@@ -199,7 +269,7 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
             'current_stage', 'current_stage_label',
             'is_rejected', 'rejection_cause', 'published_at',
-            'static_entry', 'realtime_entry',
+            'static_entry', 'realtime_submissions',
             'history',
         ]
         read_only_fields = [
@@ -217,54 +287,34 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
 
 class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
     static_entry = StaticFeedEntrySerializer(required=False, allow_null=True)
-    realtime_entry = RealtimeFeedEntryWriteSerializer(required=False, allow_null=True)
 
     class Meta:
         model = FeedSubmission
         fields = [
             'transport_organization', 'data_type', 'name', 'note',
-            'static_entry', 'realtime_entry',
+            'static_entry',
         ]
 
     def create(self, validated_data):
         static_entry_data = validated_data.pop('static_entry', None)
-        realtime_data = validated_data.pop('realtime_entry', None)
-
         submission = FeedSubmission(**validated_data)
         submission.save()
 
         if static_entry_data:
-            # Check auth_type logic
             if static_entry_data.get('auth_type') is not None:
                 static_entry_data['hide_original'] = True
-
             entry = StaticFeedEntry(submission=submission, **static_entry_data)
             entry.full_clean()
             entry.save()
-
             if entry.url:
                 from data_manager.tasks import fetch_static_entry_task
                 fetch_static_entry_task.delay(entry.id)
-
-        elif realtime_data:
-            endpoints_data = realtime_data.pop('endpoints')
-            rt_entry = RealtimeFeedEntry(submission=submission, **realtime_data)
-            rt_entry.full_clean()
-            rt_entry.save()
-            for ep_data in endpoints_data:
-                if ep_data.get('auth_type') is not None:
-                    ep_data['hide_original'] = True
-                ep = RealtimeEndpoint(entry=rt_entry, **ep_data)
-                ep.full_clean()
-                ep.save()
 
         return submission
 
     @transaction.atomic
     def update(self, instance, validated_data):
         static_entry_data = validated_data.pop('static_entry', None)
-        realtime_data = validated_data.pop('realtime_entry', None)
-
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
@@ -284,26 +334,6 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                 entry = StaticFeedEntry(submission=instance, **static_entry_data)
                 entry.full_clean()
                 entry.save()
-        elif realtime_data:
-            endpoints_data = realtime_data.pop('endpoints')
-            if hasattr(instance, 'realtime_entry') and instance.realtime_entry:
-                rt_entry = instance.realtime_entry
-                for attr, value in realtime_data.items():
-                    setattr(rt_entry, attr, value)
-                rt_entry.save()
-            else:
-                rt_entry = RealtimeFeedEntry(submission=instance, **realtime_data)
-                rt_entry.full_clean()
-                rt_entry.save()
-
-            if endpoints_data:
-                rt_entry.endpoints.all().delete()
-                for ep_data in endpoints_data:
-                    if ep_data.get('auth_type') is not None:
-                        ep_data['hide_original'] = True
-                    ep = RealtimeEndpoint(entry=rt_entry, **ep_data)
-                    ep.full_clean()
-                    ep.save()
 
         return instance
 
@@ -313,7 +343,6 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 
 class AdminFeedSubmissionSerializer(FeedSubmissionSerializer):
-    """Admin can see submitted_by as username and all stage data."""
     submitted_by_username = serializers.SerializerMethodField()
 
     class Meta(FeedSubmissionSerializer.Meta):
@@ -325,18 +354,10 @@ class AdminFeedSubmissionSerializer(FeedSubmissionSerializer):
 
 
 # ---------------------------------------------------------------------------
-# PUBLIC serializers – for fully approved feeds only
-# Strips: auth_value, original hidden URLs, internal stage timestamps,
-#         cached_file paths (replaced with a signed download URL).
+# PUBLIC serializers
 # ---------------------------------------------------------------------------
 
 class PublishedStaticEntrySerializer(serializers.ModelSerializer):
-    """
-    For approved static feeds.
-    - If hide_original=True → expose cached_file URL via protected download view.
-    - If hide_original=False → expose url directly.
-    - Never expose auth_value, auth_type, download schedule.
-    """
     download_url = serializers.SerializerMethodField()
 
     class Meta:
@@ -346,7 +367,6 @@ class PublishedStaticEntrySerializer(serializers.ModelSerializer):
     def get_download_url(self, obj):
         request = self.context.get('request')
         if obj.hide_original or obj.file:
-            # Serve the server-cached file through our protected view
             feed_file = obj.cached_file or obj.file
             if feed_file:
                 if request:
@@ -355,21 +375,14 @@ class PublishedStaticEntrySerializer(serializers.ModelSerializer):
                         f'/feed/{obj.submission_id}/{filename}'
                     )
             return None
-        # Not hidden – expose original URL directly
         return obj.url
 
 
-class PublishedEndpointSerializer(serializers.ModelSerializer):
-    """
-    For approved realtime endpoints.
-    - If hide_original=True → serve via protected proxy URL.
-    - If hide_original=False → expose original URL.
-    - Never expose auth_value, auth_type.
-    """
+class PublishedEndpointRTSerializer(serializers.ModelSerializer):
     feed_url = serializers.SerializerMethodField()
 
     class Meta:
-        model = RealtimeEndpoint
+        model = RealtimeEndpointRT
         fields = ['endpoint_type', 'interval', 'feed_url', 'cached_at']
 
     def get_feed_url(self, obj):
@@ -379,25 +392,21 @@ class PublishedEndpointSerializer(serializers.ModelSerializer):
                 if request:
                     filename = obj.cached_file.name.split('/')[-1]
                     return request.build_absolute_uri(
-                        f'/feed/{obj.entry.submission_id}/{filename}'
+                        f'/feed/rt/{obj.submission_id}/{filename}'
                     )
             return None
         return obj.url
 
 
-class PublishedRealtimeEntrySerializer(serializers.ModelSerializer):
-    endpoints = PublishedEndpointSerializer(many=True, read_only=True)
+class PublishedRealtimeSubmissionSerializer(serializers.ModelSerializer):
+    endpoints = PublishedEndpointRTSerializer(many=True, read_only=True)
 
     class Meta:
-        model = RealtimeFeedEntry
-        fields = ['protocol', 'license', 'uploaded_at', 'endpoints']
+        model = RealtimeSubmission
+        fields = ['protocol', 'license', 'published_at', 'endpoints']
 
 
 class PublishedFeedSerializer(serializers.ModelSerializer):
-    """
-    Public-facing serializer for fully approved feeds.
-    Only safe fields: org info, data type, dates, download URLs.
-    """
     organization_name = serializers.CharField(
         source='transport_organization.transport_organization', read_only=True
     )
@@ -405,7 +414,7 @@ class PublishedFeedSerializer(serializers.ModelSerializer):
         source='transport_organization.region', read_only=True
     )
     static_feed = PublishedStaticEntrySerializer(source='static_entry', read_only=True)
-    realtime_feed = PublishedRealtimeEntrySerializer(source='realtime_entry', read_only=True)
+    realtime_feed = serializers.SerializerMethodField()
     published_at = serializers.DateTimeField(read_only=True, allow_null=True)
 
     class Meta:
@@ -421,6 +430,41 @@ class PublishedFeedSerializer(serializers.ModelSerializer):
             'realtime_feed',
         ]
         read_only_fields = fields
+
+    def get_realtime_feed(self, obj):
+        rts = self.context.get('rt_embed', {}).get(obj.id)
+        if not rts:
+            return None
+        return PublishedRealtimeSubmissionSerializer(rts, context=self.context).data
+
+
+class PublishedGbfsFeedSerializer(serializers.ModelSerializer):
+    organization_name = serializers.CharField(
+        source='transport_organization.transport_organization', read_only=True
+    )
+    organization_region = serializers.CharField(
+        source='transport_organization.region', read_only=True
+    )
+    data_type = serializers.SerializerMethodField()
+    endpoints = PublishedEndpointRTSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = RealtimeSubmission
+        fields = [
+            'id',
+            'organization_name',
+            'organization_region',
+            'data_type',
+            'created_at',
+            'published_at',
+            'protocol',
+            'license',
+            'endpoints',
+        ]
+        read_only_fields = fields
+
+    def get_data_type(self, obj):
+        return 'gbfs'
 
 
 class FeedListSerializer(serializers.ModelSerializer):
@@ -455,22 +499,13 @@ class FeedListSerializer(serializers.ModelSerializer):
         return {'has_static': True, 'count': 1, 'sources': [source]}
 
     def get_realtime_endpoint_types(self, obj):
-        entry = getattr(obj, 'realtime_entry', None)
-        if not entry:
+        rts = self.context.get('rt_embed', {}).get(obj.id)
+        if not rts:
             return []
-        endpoints = getattr(entry, 'endpoints', None)
-        if endpoints is None:
-            return list(entry.endpoints.values_list('endpoint_type', flat=True))
-        return [ep.endpoint_type for ep in endpoints.all()]
+        return [ep.endpoint_type for ep in rts.endpoints.all()]
 
-
-# ---------------------------------------------------------------------------
-# FeedSubmission – detail (public, no history)
-# ---------------------------------------------------------------------------
 
 class FeedDetailSerializer(FeedSubmissionSerializer):
-    """Feed detail for public feeds endpoint (no history)."""
-
     class Meta(FeedSubmissionSerializer.Meta):
         fields = [
             'id', 'transport_organization',
@@ -479,7 +514,7 @@ class FeedDetailSerializer(FeedSubmissionSerializer):
             'created_at', 'updated_at',
             'current_stage', 'current_stage_label',
             'is_rejected', 'rejection_cause', 'published_at',
-            'static_entry', 'realtime_entry',
+            'static_entry', 'realtime_submissions',
         ]
         read_only_fields = FeedSubmissionSerializer.Meta.read_only_fields
 
@@ -491,7 +526,7 @@ class FeedDetailSerializer(FeedSubmissionSerializer):
 class OrganizationFeedSubmissionSerializer(serializers.ModelSerializer):
     submitted_by = serializers.SerializerMethodField()
     static_feed = PublishedStaticEntrySerializer(source='static_entry', read_only=True)
-    realtime_feed = PublishedRealtimeEntrySerializer(source='realtime_entry', read_only=True)
+    realtime_feed = serializers.SerializerMethodField()
 
     class Meta:
         model = FeedSubmission
@@ -505,17 +540,30 @@ class OrganizationFeedSubmissionSerializer(serializers.ModelSerializer):
     def get_submitted_by(self, obj):
         return obj.submitted_by.username if obj.submitted_by else None
 
+    def get_realtime_feed(self, obj):
+        rts = self.context.get('rt_embed', {}).get(obj.id)
+        if not rts:
+            return None
+        return PublishedRealtimeSubmissionSerializer(rts, context=self.context).data
+
 
 class OrganizationFeedsSerializer(serializers.ModelSerializer):
     feeds = OrganizationFeedSubmissionSerializer(many=True, read_only=True)
+    gbfs_feeds = serializers.SerializerMethodField()
 
     class Meta:
         model = TransportOrganization
         fields = [
             'id', 'region', 'transport_organization', 'website', 'contact_email', 'phone_number', 'is_public',
-            'feeds',
+            'feeds', 'gbfs_feeds',
         ]
         read_only_fields = fields
+
+    def get_gbfs_feeds(self, obj):
+        feeds = getattr(obj, 'published_gbfs_feeds', None) or []
+        return PublishedGbfsFeedSerializer(
+            feeds, many=True, context=self.context
+        ).data
 
 
 class OrganizationFeedsSummarySerializer(serializers.ModelSerializer):
@@ -530,17 +578,21 @@ class OrganizationFeedsSummarySerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
-    def _feeds(self, obj):
-        return getattr(obj, 'feeds', []) or []
-
-    def _dynamic_types(self):
-        # Keep in sync with FeedSubmission.DATA_TYPE_CHOICES
-        return {'gbfs', 'siri', 'gtfs_rt'}
-
     def get_static_types(self, obj):
-        dynamic = self._dynamic_types()
-        return sorted({f.data_type for f in self._feeds(obj) if f.data_type not in dynamic})
+        feeds = getattr(obj, 'feeds', []) or []
+        return sorted({f.data_type for f in feeds})
 
     def get_dynamic_types(self, obj):
-        dynamic = self._dynamic_types()
-        return sorted({f.data_type for f in self._feeds(obj) if f.data_type in dynamic})
+        gbfs = getattr(obj, 'published_gbfs_feeds', None) or []
+        return ['gbfs'] if gbfs else []
+
+
+class AdminRealtimeSubmissionSerializer(RealtimeSubmissionSerializer):
+    submitted_by_username = serializers.SerializerMethodField()
+
+    class Meta(RealtimeSubmissionSerializer.Meta):
+        fields = RealtimeSubmissionSerializer.Meta.fields + ['submitted_by_username']
+        read_only_fields = RealtimeSubmissionSerializer.Meta.read_only_fields + ['submitted_by_username']
+
+    def get_submitted_by_username(self, obj):
+        return obj.submitted_by.username if obj.submitted_by else None

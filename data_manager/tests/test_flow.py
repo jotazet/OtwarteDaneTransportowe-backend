@@ -66,7 +66,7 @@ def test_gtfs_upload_flow_correct(api_client, admin_user, normal_user, org):
     submission.refresh_from_db()
     assert submission.current_stage == 3, f"Expected stage 3 (valid), got {submission.current_stage}"
 
-    # 3. Admin accepts the feed
+    # 3. Admin accepts the feed (publish)
     api_client.force_authenticate(user=admin_user)
     promote_url = f'/api/data_manager/feed-submissions/{submission_id}/'
     response = api_client.patch(promote_url, {'stage': 4})
@@ -110,7 +110,7 @@ def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
 
     static_entry = StaticFeedEntry.objects.get(submission=submission)
 
-    # 2. Run validation which should fail
+    # 2. Run validation which should fail and move back to step 1 (needs changes)
     os.environ['HOST_MEDIA_ROOT'] = str(settings.MEDIA_ROOT)
 
     with override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True):
@@ -122,6 +122,6 @@ def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
     submission.refresh_from_db()
     assert submission.current_stage == 1, f"Expected stage 1 (rejected), got {submission.current_stage}"
 
-    rejection = FeedSubmissionHistory.objects.filter(submission=submission, event_type=FeedSubmissionHistory.EVENT_REJECTED).first()
-    assert rejection is not None
-    assert rejection.cause != ""
+    rejected = FeedSubmissionHistory.objects.filter(submission=submission, event_type=FeedSubmissionHistory.EVENT_REJECTED).first()
+    assert rejected is not None
+    assert rejected.cause != ""

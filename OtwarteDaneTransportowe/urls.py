@@ -22,7 +22,7 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 from cases.api.views import DataProviderViewSet, TransportOrganizationViewSet
-from data_manager.api.views import PublicFeedDownloadView
+from data_manager.api.views import PublicFeedDownloadView, RealtimePublicFeedDownloadView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -30,6 +30,8 @@ urlpatterns = [
     path('feed/', PublicFeedDownloadView.as_view(), name='feed-download-base'),
     path('feed/<int:pk>/', PublicFeedDownloadView.as_view(), name='feed-download-info'),
     path('feed/<int:pk>/<str:filename>', PublicFeedDownloadView.as_view(), name='feed-download-file'),
+    path('feed/rt/<int:pk>/', RealtimePublicFeedDownloadView.as_view(), name='feed-rt-download-info'),
+    path('feed/rt/<int:pk>/<str:filename>', RealtimePublicFeedDownloadView.as_view(), name='feed-rt-download-file'),
 
     path('api/cases/', include('cases.api.urls')),
     path('api/blog/', include('blog.api.urls')),
