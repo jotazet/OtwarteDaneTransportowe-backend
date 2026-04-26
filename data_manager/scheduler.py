@@ -26,6 +26,7 @@ from data_manager.models import (
     completed_submission_ids,
     completed_realtime_submission_ids,
 )
+from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> None:
 
     headers = _build_auth_headers(entry.auth_type, entry.auth_value)
     try:
+        assert_safe_outbound_url(entry.url)
         response = requests.get(entry.url, headers=headers, timeout=60)
         response.raise_for_status()
 
@@ -89,6 +91,8 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> None:
 
         validate_gtfs_feed_task.delay(entry.pk)
 
+    except OutboundURLBlocked as exc:
+        _log_static_error(entry, FeedFetchError.ERROR_INVALID_CONTENT, exc)
     except requests.exceptions.Timeout as exc:
         _log_static_error(entry, FeedFetchError.ERROR_TIMEOUT, exc)
     except requests.exceptions.HTTPError as exc:
@@ -119,6 +123,7 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> None:
     """Pobiera plik z URL i zapisuje jako cached_file. Błędy trafiają do FeedFetchError."""
     headers = _build_auth_headers(endpoint.auth_type, endpoint.auth_value)
     try:
+        assert_safe_outbound_url(endpoint.url)
         response = requests.get(endpoint.url, headers=headers, timeout=30)
         response.raise_for_status()
         filename = endpoint.url.rstrip('/').split('/')[-1] or 'feed.pb'
@@ -128,6 +133,8 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> None:
             cached_at=now,
         )
         logger.info('Refreshed realtime endpoint_rt=%d  url=%s', endpoint.pk, endpoint.url)
+    except OutboundURLBlocked as exc:
+        _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc)
     except requests.exceptions.Timeout as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_TIMEOUT, exc)
     except requests.exceptions.HTTPError as exc:

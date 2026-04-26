@@ -1,12 +1,14 @@
 from datetime import timedelta
 
 from django.utils import timezone
+from django.conf import settings
 from rest_framework import viewsets
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticatedOrReadOnly
 from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
+from ipaddress import ip_address, ip_network
 
 from blog.api.serializers import PostSerializer, ReactionSerializer, PostListSerializer
 from blog.models import Post, Reaction
@@ -70,14 +72,30 @@ class ReactionViewSet(viewsets.ModelViewSet):
         )
 
     def get_client_ip(self, request):
-        # Common pattern: honor X-Forwarded-For first (if behind proxy), then REMOTE_ADDR.
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
+        remote = request.META.get('REMOTE_ADDR')
+        xff = request.META.get('HTTP_X_FORWARDED_FOR')
+
+        trusted = getattr(settings, 'TRUSTED_PROXY_CIDRS', []) or []
+        is_trusted_proxy = False
+        if remote and trusted:
+            try:
+                r_ip = ip_address(remote)
+                for cidr in trusted:
+                    try:
+                        if r_ip in ip_network(str(cidr), strict=False):
+                            is_trusted_proxy = True
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                is_trusted_proxy = False
+
+        if is_trusted_proxy and xff:
             # X-Forwarded-For can contain multiple IPs: client, proxies...
-            ip = x_forwarded_for.split(',')[0].strip()
-        else:
-            ip = request.META.get('REMOTE_ADDR')
-        return ip
+            candidate = xff.split(',')[0].strip()
+            return candidate or remote
+
+        return remote
 
     def create(self, request, *args, **kwargs):
         """Create or update a reaction for a (post, IP) pair.

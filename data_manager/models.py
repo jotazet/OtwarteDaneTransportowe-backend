@@ -17,6 +17,7 @@ def feed_file_path(instance, filename):
     """
     file will be uploaded to MEDIA_ROOT/<submission_id>/static/<filename>
     """
+    filename = os.path.basename(filename)
     submission_id = getattr(getattr(instance, 'submission', None), 'id', 'unknown')
     return f'{submission_id}/static/{filename}'
 
@@ -32,6 +33,7 @@ def feed_cached_file_path(instance, filename):
     ``realtime_feed_cached_file_path`` but for static feeds ``instance``
     is a ``StaticFeedEntry`` and has a direct ``submission`` FK.
     """
+    filename = os.path.basename(filename)
     submission_id = getattr(getattr(instance, 'submission', None), 'id', 'unknown')
     return f'{submission_id}/static/cached/{filename}'
 
@@ -40,6 +42,7 @@ def realtime_feed_cached_file_path(instance, filename):
     """
     MEDIA_ROOT/<realtime_submission_id>/dynamic/cached/<filename>
     """
+    filename = os.path.basename(filename)
     submission_id = getattr(getattr(instance, 'submission', None), 'id', 'unknown')
     return f'{submission_id}/dynamic/cached/{filename}'
 
@@ -48,6 +51,7 @@ def validation_file_path(instance, filename):
     """
     file will be uploaded to MEDIA_ROOT/<submission_id>/validation/<filename>
     """
+    filename = os.path.basename(filename)
     submission_id = getattr(getattr(getattr(instance, 'static_entry', None), 'submission', None), 'id', 'unknown')
     return f'{submission_id}/validation/{filename}'
 

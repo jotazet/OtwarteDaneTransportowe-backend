@@ -507,6 +507,7 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
         completed_submission_ids,
     )
     from data_manager.scheduler import _build_auth_headers
+    from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url
 
     try:
         rts = RealtimeSubmission.objects.select_related('static_submission').prefetch_related(
@@ -564,13 +565,17 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                     static_url = f"{public}/feed/{rts.static_submission_id}/{static.cached_file.name.split('/')[-1]}"
         for ep in endpoints:
             try:
+                assert_safe_outbound_url(ep.url)
                 resp = requests.get(ep.url, headers=_build_auth_headers(ep.auth_type, ep.auth_value), timeout=15)
                 if resp.status_code >= 400:
                     errors.append(f'{ep.endpoint_type}: HTTP {resp.status_code}')
+            except OutboundURLBlocked as exc:
+                errors.append(f'{ep.endpoint_type}: blocked URL ({exc})')
             except Exception as exc:
                 errors.append(f'{ep.endpoint_type}: {exc}')
         if static_url:
             try:
+                assert_safe_outbound_url(static_url)
                 r0 = requests.post(
                     f'{base.rstrip("/")}/api/gtfs',
                     json={'url': static_url},
@@ -593,6 +598,7 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     else:
         for ep in endpoints:
             try:
+                assert_safe_outbound_url(ep.url)
                 resp = requests.get(ep.url, headers=_build_auth_headers(ep.auth_type, ep.auth_value), timeout=15)
                 if resp.status_code >= 400:
                     errors.append(f'{ep.endpoint_type}: HTTP {resp.status_code}')
@@ -601,6 +607,8 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                         json.loads(resp.content.decode('utf-8', errors='strict'))
                     except Exception:
                         errors.append('gbfs: odpowiedź nie jest poprawnym JSON')
+            except OutboundURLBlocked as exc:
+                errors.append(f'{ep.endpoint_type}: blocked URL ({exc})')
             except Exception as exc:
                 errors.append(f'{ep.endpoint_type}: {exc}')
 

@@ -45,7 +45,7 @@ services:
       POSTGRES_PORT: "5432"
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_dev
     ports:
       - "8000:8000"
     volumes:
@@ -78,7 +78,7 @@ services:
       POSTGRES_PORT: "5432"
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_dev
       UID: "${UID:-1000}"
       GID: "${GID:-1000}"
       C_FORCE_ROOT: '1'  # Allow running celery as root
@@ -108,7 +108,7 @@ services:
       POSTGRES_PORT: "5432"
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_dev
     volumes:
       - .:/app
 

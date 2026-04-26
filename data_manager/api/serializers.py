@@ -12,6 +12,7 @@ from data_manager.models import (
     StaticFeedEntry,
 )
 from cases.models import TransportOrganization
+from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +93,14 @@ class StaticFeedEntrySerializer(serializers.ModelSerializer):
             'auth_type': {'required': False, 'allow_null': True},
         }
 
+    def validate_url(self, value: str | None):
+        if not value:
+            return value
+        try:
+            assert_safe_outbound_url(value)
+        except OutboundURLBlocked as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        return value
 
 # ---------------------------------------------------------------------------
 # RealtimeSubmission – realtime flow
@@ -120,6 +129,13 @@ class RealtimeEndpointRTWriteSerializer(serializers.ModelSerializer):
             'auth_value': {'write_only': True, 'required': False},
             'auth_type': {'required': False, 'allow_null': True},
         }
+
+    def validate_url(self, value: str):
+        try:
+            assert_safe_outbound_url(value)
+        except OutboundURLBlocked as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        return value
 
 
 class RealtimeSubmissionSerializer(serializers.ModelSerializer):
