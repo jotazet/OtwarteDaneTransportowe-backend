@@ -328,7 +328,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
             host_output_dir: {'bind': '/output', 'mode': 'rw'},
         }
 
-        command = f"-i /input/{filename} -o /output"
+        command = ["-i", f"/input/{filename}", "-o", "/output"]
+        validator_uid = os.environ.get('UID', '1000')
+        validator_gid = os.environ.get('GID', '1000')
 
         container = client.containers.run(
             image="ghcr.io/mobilitydata/gtfs-validator:latest",
@@ -336,7 +338,8 @@ def validate_gtfs_feed_task(self, entry_id: int):
             volumes=volumes,
             remove=True,
             detach=False,
-            user=0,
+            user=f"{validator_uid}:{validator_gid}",
+            network_disabled=True,
         )
 
         logger.info("Validation container finished.")

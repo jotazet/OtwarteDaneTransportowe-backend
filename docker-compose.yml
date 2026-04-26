@@ -1,13 +1,39 @@
+x-app-env: &app-env
+  POSTGRES_DB: ${POSTGRES_DB:-otwarte_dane_transportowe}
+  POSTGRES_USER: ${POSTGRES_USER:-postgres}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-OtwarteDaneTransportowe.settings_dev}
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-dev-placeholder}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-127.0.0.1,localhost}
+
+x-app-service: &app-service
+  build: .
+  restart: unless-stopped
+  user: "${UID:-1000}:${GID:-1000}"
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  environment:
+    <<: *app-env
+  volumes:
+    - .:/app
+
 services:
   postgres:
     image: postgres:16
     container_name: odt-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: otwarte_dane_transportowe
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-otwarte_dane_transportowe}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
-      - "5420:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5420}:5432"
     volumes:
       - odt_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -21,102 +47,88 @@ services:
     container_name: odt-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  web:
-    build: .
-    container_name: odt-web
-    user: "${UID:-1000}:${GID:-1000}"
+  migrate:
+    <<: *app-service
+    container_name: odt-migrate
+    restart: "no"
+    command: python manage.py migrate
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-      POSTGRES_DB: otwarte_dane_transportowe
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_dev
+
+  web:
+    <<: *app-service
+    container_name: odt-web
+    command: python manage.py runserver 0.0.0.0:8000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     ports:
-      - "8000:8000"
-    volumes:
-      - .:/app
+      - "127.0.0.1:${WEB_HOST_PORT:-8000}:8000"
 
   celery_worker:
-    build: .
+    <<: *app-service
     container_name: odt-celery-worker
-    restart: unless-stopped
-    # user: "${UID:-1000}:${GID:-1000}"  # Uncomment this line to run as non-root user
-    # Mount docker socket to allow running sibling containers (DinD/DooD)
+    command: >
+      celery -A OtwarteDaneTransportowe worker
+      --loglevel=info
+      --queues=default
+      --concurrency=${CELERY_DEFAULT_CONCURRENCY:-2}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  celery_beat:
+    <<: *app-service
+    container_name: odt-celery-beat
+    # DatabaseScheduler — harmonogram trzymany w PostgreSQL (tabela PeriodicTask)
+    command: >
+      celery -A OtwarteDaneTransportowe beat
+      --loglevel=info
+      --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  celery_validator_worker:
+    <<: *app-service
+    container_name: odt-celery-validator-worker
+    # This worker is privileged by design because it needs the host Docker API
+    # to run the GTFS validator container.
+    group_add:
+      - "${DOCKER_GID:-0}"
     volumes:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock
     command: >
-      bash -lc "python manage.py migrate && celery -A OtwarteDaneTransportowe worker
+      celery -A OtwarteDaneTransportowe worker
       --loglevel=info
-      --queues=feeds,default
-      --concurrency=4"
+      --queues=feeds
+      --concurrency=${CELERY_FEEDS_CONCURRENCY:-2}
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
-      POSTGRES_DB: otwarte_dane_transportowe
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_dev
+      <<: *app-env
       UID: "${UID:-1000}"
       GID: "${GID:-1000}"
-      C_FORCE_ROOT: '1'  # Allow running celery as root
-      HOST_PROJECT_PATH: "${PWD}" # Path on host for DinD mounts
-      HOST_MEDIA_ROOT: "${PWD}/uploaded_data"
-
-  celery_beat:
-    build: .
-    container_name: odt-celery-beat
-    restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
-    # DatabaseScheduler — harmonogram trzymany w PostgreSQL (tabela PeriodicTask)
-    command: >
-      bash -lc "python manage.py migrate && celery -A OtwarteDaneTransportowe beat
-      --loglevel=info
-      --scheduler django_celery_beat.schedulers:DatabaseScheduler"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      POSTGRES_DB: otwarte_dane_transportowe
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_dev
-    volumes:
-      - .:/app
+      HOST_PROJECT_PATH: "${HOST_PROJECT_PATH:-${PWD}}"
+      HOST_MEDIA_ROOT: "${HOST_MEDIA_ROOT:-${PWD}/uploaded_data}"
 
   gtfs-realtime-validator:
     image: ghcr.io/mobilitydata/gtfs-realtime-validator:latest
     container_name: gtfs-realtime-validator
     ports:
-      - "8082:8080"
+      - "127.0.0.1:${GTFS_REALTIME_VALIDATOR_HOST_PORT:-8082}:8080"
     restart: unless-stopped
 
 volumes:
