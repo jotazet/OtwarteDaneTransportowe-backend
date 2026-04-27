@@ -2,6 +2,7 @@ import pytest
 import os
 from rest_framework.test import APIClient
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from cases.models import TransportOrganization
 from data_manager.models import FeedSubmission, StaticFeedEntry, FeedSubmissionHistory
 from django.test import override_settings
@@ -22,7 +23,18 @@ def admin_user():
 @pytest.fixture
 def normal_user():
     user = get_user_model()
-    return user.objects.create_user('user', 'user@example.com', 'password')
+    created = user.objects.create_user('user', 'user@example.com', 'password')
+    group, _ = Group.objects.get_or_create(name='DataProvider')
+    created.groups.add(group)
+    return created
+
+
+@pytest.fixture
+def helper_user():
+    user = get_user_model().objects.create_user('helper', 'helper@example.com', 'password')
+    group, _ = Group.objects.get_or_create(name='Helper')
+    user.groups.add(group)
+    return user
 
 @pytest.fixture
 def org(normal_user, settings, tmp_path):
@@ -125,3 +137,70 @@ def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
     rejected = FeedSubmissionHistory.objects.filter(submission=submission, event_type=FeedSubmissionHistory.EVENT_REJECTED).first()
     assert rejected is not None
     assert rejected.cause != ""
+
+
+def test_jwt_token_obtain_and_refresh(api_client, normal_user):
+    response = api_client.post(
+        '/api/auth/token/',
+        {'username': normal_user.username, 'password': 'password'},
+        format='json',
+    )
+    assert response.status_code == 200, response.data
+    assert response.data['access']
+    assert response.data['refresh']
+
+    refresh_response = api_client.post(
+        '/api/auth/token/refresh/',
+        {'refresh': response.data['refresh']},
+        format='json',
+    )
+    assert refresh_response.status_code == 200, refresh_response.data
+    assert refresh_response.data['access']
+
+
+def test_data_provider_cannot_confirm_feed(api_client, normal_user, org):
+    submission = FeedSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=normal_user,
+        data_type='gtfs',
+        name='Needs helper confirmation',
+    )
+    FeedSubmissionHistory.objects.create(
+        submission=submission,
+        event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
+        stage_before=2,
+        stage_after=3,
+        actor=normal_user,
+    )
+
+    api_client.force_authenticate(user=normal_user)
+    response = api_client.patch(f'/api/data_manager/feed-submissions/{submission.id}/', {'stage': 4})
+    assert response.status_code == 403
+
+
+def test_helper_can_confirm_feed_but_cannot_create_feed(api_client, helper_user, normal_user, org):
+    submission = FeedSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=normal_user,
+        data_type='gtfs',
+        name='Ready for helper confirmation',
+    )
+    FeedSubmissionHistory.objects.create(
+        submission=submission,
+        event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
+        stage_before=2,
+        stage_after=3,
+        actor=normal_user,
+    )
+
+    api_client.force_authenticate(user=helper_user)
+    create_response = api_client.post(
+        '/api/data_manager/feed-submissions/',
+        {'transport_organization': str(org.id), 'data_type': 'gtfs', 'name': 'Helper upload'},
+    )
+    assert create_response.status_code == 403
+
+    confirm_response = api_client.patch(f'/api/data_manager/feed-submissions/{submission.id}/', {'stage': 4})
+    assert confirm_response.status_code == 200, confirm_response.data
+    submission.refresh_from_db()
+    assert submission.current_stage == 4

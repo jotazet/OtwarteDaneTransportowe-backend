@@ -1,10 +1,17 @@
 from rest_framework import serializers
-from cases.models import DataProvider, TransportOrganization
+from cases.models import CaseStatus, DataProvider, TransportOrganization
 
 class DataProviderSerializer(serializers.ModelSerializer):
     class Meta:
         model = DataProvider
         fields = ['id', 'name', 'website', 'contact_email']
+
+
+class CaseStatusSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CaseStatus
+        fields = ['id', 'case', 'status', 'date', 'description']
+        read_only_fields = ['id', 'date']
 
 
 class TransportOrganizationSerializer(serializers.ModelSerializer):

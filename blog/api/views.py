@@ -4,12 +4,13 @@ from django.utils import timezone
 from django.conf import settings
 from rest_framework import viewsets
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny, IsAuthenticatedOrReadOnly
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 from ipaddress import ip_address, ip_network
 
+from OtwarteDaneTransportowe.auth_roles import IsBloggerOrReadOnly
 from blog.api.serializers import PostSerializer, ReactionSerializer, PostListSerializer
 from blog.models import Post, Reaction
 
@@ -28,7 +29,7 @@ class PostViewSet(viewsets.ModelViewSet):
         .order_by('-date')
     )
     serializer_class = PostSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsBloggerOrReadOnly]
     pagination_class = PostDefaultPagination
 
     def get_serializer_class(self):

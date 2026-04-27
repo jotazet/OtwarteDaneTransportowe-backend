@@ -3,12 +3,18 @@ from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated, AllowAny, BasePermission
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.core.exceptions import ValidationError
 from django.db.models import OuterRef, Subquery, Prefetch
 
+from OtwarteDaneTransportowe.auth_roles import (
+    IsFeedParticipant,
+    can_add_feeds,
+    can_confirm_feeds,
+    is_admin,
+)
 from data_manager.api.serializers import (
     AdminFeedSubmissionSerializer,
     AdminRealtimeSubmissionSerializer,
@@ -106,20 +112,6 @@ class RealtimePublicFeedDownloadView(APIView):
         raise Http404("File not found.")
 
 
-class IsAdminOrOwnerReadOnly(BasePermission):
-    def has_object_permission(self, request, view, obj):
-        if request.user and request.user.is_staff:
-            return True
-        return obj.submitted_by_id == getattr(request.user, 'id', None)
-
-
-class IsAdminOrOwnerRealtime(BasePermission):
-    def has_object_permission(self, request, view, obj):
-        if request.user and request.user.is_staff:
-            return True
-        return obj.submitted_by_id == getattr(request.user, 'id', None)
-
-
 # ---------------------------------------------------------------------------
 # OrganizationViewSet – public feeds
 # ---------------------------------------------------------------------------
@@ -183,7 +175,7 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
 # ---------------------------------------------------------------------------
 
 class FeedSubmissionViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated, IsAdminOrOwnerReadOnly]
+    permission_classes = [IsAuthenticated, IsFeedParticipant]
     queryset = FeedSubmission.objects.all().select_related(
         'transport_organization', 'submitted_by', 'static_entry'
     ).prefetch_related(
@@ -194,7 +186,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        if not self.request.user.is_staff:
+        if not can_confirm_feeds(self.request.user):
             qs = qs.filter(submitted_by=self.request.user)
         data_type = self.request.query_params.get('data_type')
         if data_type:
@@ -209,7 +201,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
             return FeedSubmissionListSerializer
         if self.action in ('create', 'update', 'partial_update'):
             return FeedSubmissionWriteSerializer
-        if self.request.user and self.request.user.is_staff:
+        if can_confirm_feeds(self.request.user):
             return AdminFeedSubmissionSerializer
         return FeedSubmissionSerializer
 
@@ -240,7 +232,12 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
     def _update_with_history(self, request, partial: bool, *args, **kwargs):
         instance = self.get_object()
 
-        if not request.user.is_staff:
+        if not can_confirm_feeds(request.user):
+            if request.data.get('stage') is not None or request.data.get('rejection_cause'):
+                return Response(
+                    {'detail': 'Only Admin or Helper can confirm or reject submissions.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             if instance.current_stage > 1 or instance.is_rejected:
                 return Response(
                     {'detail': 'Cannot edit a submission that has been reviewed or rejected.'},
@@ -251,7 +248,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         submission = serializer.save()
 
-        if request.user.is_staff:
+        if can_confirm_feeds(request.user):
             self._admin_stage_transition(request, submission)
 
         output = FeedSubmissionSerializer(submission, context={'request': request})
@@ -303,12 +300,18 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if not request.user.is_staff:
-            if instance.current_stage > 1 or instance.is_rejected:
-                return Response(
-                    {'detail': 'Cannot delete a submission that has been reviewed or rejected.'},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+        if is_admin(request.user):
+            return super().destroy(request, *args, **kwargs)
+        if not can_add_feeds(request.user) or instance.submitted_by_id != request.user.id:
+            return Response(
+                {'detail': 'Only Admin can delete other users submissions.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if instance.current_stage > 1 or instance.is_rejected:
+            return Response(
+                {'detail': 'Cannot delete a submission that has been reviewed or rejected.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         return super().destroy(request, *args, **kwargs)
 
     @action(detail=True, methods=['get'], url_path='download/static/(?P<endpoint_pk>[^/.]+)')
@@ -349,14 +352,14 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
 # ---------------------------------------------------------------------------
 
 class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated, IsAdminOrOwnerRealtime]
+    permission_classes = [IsAuthenticated, IsFeedParticipant]
     queryset = RealtimeSubmission.objects.all().select_related(
         'transport_organization', 'submitted_by', 'static_submission',
     ).prefetch_related('endpoints', 'history')
 
     def get_queryset(self):
         qs = super().get_queryset()
-        if not self.request.user.is_staff:
+        if not can_confirm_feeds(self.request.user):
             qs = qs.filter(submitted_by=self.request.user)
         p = self.request.query_params.get('transport_organization')
         if p:
@@ -366,7 +369,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         if self.action in ('create', 'update', 'partial_update'):
             return RealtimeSubmissionWriteSerializer
-        if self.request.user and self.request.user.is_staff:
+        if can_confirm_feeds(self.request.user):
             return AdminRealtimeSubmissionSerializer
         return RealtimeSubmissionSerializer
 
@@ -404,7 +407,12 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
 
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
-        if not request.user.is_staff:
+        if not can_confirm_feeds(request.user):
+            if request.data.get('stage') is not None or request.data.get('rejection_cause'):
+                return Response(
+                    {'detail': 'Only Admin or Helper can confirm or reject submissions.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             if instance.current_stage != 1 and not instance.is_rejected:
                 return Response(
                     {'detail': 'Można edytować tylko na etapie 1 lub po odrzuceniu.'},
@@ -436,7 +444,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                 )
         if endpoints_data is not None:
             validate_realtime_submission_task.delay(instance.id)
-        if request.user.is_staff:
+        if can_confirm_feeds(request.user):
             self._admin_transition(request, instance)
         out = RealtimeSubmissionSerializer(instance, context={'request': request})
         return Response(out.data)
@@ -485,11 +493,17 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if not request.user.is_staff:
-            if instance.current_stage != 1 or instance.is_rejected:
-                return Response(
-                    {'detail': 'Cannot delete except at stage 1.'},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+        if is_admin(request.user):
+            return super().destroy(request, *args, **kwargs)
+        if not can_add_feeds(request.user) or instance.submitted_by_id != request.user.id:
+            return Response(
+                {'detail': 'Only Admin can delete other users submissions.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if instance.current_stage != 1 or instance.is_rejected:
+            return Response(
+                {'detail': 'Cannot delete except at stage 1.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         return super().destroy(request, *args, **kwargs)
 

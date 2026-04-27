@@ -21,7 +21,7 @@ from drf_spectacular.views import (
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
-from cases.api.views import DataProviderViewSet, TransportOrganizationViewSet
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from data_manager.api.views import PublicFeedDownloadView, RealtimePublicFeedDownloadView
 
 urlpatterns = [
@@ -37,6 +37,8 @@ urlpatterns = [
     path('api/blog/', include('blog.api.urls')),
     path('api/data_manager/', include('data_manager.api.urls')),
 
+    path('api/auth/token/', TokenObtainPairView.as_view(), name='token-obtain-pair'),
+    path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
     path('api-auth/', include('rest_framework.urls')),
 
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
