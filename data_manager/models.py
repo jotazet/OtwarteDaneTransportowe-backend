@@ -552,10 +552,32 @@ class RealtimeSubmission(models.Model):
 
     def clean(self):
         super().clean()
+        errors = {}
         if self.protocol in {self.PROTOCOL_GTFS_RT, self.PROTOCOL_SIRI} and not self.static_submission_id:
-            raise ValidationError({'static_submission': 'This field is required for GTFS-RT and SIRI.'})
+            errors.setdefault('static_submission', []).append('This field is required for GTFS-RT and SIRI.')
         if self.protocol == self.PROTOCOL_GBFS and self.static_submission_id:
-            raise ValidationError({'static_submission': 'GBFS must not be linked to a static submission.'})
+            errors.setdefault('static_submission', []).append('GBFS must not be linked to a static submission.')
+
+        if (
+            self.static_submission_id
+            and self.transport_organization_id
+            and self.static_submission.transport_organization_id != self.transport_organization_id
+        ):
+            errors.setdefault('static_submission', []).append(
+                'Static submission must belong to the same transport organization as this realtime submission.'
+            )
+
+        if (
+            self.protocol in {self.PROTOCOL_GTFS_RT, self.PROTOCOL_SIRI}
+            and self.static_submission_id
+            and self.static_submission.current_stage != 4
+        ):
+            errors.setdefault('static_submission', []).append(
+                'Static submission must be published before adding realtime.'
+            )
+
+        if errors:
+            raise ValidationError(errors)
 
     @property
     def current_stage(self) -> int:

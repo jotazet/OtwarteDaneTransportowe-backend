@@ -1,6 +1,7 @@
 Django==6.0.1
 djangorestframework
 djangorestframework-simplejwt
+django-cors-headers
 gunicorn>=23.0.0
 markdown
 django-filter

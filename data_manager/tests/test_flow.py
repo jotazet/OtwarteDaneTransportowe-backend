@@ -3,8 +3,9 @@ import os
 from rest_framework.test import APIClient
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.core.exceptions import ValidationError
 from cases.models import TransportOrganization
-from data_manager.models import FeedSubmission, StaticFeedEntry, FeedSubmissionHistory
+from data_manager.models import FeedSubmission, StaticFeedEntry, FeedSubmissionHistory, RealtimeSubmission
 from django.test import override_settings
 from django.conf import settings
 from data_manager.tasks import validate_gtfs_feed_task
@@ -204,3 +205,33 @@ def test_helper_can_confirm_feed_but_cannot_create_feed(api_client, helper_user,
     assert confirm_response.status_code == 200, confirm_response.data
     submission.refresh_from_db()
     assert submission.current_stage == 4
+
+
+def test_realtime_submission_static_feed_must_match_organization(normal_user, org):
+    other_org = TransportOrganization.objects.create(region="Other Region", transport_organization="Other Org")
+    static_submission = FeedSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=normal_user,
+        data_type='gtfs',
+        name='Published static feed',
+    )
+    FeedSubmissionHistory.objects.create(
+        submission=static_submission,
+        event_type=FeedSubmissionHistory.EVENT_COMPLETED,
+        stage_before=3,
+        stage_after=4,
+        actor=normal_user,
+    )
+
+    realtime = RealtimeSubmission(
+        transport_organization=other_org,
+        submitted_by=normal_user,
+        static_submission=static_submission,
+        protocol=RealtimeSubmission.PROTOCOL_GTFS_RT,
+        name='Mismatched realtime feed',
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        realtime.full_clean()
+
+    assert 'static_submission' in exc.value.message_dict

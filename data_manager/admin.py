@@ -109,8 +109,8 @@ class FeedFetchErrorAdmin(admin.ModelAdmin):
     @admin.display(description='Source')
     def get_source(self, obj):
         if obj.static_entry_id:
-            return format_html('<span style="color: blue;">static</span>')
-        return format_html('<span style="color: green;">realtime</span>')
+            return format_html('<span style="color: {};">{}</span>', 'blue', 'static')
+        return format_html('<span style="color: {};">{}</span>', 'green', 'realtime')
 
     def has_add_permission(self, request):
         return False

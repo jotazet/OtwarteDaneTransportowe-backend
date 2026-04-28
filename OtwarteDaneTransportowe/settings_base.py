@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     'drf_spectacular',
     'drf_spectacular_sidecar',
     'django_celery_beat',
+    'corsheaders',
 
     # Local apps
     'blog.apps.BlogConfig',
@@ -57,6 +58,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -176,3 +178,5 @@ CELERY_TASK_TIME_LIMIT = 120
 # Proxy settings (used by blog reactions IP limiting)
 TRUSTED_PROXY_CIDRS = _env_list('TRUSTED_PROXY_CIDRS', default=[])
 
+CORS_ALLOWED_ORIGINS = _env_list('CORS_ALLOWED_ORIGINS', default=[])
+CORS_URLS_REGEX = os.getenv('CORS_URLS_REGEX', r'^/(api|feed)/.*$')
