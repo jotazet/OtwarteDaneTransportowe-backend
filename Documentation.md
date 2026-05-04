@@ -898,7 +898,8 @@ To nie jest lista pojedynczych feedow, tylko lista organizacji transportowych z 
       "static_feed": {
         "download_url": "https://example.com/feed/37/gtfs.zip",
         "license": "CC BY 4.0",
-        "cached_at": "2026-04-27T10:00:00Z"
+        "cached_at": "2026-04-27T10:00:00Z",
+        "is_original": true
       },
       "realtime_feed": {
         "protocol": "gtfs_rt",
@@ -909,30 +910,33 @@ To nie jest lista pojedynczych feedow, tylko lista organizacji transportowych z 
             "endpoint_type": "trip_update",
             "interval": 30,
             "feed_url": "https://example.com/feed/rt/12/trip-updates.pb",
+            "cached_at": "2026-04-27T11:00:00Z",
+            "is_original": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "name": "Rowery miejskie",
+      "data_type": "gbfs",
+      "submitted_by": "provider",
+      "created_at": "2026-04-27T10:00:00Z",
+      "updated_at": "2026-04-27T10:00:00Z",
+      "static_feed": null,
+      "realtime_feed": {
+        "protocol": "gbfs",
+        "license": "ODbL",
+        "published_at": "2026-04-27T11:00:00Z",
+        "endpoints": [
+          {
+            "endpoint_type": "gbfs",
+            "interval": 60,
+            "feed_url": "https://example.com/feed/rt/14/gbfs.json",
             "cached_at": "2026-04-27T11:00:00Z"
           }
         ]
       }
-    }
-  ],
-  "gbfs_feeds": [
-    {
-      "id": 14,
-      "organization_name": "ZTM Warszawa",
-      "organization_region": "Mazowieckie",
-      "data_type": "gbfs",
-      "created_at": "2026-04-27T10:00:00Z",
-      "published_at": "2026-04-27T11:00:00Z",
-      "protocol": "gbfs",
-      "license": "ODbL",
-      "endpoints": [
-        {
-          "endpoint_type": "gbfs",
-          "interval": 60,
-          "feed_url": "https://example.com/feed/rt/14/gbfs.json",
-          "cached_at": "2026-04-27T11:00:00Z"
-        }
-      ]
     }
   ]
 }

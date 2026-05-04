@@ -378,7 +378,7 @@ class PublishedStaticEntrySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StaticFeedEntry
-        fields = ['download_url', 'license', 'cached_at']
+        fields = ['download_url', 'license', 'cached_at', 'is_original']
 
     def get_download_url(self, obj):
         request = self.context.get('request')
@@ -399,7 +399,7 @@ class PublishedEndpointRTSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = RealtimeEndpointRT
-        fields = ['endpoint_type', 'interval', 'feed_url', 'cached_at']
+        fields = ['endpoint_type', 'interval', 'feed_url', 'cached_at', 'is_original']
 
     def get_feed_url(self, obj):
         request = self.context.get('request')
@@ -563,23 +563,59 @@ class OrganizationFeedSubmissionSerializer(serializers.ModelSerializer):
         return PublishedRealtimeSubmissionSerializer(rts, context=self.context).data
 
 
+class OrganizationGbfsFeedAsFeedSerializer(serializers.ModelSerializer):
+    data_type = serializers.SerializerMethodField()
+    submitted_by = serializers.SerializerMethodField()
+    static_feed = serializers.SerializerMethodField()
+    realtime_feed = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RealtimeSubmission
+        fields = [
+            'id', 'name', 'data_type',
+            'submitted_by', 'created_at', 'updated_at',
+            'static_feed', 'realtime_feed',
+        ]
+        read_only_fields = fields
+
+    def get_data_type(self, obj):
+        return 'gbfs'
+
+    def get_submitted_by(self, obj):
+        return obj.submitted_by.username if getattr(obj, 'submitted_by', None) else None
+
+    def get_static_feed(self, obj):
+        return None
+
+    def get_realtime_feed(self, obj):
+        return PublishedRealtimeSubmissionSerializer(obj, context=self.context).data
+
+
 class OrganizationFeedsSerializer(serializers.ModelSerializer):
-    feeds = OrganizationFeedSubmissionSerializer(many=True, read_only=True)
-    gbfs_feeds = serializers.SerializerMethodField()
+    feeds = serializers.SerializerMethodField()
 
     class Meta:
         model = TransportOrganization
         fields = [
             'id', 'region', 'transport_organization', 'website', 'contact_email', 'phone_number', 'is_public',
-            'feeds', 'gbfs_feeds',
+            'feeds',
         ]
         read_only_fields = fields
 
-    def get_gbfs_feeds(self, obj):
-        feeds = getattr(obj, 'published_gbfs_feeds', None) or []
-        return PublishedGbfsFeedSerializer(
-            feeds, many=True, context=self.context
+    def get_feeds(self, obj):
+        static_feeds = getattr(obj, 'feeds', []) or []
+        gbfs_feeds = getattr(obj, 'published_gbfs_feeds', None) or []
+
+        static_payload = OrganizationFeedSubmissionSerializer(
+            static_feeds, many=True, context=self.context
         ).data
+        gbfs_payload = OrganizationGbfsFeedAsFeedSerializer(
+            gbfs_feeds, many=True, context=self.context
+        ).data
+
+        combined = list(static_payload) + list(gbfs_payload)
+        combined.sort(key=lambda x: (x.get('created_at') or '', x.get('id') or 0))
+        return combined
 
 
 class OrganizationFeedsSummarySerializer(serializers.ModelSerializer):

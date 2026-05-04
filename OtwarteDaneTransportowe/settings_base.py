@@ -179,4 +179,9 @@ CELERY_TASK_TIME_LIMIT = 120
 TRUSTED_PROXY_CIDRS = _env_list('TRUSTED_PROXY_CIDRS', default=[])
 
 CORS_ALLOWED_ORIGINS = _env_list('CORS_ALLOWED_ORIGINS', default=[])
-CORS_URLS_REGEX = os.getenv('CORS_URLS_REGEX', r'^/(api|feed)/.*$')
+CORS_URLS_REGEX = os.getenv('CORS_URLS_REGEX', r'^/(apifeed)/.*$')
+
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^http://localhost:\d+$",
+    r"^http://127\.0\.0\.1:\d+$",
+]

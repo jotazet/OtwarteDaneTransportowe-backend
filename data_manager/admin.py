@@ -1,6 +1,8 @@
 from django.contrib import admin
 from django.utils.html import format_html
 
+from OtwarteDaneTransportowe.auth_roles import is_admin
+
 from data_manager.models import (
     FeedFetchError,
     FeedSubmission,
@@ -93,7 +95,7 @@ class FeedSubmissionHistoryAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        return is_admin(request.user)
 
 
 @admin.register(FeedFetchError)
@@ -119,7 +121,7 @@ class FeedFetchErrorAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        return is_admin(request.user)
 
 
 @admin.register(FeedSubmission)
