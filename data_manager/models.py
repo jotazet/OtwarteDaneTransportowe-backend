@@ -1,9 +1,111 @@
+from datetime import timedelta
+
 from django.db import models
 from django.core.exceptions import ValidationError
 from django.core.files.storage import FileSystemStorage
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 import os
+
+from data_manager.fields import EncryptedCharField
+from data_manager.validators import validate_feed_file_size
+
+
+FETCH_STATUS_ACTIVE = 'active'
+FETCH_STATUS_DELAYED = 'delayed'
+FETCH_STATUS_AUTO_PAUSED = 'auto_paused'
+FETCH_STATUS_MANUAL_PAUSED = 'manual_paused'
+FETCH_STATUS_CHOICES = [
+    (FETCH_STATUS_ACTIVE, 'Active'),
+    (FETCH_STATUS_DELAYED, 'Delayed'),
+    (FETCH_STATUS_AUTO_PAUSED, 'Automatically paused'),
+    (FETCH_STATUS_MANUAL_PAUSED, 'Manually paused'),
+]
+FETCH_RETRY_DELAYS = [
+    timedelta(minutes=5),
+    timedelta(hours=1),
+    timedelta(hours=6),
+]
+
+
+class FetchControlMixin:
+    """Shared state transitions for proxied static and realtime feed fetching."""
+
+    def mark_fetch_success(self, now=None) -> None:
+        now = now or timezone.now()
+        self.fetch_status = FETCH_STATUS_ACTIVE
+        self.fetch_failure_count = 0
+        self.next_fetch_after = None
+        self.fetch_paused_at = None
+        self.fetch_pause_reason = ''
+        self.last_fetch_success_at = now
+        self.save(update_fields=[
+            'fetch_status',
+            'fetch_failure_count',
+            'next_fetch_after',
+            'fetch_paused_at',
+            'fetch_pause_reason',
+            'last_fetch_success_at',
+        ])
+
+    def mark_fetch_failure(self, reason: str = '', now=None) -> None:
+        now = now or timezone.now()
+        self.fetch_failure_count = (self.fetch_failure_count or 0) + 1
+        self.last_fetch_error_at = now
+        self.fetch_pause_reason = (reason or '')[:500]
+        if self.fetch_failure_count <= len(FETCH_RETRY_DELAYS):
+            self.fetch_status = FETCH_STATUS_DELAYED
+            self.next_fetch_after = now + FETCH_RETRY_DELAYS[self.fetch_failure_count - 1]
+            self.fetch_paused_at = now
+        else:
+            self.fetch_status = FETCH_STATUS_AUTO_PAUSED
+            self.next_fetch_after = None
+            self.fetch_paused_at = now
+        self.save(update_fields=[
+            'fetch_status',
+            'fetch_failure_count',
+            'next_fetch_after',
+            'fetch_paused_at',
+            'fetch_pause_reason',
+            'last_fetch_error_at',
+        ])
+
+    def pause_fetch(self, reason: str = '', now=None) -> None:
+        now = now or timezone.now()
+        self.fetch_status = FETCH_STATUS_MANUAL_PAUSED
+        self.next_fetch_after = None
+        self.fetch_paused_at = now
+        self.fetch_pause_reason = (reason or '')[:500]
+        self.save(update_fields=[
+            'fetch_status',
+            'next_fetch_after',
+            'fetch_paused_at',
+            'fetch_pause_reason',
+        ])
+
+    def resume_fetch(self, now=None) -> None:
+        now = now or timezone.now()
+        self.fetch_status = FETCH_STATUS_ACTIVE
+        self.fetch_failure_count = 0
+        self.next_fetch_after = None
+        self.fetch_paused_at = None
+        self.fetch_pause_reason = ''
+        self.save(update_fields=[
+            'fetch_status',
+            'fetch_failure_count',
+            'next_fetch_after',
+            'fetch_paused_at',
+            'fetch_pause_reason',
+        ])
+
+    def fetch_is_due(self, now=None) -> bool:
+        now = now or timezone.now()
+        if self.fetch_status == FETCH_STATUS_ACTIVE:
+            return True
+        if self.fetch_status == FETCH_STATUS_DELAYED:
+            return self.next_fetch_after is not None and self.next_fetch_after <= now
+        return False
 
 
 class OverwriteStorage(FileSystemStorage):
@@ -40,19 +142,36 @@ def feed_cached_file_path(instance, filename):
 
 def realtime_feed_cached_file_path(instance, filename):
     """
-    MEDIA_ROOT/<realtime_submission_id>/dynamic/cached/<filename>
+    MEDIA_ROOT/<realtime_submission_id>/dynamic/cached/<endpoint_type>/<filename>
+
+    The ``<endpoint_type>`` segment is required: a RealtimeSubmission can have
+    several endpoints whose URLs end with the same basename (e.g. ``/gtfs``).
+    Without it they would map to the same path and OverwriteStorage would let
+    one endpoint's cache clobber another's. ``endpoint_type`` is unique per
+    submission (see RealtimeEndpointRT.Meta.unique_together).
     """
     filename = os.path.basename(filename)
     submission_id = getattr(getattr(instance, 'submission', None), 'id', 'unknown')
-    return f'{submission_id}/dynamic/cached/{filename}'
+    endpoint_type = getattr(instance, 'endpoint_type', None) or 'endpoint'
+    return f'{submission_id}/dynamic/cached/{endpoint_type}/{filename}'
 
 
 def validation_file_path(instance, filename):
     """
     file will be uploaded to MEDIA_ROOT/<submission_id>/validation/<filename>
+
+    ``instance`` is a FeedValidationReport. Its reverse one-to-one accessor to the
+    owning StaticFeedEntry is ``static_entry_report`` (see
+    StaticFeedEntry.validation_report related_name). The report MUST be linked to
+    its entry *before* the file is saved, otherwise the submission id cannot be
+    resolved and all reports would collide under ``unknown/validation/``.
     """
     filename = os.path.basename(filename)
-    submission_id = getattr(getattr(getattr(instance, 'static_entry', None), 'submission', None), 'id', 'unknown')
+    try:
+        entry = instance.static_entry_report
+    except ObjectDoesNotExist:
+        entry = None
+    submission_id = getattr(getattr(entry, 'submission', None), 'id', 'unknown')
     return f'{submission_id}/validation/{filename}'
 
 # ---------------------------------------------------------------------------
@@ -207,7 +326,7 @@ class FeedSubmissionHistory(models.Model):
 # StaticFeedEntry – for static feeds (GTFS, NeTEx, other)
 # ---------------------------------------------------------------------------
 
-class StaticFeedEntry(models.Model):
+class StaticFeedEntry(FetchControlMixin, models.Model):
     AUTH_TYPE_CHOICES = [
         ('api_key', 'API Key'),
         ('bearer_token', 'Bearer Token'),
@@ -243,6 +362,7 @@ class StaticFeedEntry(models.Model):
         storage=OverwriteStorage(),
         blank=True,
         null=True,
+        validators=[validate_feed_file_size],
         help_text='Static feed file uploaded directly by the user.',
     )
 
@@ -265,6 +385,18 @@ class StaticFeedEntry(models.Model):
         null=True, blank=True,
         help_text='When the cached copy was last downloaded by the server.',
     )
+    fetch_status = models.CharField(
+        max_length=20,
+        choices=FETCH_STATUS_CHOICES,
+        default=FETCH_STATUS_ACTIVE,
+        help_text='Operational fetch state for proxied feeds.',
+    )
+    fetch_failure_count = models.PositiveSmallIntegerField(default=0)
+    next_fetch_after = models.DateTimeField(null=True, blank=True)
+    fetch_paused_at = models.DateTimeField(null=True, blank=True)
+    fetch_pause_reason = models.TextField(blank=True, default='')
+    last_fetch_success_at = models.DateTimeField(null=True, blank=True)
+    last_fetch_error_at = models.DateTimeField(null=True, blank=True)
 
     validation_status = models.CharField(
         max_length=20,
@@ -295,11 +427,10 @@ class StaticFeedEntry(models.Model):
         choices=AUTH_TYPE_CHOICES,
         null=True, blank=True
     )
-    auth_value = models.CharField(
-        max_length=512,
+    auth_value = EncryptedCharField(
         blank=True,
         null=True,
-        help_text='API key, bearer token, or "username:password" for basic auth.',
+        help_text='API key, bearer token, or "username:password" for basic auth. Encrypted at rest.',
     )
 
     # Daily download schedule (only when url + hide_original=True)
@@ -318,6 +449,9 @@ class StaticFeedEntry(models.Model):
 
     class Meta:
         ordering = ['-uploaded_at']
+        indexes = [
+            models.Index(fields=['fetch_status', 'next_fetch_after'], name='data_manage_static_fetch_idx'),
+        ]
 
     def clean(self):
         super().clean()
@@ -346,13 +480,8 @@ class StaticFeedEntry(models.Model):
         if self.auth_type:
             self.hide_original = True
 
-        # URL-specific rules
-        if has_url:
-            if self.hide_original and not self.auth_type:
-                raise ValidationError(
-                    'Authentication is required when "hide original" is enabled.'
-                )
-        else:
+        # URL-specific rules (hide_original does not require auth)
+        if not has_url:
             # file upload – URL-only fields must not be filled
             if self.hide_original:
                 raise ValidationError(
@@ -377,6 +506,11 @@ class StaticFeedEntry(models.Model):
 
     def validation_ready(self) -> bool:
         return bool(self.validation_source_file)
+
+    @property
+    def is_proxy_managed(self) -> bool:
+        """True when the server periodically caches and serves this URL (hide_original)."""
+        return bool(self.url and self.hide_original)
 
     def cleanup_validation_artifacts(self):
         if self.validation_report and self.validation_report.report_file:
@@ -550,6 +684,14 @@ class RealtimeSubmission(models.Model):
             }
         return set()
 
+    @classmethod
+    def allowed_protocols_for_static_data_type(cls, data_type: str | None) -> set[str]:
+        if data_type == 'gtfs':
+            return {cls.PROTOCOL_GTFS_RT}
+        if data_type == 'netex':
+            return {cls.PROTOCOL_SIRI}
+        return set()
+
     def clean(self):
         super().clean()
         errors = {}
@@ -557,6 +699,13 @@ class RealtimeSubmission(models.Model):
             errors.setdefault('static_submission', []).append('This field is required for GTFS-RT and SIRI.')
         if self.protocol == self.PROTOCOL_GBFS and self.static_submission_id:
             errors.setdefault('static_submission', []).append('GBFS must not be linked to a static submission.')
+        elif self.static_submission_id:
+            allowed_protocols = self.allowed_protocols_for_static_data_type(self.static_submission.data_type)
+            if self.protocol not in allowed_protocols:
+                errors.setdefault('static_submission', []).append(
+                    f"Protocol '{self.protocol}' cannot be linked to static feed type "
+                    f"'{self.static_submission.data_type}'. Allowed: {sorted(allowed_protocols)}."
+                )
 
         if (
             self.static_submission_id
@@ -650,7 +799,7 @@ class RealtimeSubmissionHistory(models.Model):
         )
 
 
-class RealtimeEndpointRT(models.Model):
+class RealtimeEndpointRT(FetchControlMixin, models.Model):
     RT_ENDPOINT_TYPE_CHOICES = [
         ('trip_update', 'Trip Update (GTFS-RT)'),
         ('vehicle_position', 'Vehicle Position (GTFS-RT)'),
@@ -688,7 +837,7 @@ class RealtimeEndpointRT(models.Model):
     is_original = models.BooleanField(default=False)
     interval = models.PositiveIntegerField(help_text='Refresh interval in seconds.', default=60)
     auth_type = models.CharField(max_length=20, choices=AUTH_TYPE_CHOICES, null=True, blank=True)
-    auth_value = models.CharField(max_length=512, blank=True, null=True)
+    auth_value = EncryptedCharField(blank=True, null=True)
     cached_file = models.FileField(
         upload_to=realtime_feed_cached_file_path,
         storage=OverwriteStorage(),
@@ -697,10 +846,25 @@ class RealtimeEndpointRT(models.Model):
         help_text='Server-cached copy when hide_original=True.',
     )
     cached_at = models.DateTimeField(null=True, blank=True)
+    fetch_status = models.CharField(
+        max_length=20,
+        choices=FETCH_STATUS_CHOICES,
+        default=FETCH_STATUS_ACTIVE,
+        help_text='Operational fetch state for proxied feeds.',
+    )
+    fetch_failure_count = models.PositiveSmallIntegerField(default=0)
+    next_fetch_after = models.DateTimeField(null=True, blank=True)
+    fetch_paused_at = models.DateTimeField(null=True, blank=True)
+    fetch_pause_reason = models.TextField(blank=True, default='')
+    last_fetch_success_at = models.DateTimeField(null=True, blank=True)
+    last_fetch_error_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         unique_together = [('submission', 'endpoint_type')]
         ordering = ['submission', 'endpoint_type']
+        indexes = [
+            models.Index(fields=['fetch_status', 'next_fetch_after'], name='data_manage_rt_fetch_idx'),
+        ]
 
     def clean(self):
         super().clean()
@@ -713,8 +877,11 @@ class RealtimeEndpointRT(models.Model):
                     f"Endpoint type '{self.endpoint_type}' is not valid for "
                     f"protocol '{self.submission.protocol}'. Allowed: {sorted(allowed)}."
                 )
-        if self.hide_original and not self.auth_type:
-            raise ValidationError('Authentication is required when "hide original" is enabled.')
+
+    @property
+    def is_proxy_managed(self) -> bool:
+        """True when the server periodically caches and serves this endpoint URL."""
+        return self.hide_original
 
     def __str__(self):
         return f"RealtimeEndpointRT(id={self.id}, type={self.endpoint_type}, submission={self.submission_id})"
@@ -723,7 +890,30 @@ class RealtimeEndpointRT(models.Model):
 # Scheduler helpers
 # ---------------------------------------------------------------------------
 
+COMPLETED_STATIC_IDS_CACHE_KEY = 'completed_submission_ids'
+COMPLETED_RT_IDS_CACHE_KEY = 'completed_realtime_submission_ids'
+COMPLETED_IDS_CACHE_TTL = 60
+
+
 def completed_submission_ids() -> list[int]:
+    """Returns IDs of all submissions that are in 'completed' stage (4).
+
+    Cached (short TTL) because public endpoints call it on every request, often
+    several times. The cache is invalidated immediately whenever a
+    FeedSubmissionHistory row changes (see signals), so stage transitions are
+    reflected without delay.
+    """
+    from django.core.cache import cache
+
+    cached = cache.get(COMPLETED_STATIC_IDS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    result = _compute_completed_submission_ids()
+    cache.set(COMPLETED_STATIC_IDS_CACHE_KEY, result, COMPLETED_IDS_CACHE_TTL)
+    return result
+
+
+def _compute_completed_submission_ids() -> list[int]:
     """Returns IDs of all submissions that are in 'completed' stage (4)."""
     # Assuming stage 4 is the final 'published' stage.
     # We can optimize by querying history: find submissions where latest history entry is stage_after=4.
@@ -758,6 +948,18 @@ def completed_submission_ids() -> list[int]:
 
 
 def completed_realtime_submission_ids() -> list[int]:
+    """PKs of published RealtimeSubmission (stage 4). Cached with signal invalidation."""
+    from django.core.cache import cache
+
+    cached = cache.get(COMPLETED_RT_IDS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    result = _compute_completed_realtime_submission_ids()
+    cache.set(COMPLETED_RT_IDS_CACHE_KEY, result, COMPLETED_IDS_CACHE_TTL)
+    return result
+
+
+def _compute_completed_realtime_submission_ids() -> list[int]:
     """PKs of RealtimeSubmission whose latest history row is stage 4 (published)."""
     from django.db.models import Subquery, OuterRef
 

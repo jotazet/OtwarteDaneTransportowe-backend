@@ -14,7 +14,7 @@ Użycie:
 from django.core.management.base import BaseCommand
 
 from data_manager.scheduler import _fetch_static_entry, _completed_submission_ids
-from data_manager.models import StaticFeedEntry
+from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, StaticFeedEntry
 from django.db.models import Q
 from django.utils import timezone
 
@@ -23,15 +23,21 @@ class Command(BaseCommand):
     help = 'Ręcznie odświeża cache feedów statycznych (narzędzie debugowe).'
 
     def handle(self, *args, **options):
+        now = timezone.now()
         now_time = timezone.now().time().replace(second=0, microsecond=0)
         completed_ids = _completed_submission_ids()
+        scheduled_due = (
+            Q(fetch_status=FETCH_STATUS_ACTIVE)
+            & (Q(download_time_1=now_time) | Q(download_time_2=now_time))
+        )
+        retry_due = Q(fetch_status=FETCH_STATUS_DELAYED, next_fetch_after__lte=now)
 
         entries = StaticFeedEntry.objects.filter(
             hide_original=True,
             url__isnull=False,
             submission_id__in=completed_ids,
         ).filter(
-            Q(download_time_1=now_time) | Q(download_time_2=now_time)
+            scheduled_due | retry_due
         )
 
         count = 0

@@ -10,7 +10,7 @@ from rest_framework import status
 from django.shortcuts import get_object_or_404
 from ipaddress import ip_address, ip_network
 
-from OtwarteDaneTransportowe.auth_roles import IsBloggerOrReadOnly
+from OtwarteDaneTransportowe.auth_roles import IsEditorOrOwnBloggerOrReadOnly
 from blog.api.serializers import PostSerializer, ReactionSerializer, PostListSerializer
 from blog.models import Post, Reaction
 
@@ -29,7 +29,7 @@ class PostViewSet(viewsets.ModelViewSet):
         .order_by('-date')
     )
     serializer_class = PostSerializer
-    permission_classes = [IsBloggerOrReadOnly]
+    permission_classes = [IsEditorOrOwnBloggerOrReadOnly]
     pagination_class = PostDefaultPagination
 
     def get_serializer_class(self):

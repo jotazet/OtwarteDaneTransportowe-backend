@@ -75,14 +75,14 @@ class PostSerializer(serializers.ModelSerializer):
 
 
 class PostListSerializer(PostSerializer):
-    # Return a truncated preview of content (max 150 characters).
+    # Return a truncated preview of content (max 400 characters).
     content = serializers.SerializerMethodField()
 
     def get_content(self, obj: Post) -> str:
         text = obj.content or ''
-        if len(text) <= 150:
+        if len(text) <= 400:
             return text
-        return text[:150] + '...'
+        return text[:400] + '...'
 
 
 class ReactionSerializer(serializers.ModelSerializer):

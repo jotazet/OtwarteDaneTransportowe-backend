@@ -3,6 +3,8 @@ from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
 from django.conf import settings
 
+from blog.validators import validate_image_file_size
+
 def validate_tags(value):
     if len(value) > 5:
         raise ValidationError("There is limit to 5 tags.")
@@ -15,7 +17,10 @@ class Post(models.Model):
     author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='posts')
     tags = ArrayField(models.CharField(max_length=16), size=5, validators=[validate_tags], blank=True, default=list)
     content = models.TextField()
-    image = models.ImageField(upload_to='blog/images/', blank=True, null=True)
+    image = models.ImageField(
+        upload_to='blog/images/', blank=True, null=True,
+        validators=[validate_image_file_size],
+    )
     date = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

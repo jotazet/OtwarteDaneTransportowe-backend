@@ -12,6 +12,7 @@ Nie wywoływać bezpośrednio — logika harmonogramu należy do tasków.
 import logging
 
 import requests
+from django.conf import settings
 from django.core.files.base import ContentFile
 from django.utils import timezone
 from django.db import models
@@ -26,7 +27,7 @@ from data_manager.models import (
     completed_submission_ids,
     completed_realtime_submission_ids,
 )
-from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url
+from data_manager.net_security import OutboundURLBlocked, safe_get
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +67,34 @@ def _completed_realtime_submission_ids() -> list[int]:
 # Pobieranie — feed statyczny
 # ---------------------------------------------------------------------------
 
-def _fetch_static_entry(entry: StaticFeedEntry) -> None:
-    """Pobiera plik z URL i zapisuje jako cached_file. Błędy trafiają do FeedFetchError."""
+# Outcome codes returned by the fetch helpers so the Celery task can decide
+# whether a retry is warranted. Exceptions are still swallowed here so direct
+# callers (management commands) stay resilient.
+FETCH_OK = 'ok'
+FETCH_TRANSIENT = 'transient'   # timeout / connection / 5xx -> worth retrying
+FETCH_PERMANENT = 'permanent'   # blocked URL / 4xx / invalid -> do not retry
+
+
+def _fetch_static_entry(entry: StaticFeedEntry) -> str:
+    """Pobiera plik z URL i zapisuje jako cached_file. Błędy trafiają do FeedFetchError.
+
+    Zwraca kod wyniku (``FETCH_OK`` / ``FETCH_TRANSIENT`` / ``FETCH_PERMANENT``),
+    aby task mógł ponowić tylko błędy przejściowe.
+    """
+    if not entry.is_proxy_managed:
+        logger.info('Skipping static entry=%d — not proxy-managed (hide_original=False)', entry.pk)
+        return FETCH_PERMANENT
+
     from data_manager.tasks import validate_gtfs_feed_task
 
     headers = _build_auth_headers(entry.auth_type, entry.auth_value)
     try:
-        assert_safe_outbound_url(entry.url)
-        response = requests.get(entry.url, headers=headers, timeout=60)
+        response = safe_get(
+            entry.url,
+            headers=headers,
+            timeout=60,
+            max_bytes=settings.MAX_FEED_FILE_SIZE_BYTES,
+        )
         response.raise_for_status()
 
         import os
@@ -81,27 +102,35 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> None:
         parsed = urlparse(entry.url)
         filename = os.path.basename(parsed.path) or 'feed.zip'
 
+        now = timezone.now()
         entry.cached_file.save(filename, ContentFile(response.content), save=False)
 
         StaticFeedEntry.objects.filter(pk=entry.pk).update(
             cached_file=entry.cached_file.name,
-            cached_at=timezone.now(),
+            cached_at=now,
         )
+        entry.mark_fetch_success(now)
         logger.info('Refreshed static entry=%d  url=%s', entry.pk, entry.url)
 
         validate_gtfs_feed_task.delay(entry.pk)
+        return FETCH_OK
 
     except OutboundURLBlocked as exc:
         _log_static_error(entry, FeedFetchError.ERROR_INVALID_CONTENT, exc)
+        return FETCH_PERMANENT
     except requests.exceptions.Timeout as exc:
         _log_static_error(entry, FeedFetchError.ERROR_TIMEOUT, exc)
+        return FETCH_TRANSIENT
     except requests.exceptions.HTTPError as exc:
         code = exc.response.status_code if exc.response is not None else None
         _log_static_error(entry, FeedFetchError.ERROR_HTTP, exc, http_code=code)
+        return FETCH_TRANSIENT if (code and code >= 500) else FETCH_PERMANENT
     except requests.exceptions.ConnectionError as exc:
         _log_static_error(entry, FeedFetchError.ERROR_CONNECTION, exc)
+        return FETCH_TRANSIENT
     except Exception as exc:
         _log_static_error(entry, FeedFetchError.ERROR_INVALID_CONTENT, exc)
+        return FETCH_PERMANENT
 
 
 def _log_static_error(entry, error_type, exc, http_code=None) -> None:
@@ -112,6 +141,7 @@ def _log_static_error(entry, error_type, exc, http_code=None) -> None:
         message=str(exc),
         url_attempted=entry.url,
     )
+    entry.mark_fetch_failure(str(exc))
     logger.warning('Fetch error static entry=%d type=%s: %s', entry.pk, error_type, exc)
 
 
@@ -119,12 +149,23 @@ def _log_static_error(entry, error_type, exc, http_code=None) -> None:
 # Pobieranie — endpoint realtime (RealtimeEndpointRT)
 # ---------------------------------------------------------------------------
 
-def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> None:
+def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
     """Pobiera plik z URL i zapisuje jako cached_file. Błędy trafiają do FeedFetchError."""
+    if not endpoint.is_proxy_managed:
+        logger.info(
+            'Skipping realtime endpoint_rt=%d — not proxy-managed (hide_original=False)',
+            endpoint.pk,
+        )
+        return FETCH_PERMANENT
+
     headers = _build_auth_headers(endpoint.auth_type, endpoint.auth_value)
     try:
-        assert_safe_outbound_url(endpoint.url)
-        response = requests.get(endpoint.url, headers=headers, timeout=30)
+        response = safe_get(
+            endpoint.url,
+            headers=headers,
+            timeout=30,
+            max_bytes=settings.MAX_FEED_FILE_SIZE_BYTES,
+        )
         response.raise_for_status()
         filename = endpoint.url.rstrip('/').split('/')[-1] or 'feed.pb'
         endpoint.cached_file.save(filename, ContentFile(response.content), save=False)
@@ -132,18 +173,25 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> None:
             cached_file=endpoint.cached_file.name,
             cached_at=now,
         )
+        endpoint.mark_fetch_success(now)
         logger.info('Refreshed realtime endpoint_rt=%d  url=%s', endpoint.pk, endpoint.url)
+        return FETCH_OK
     except OutboundURLBlocked as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc)
+        return FETCH_PERMANENT
     except requests.exceptions.Timeout as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_TIMEOUT, exc)
+        return FETCH_TRANSIENT
     except requests.exceptions.HTTPError as exc:
         code = exc.response.status_code if exc.response is not None else None
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_HTTP, exc, http_code=code)
+        return FETCH_TRANSIENT if (code and code >= 500) else FETCH_PERMANENT
     except requests.exceptions.ConnectionError as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_CONNECTION, exc)
+        return FETCH_TRANSIENT
     except Exception as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc)
+        return FETCH_PERMANENT
 
 
 def _log_endpoint_rt_error(endpoint, error_type, exc, http_code=None) -> None:
@@ -154,6 +202,7 @@ def _log_endpoint_rt_error(endpoint, error_type, exc, http_code=None) -> None:
         message=str(exc),
         url_attempted=endpoint.url,
     )
+    endpoint.mark_fetch_failure(str(exc))
     logger.warning('Fetch error endpoint_rt=%d type=%s: %s', endpoint.pk, error_type, exc)
 
 

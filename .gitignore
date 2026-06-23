@@ -8,6 +8,16 @@ __pycache__/
 .docker/
 docker-compose.override.yml
 
+# Secrets / environment (never commit real secrets)
+.env
+.env.*
+!.env.example
+
+# User-uploaded data, generated static files, local DB
+/uploaded_data/
+/staticfiles/
+db.sqlite3
+
 # Python
 .venv/
 *.egg-info/

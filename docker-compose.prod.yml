@@ -1,0 +1,40 @@
+# Production override for Docker Compose.
+#
+# Usage (single VPS, TLS terminated by an external reverse-proxy such as nginx/Caddy):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Required environment (set in .env, do NOT use development defaults):
+#   DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
+#   DJANGO_SECRET_KEY=<strong unique value>
+#   DJANGO_ALLOWED_HOSTS=api.example.org
+#   CSRF_TRUSTED_ORIGINS=https://api.example.org
+#   CORS_ALLOWED_ORIGINS=https://www.example.org
+#   FEED_AUTH_ENCRYPTION_KEY=<Fernet key>  # see accounts/crypto docs
+#
+# The reverse-proxy must forward X-Forwarded-Proto so SECURE_PROXY_SSL_HEADER works.
+
+services:
+  web:
+    command: >
+      gunicorn OtwarteDaneTransportowe.wsgi:application
+      --bind 0.0.0.0:8000
+      --workers ${GUNICORN_WORKERS:-3}
+      --timeout 120
+    environment:
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
+
+  celery_worker:
+    environment:
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
+
+  celery_beat:
+    environment:
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
+
+  celery_validator_worker:
+    environment:
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
+
+  migrate:
+    environment:
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod

@@ -6,6 +6,9 @@ x-app-env: &app-env
   POSTGRES_PORT: "5432"
   CELERY_BROKER_URL: redis://redis:6379/0
   CELERY_RESULT_BACKEND: redis://redis:6379/1
+  # Shared cache: required so the realtime self-scheduling lock and DRF throttling
+  # work across web + worker processes (per-process LocMemCache would break them).
+  REDIS_CACHE_URL: redis://redis:6379/2
   DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-OtwarteDaneTransportowe.settings_dev}
   DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-dev-placeholder}
   DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-127.0.0.1,localhost}
@@ -26,6 +29,19 @@ x-app-service: &app-service
     - .:/app
 
 services:
+  # Bind-mounted project dir often yields root-owned uploaded_data; app runs as UID:GID.
+  init_uploads:
+    image: alpine:3.20
+    container_name: odt-init-uploads
+    restart: "no"
+    volumes:
+      - .:/app
+    environment:
+      TARGET_UID: "${UID:-1000}"
+      TARGET_GID: "${GID:-1000}"
+    # Script avoids Compose $$ escaping bugs with ${...} in inline YAML.
+    command: ["sh", "/app/scripts/docker-init-uploads.sh"]
+
   postgres:
     image: postgres:16
     container_name: odt-postgres
@@ -62,6 +78,8 @@ services:
     restart: "no"
     command: python manage.py migrate
     depends_on:
+      init_uploads:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -76,6 +94,12 @@ services:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:${WEB_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   celery_worker:
     <<: *app-service
@@ -104,10 +128,24 @@ services:
   celery_validator_worker:
     <<: *app-service
     container_name: odt-celery-validator-worker
-    # This worker is privileged by design because it needs the host Docker API
-    # to run the GTFS validator container.
+    # ┌──────────────────────────── SECURITY WARNING ─────────────────────────────┐
+    # │ This worker mounts the host Docker socket to run the GTFS validator image. │
+    # │ Access to /var/run/docker.sock is effectively ROOT on the host. A          │
+    # │ compromise of this worker (e.g. via SSRF or a deserialization bug) lets an │
+    # │ attacker control the host.                                                 │
+    # │                                                                            │
+    # │ Mitigations in place: the validator container runs with                    │
+    # │ network_disabled, a non-root user, --rm, and bounded mem/pids/cpu limits   │
+    # │ (see data_manager/tasks.py:validate_gtfs_feed_task).                       │
+    # │                                                                            │
+    # │ RECOMMENDED for production: replace the raw socket with a least-privilege  │
+    # │ docker-socket-proxy (allow only container create/start/wait/remove), or    │
+    # │ run the validator as a separate REST microservice, or use rootless Docker. │
+    # └────────────────────────────────────────────────────────────────────────────┘
+    # Needs host Docker API (group_add = docker.sock GID). Set in shell or .env:
+    #   export DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
     group_add:
-      - "${DOCKER_GID:-0}"
+      - "${DOCKER_GID:-959}"
     volumes:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock
@@ -121,6 +159,7 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *app-env
+      DOCKER_GID: "${DOCKER_GID:-959}"
       UID: "${UID:-1000}"
       GID: "${GID:-1000}"
       HOST_PROJECT_PATH: "${HOST_PROJECT_PATH:-${PWD}}"
