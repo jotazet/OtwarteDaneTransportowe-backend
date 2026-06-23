@@ -1,6 +1,9 @@
 # Production override for Docker Compose.
 #
 # Usage (single VPS, TLS terminated by an external reverse-proxy such as nginx/Caddy):
+#   ./scripts/deploy.sh up -d --build
+#
+# Or manually:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
 # Required environment (set in .env, do NOT use development defaults):
@@ -20,8 +23,10 @@ services:
       --bind 0.0.0.0:8000
       --workers ${GUNICORN_WORKERS:-3}
       --timeout 120
+      --no-control-socket
     environment:
       DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
+      HOME: /app
 
   celery_worker:
     environment:

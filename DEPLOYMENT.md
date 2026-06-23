@@ -126,9 +126,9 @@ Pełny, produkcyjny przykład `.env` (zastąp wartości własnymi):
 DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
 DJANGO_SECRET_KEY=<wklej-wygenerowany-secret-key>
 DJANGO_ALLOWED_HOSTS=api.example.org
-# Opcjonalnie: wymuszenie HTTPS-redirect (domyślnie True w prod). Ustaw False,
-# jeśli redirect realizuje reverse-proxy:
-# DJANGO_SECURE_SSL_REDIRECT=True
+# 127.0.0.1 i localhost są dodawane automatycznie w settings_prod (healthcheck).
+# TLS terminuje reverse-proxy — redirect w Django jest domyślnie wyłączony:
+# DJANGO_SECURE_SSL_REDIRECT=False
 # DJANGO_SECURE_HSTS_SECONDS=31536000
 # DJANGO_LOG_LEVEL=INFO
 
@@ -202,7 +202,7 @@ CELERY_FEEDS_CONCURRENCY=2
 | --- | --- |
 | `DJANGO_SETTINGS_MODULE` | **Musi** być `...settings_prod` na produkcji. |
 | `DJANGO_SECRET_KEY` | Aplikacja **odmówi startu** w prod, jeśli to placeholder. |
-| `DJANGO_ALLOWED_HOSTS` | Domeny obsługiwane przez aplikację (lista po przecinku). |
+| `DJANGO_ALLOWED_HOSTS` | Publiczne domeny API (bez `https://`). `127.0.0.1` i `localhost` są dodawane automatycznie w `settings_prod`. |
 | `POSTGRES_PASSWORD` | Hasło bazy — silne, unikalne. |
 | `CORS_ALLOWED_ORIGINS` | Origins przeglądarkowe frontu (whitelist). |
 | `CSRF_TRUSTED_ORIGINS` | Wymagane do POST za proxy TLS. |
@@ -301,7 +301,17 @@ id -g   # GID
 ## 10. Uruchomienie
 
 Produkcyjnie uruchamiamy z nałożeniem `docker-compose.prod.yml` (gunicorn +
-`settings_prod`):
+`settings_prod`). Najprościej przez skrypt:
+
+```bash
+cp .env.example .env    # jeśli jeszcze nie masz .env
+# uzupełnij .env (patrz sekcja 5), potem:
+chmod +x scripts/deploy.sh
+./scripts/deploy.sh up -d --build
+./scripts/deploy.sh ps
+```
+
+Ręcznie (równoważne):
 
 ```bash
 # Budowa obrazu i start w tle
@@ -315,6 +325,11 @@ export COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
 docker compose up -d --build
 docker compose ps
 ```
+
+> **Hasła i klucze w `.env`:** wartości są wczytywane przez `env_file`, więc mogą
+> zawierać znak `$` bez podwójnego escapowania. Unikaj wpisywania sekretów jako
+> `${POSTGRES_PASSWORD}` w plikach compose — to powodowało ostrzeżenia typu
+> `The "o" variable is not set`.
 
 Kolejność startu jest wymuszona zależnościami: `init_uploads` → `postgres`/`redis`
 (healthcheck) → `migrate` → `web`/workery.
@@ -426,10 +441,10 @@ cd /opt/odt
 git pull
 
 # Przebuduj i odtwórz usługi (migracje wykonają się automatycznie)
-docker compose up -d --build
+./scripts/deploy.sh up -d --build
 
 # (gdy potrzeba) ręczne migracje
-docker compose exec web python manage.py migrate
+./scripts/deploy.sh exec web python manage.py migrate
 ```
 
 Po zmianie zależności (`requirements.txt`) lub `Dockerfile` build jest wymagany.
@@ -484,7 +499,21 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 → Ustaw realny `DJANGO_SECRET_KEY` w `.env` (w prod placeholder jest blokowany).
 
 **`DisallowedHost` / 400**
-→ Dodaj domenę do `DJANGO_ALLOWED_HOSTS`.
+→ Dodaj publiczną domenę API do `DJANGO_ALLOWED_HOSTS` (bez `https://`).
+`127.0.0.1` i `localhost` są dodawane automatycznie w `settings_prod`.
+
+**Kontener `web` jest `unhealthy` mimo działającego gunicorna**
+→ Upewnij się, że używasz `./scripts/deploy.sh` (prod overlay). W starszych
+wersjach przyczyną był `SECURE_SSL_REDIRECT=True` (healthcheck idzie po HTTP) —
+domyślnie jest teraz `False` w `settings_prod`.
+
+**`Control server error: Permission denied: '/.gunicorn'`**
+→ Naprawione w obrazie (`HOME=/app`, `--no-control-socket`). Przebuduj obraz:
+`./scripts/deploy.sh up -d --build`.
+
+**Ostrzeżenia Compose: `The "o" variable is not set`**
+→ Sekrety w `.env` nie mogą być podstawiane przez `${VAR}` w compose — używaj
+`env_file` (domyślnie w projekcie). Hasła mogą zawierać `$` bez escapowania.
 
 **CSRF 403 przy POST**
 → Uzupełnij `CSRF_TRUSTED_ORIGINS` i upewnij się, że proxy wysyła `X-Forwarded-Proto`.

@@ -24,8 +24,16 @@ SECURE_HSTS_SECONDS = int(os.getenv('DJANGO_SECURE_HSTS_SECONDS', '31536000'))
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
 
-SECURE_SSL_REDIRECT = _env_bool('DJANGO_SECURE_SSL_REDIRECT', True)
+# TLS is terminated by the external reverse-proxy (see DEPLOYMENT.md). Enabling
+# redirect here breaks in-container HTTP healthchecks and is redundant when the
+# proxy already upgrades HTTP→HTTPS. Set DJANGO_SECURE_SSL_REDIRECT=True only if
+# the app is exposed directly to clients without a TLS-terminating proxy.
+SECURE_SSL_REDIRECT = _env_bool('DJANGO_SECURE_SSL_REDIRECT', False)
 SESSION_COOKIE_HTTPONLY = True
+
+# Healthchecks and the local reverse-proxy reach the app on loopback.
+_INTERNAL_ALLOWED_HOSTS = ('127.0.0.1', 'localhost')
+ALLOWED_HOSTS = list(dict.fromkeys([*ALLOWED_HOSTS, *_INTERNAL_ALLOWED_HOSTS]))
 
 # Required for POST/CSRF behind a TLS-terminating reverse proxy (nginx/Caddy).
 # Provide full scheme://host origins, e.g. https://api.example.org

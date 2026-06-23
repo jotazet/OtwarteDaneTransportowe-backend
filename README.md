@@ -12,7 +12,7 @@ This README intentionally stays **high-level**. Detailed API docs and deployment
 ## Documentation
 
 - **Product / API documentation**: `Documentation.md`
-- **Deployment**: `DEPLOYMENT.md`
+- **Deployment**: `DEPLOYMENT.md` (production: `./scripts/deploy.sh up -d --build`)
 
 ## Quick start (local development)
 

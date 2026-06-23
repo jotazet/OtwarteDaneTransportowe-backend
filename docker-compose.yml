@@ -1,7 +1,7 @@
+# App secrets and Django config are loaded from .env via env_file (not ${VAR}
+# interpolation) so passwords/keys may contain '$' without breaking Compose.
 x-app-env: &app-env
-  POSTGRES_DB: ${POSTGRES_DB:-otwarte_dane_transportowe}
-  POSTGRES_USER: ${POSTGRES_USER:-postgres}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  HOME: /app
   POSTGRES_HOST: postgres
   POSTGRES_PORT: "5432"
   CELERY_BROKER_URL: redis://redis:6379/0
@@ -9,11 +9,6 @@ x-app-env: &app-env
   # Shared cache: required so the realtime self-scheduling lock and DRF throttling
   # work across web + worker processes (per-process LocMemCache would break them).
   REDIS_CACHE_URL: redis://redis:6379/2
-  DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-OtwarteDaneTransportowe.settings_dev}
-  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-dev-placeholder}
-  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-127.0.0.1,localhost}
-  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:44213}
-  CORS_URLS_REGEX: ${CORS_URLS_REGEX:-^/(api|feed)/.*$}
 
 x-app-service: &app-service
   build: .
@@ -23,6 +18,11 @@ x-app-service: &app-service
     - no-new-privileges:true
   cap_drop:
     - ALL
+  env_file:
+    - path: .env.example
+      required: false
+    - path: .env
+      required: false
   environment:
     <<: *app-env
   volumes:
@@ -46,10 +46,11 @@ services:
     image: postgres:16
     container_name: odt-postgres
     restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-otwarte_dane_transportowe}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    env_file:
+      - path: .env.example
+        required: false
+      - path: .env
+        required: false
     ports:
       - "127.0.0.1:${POSTGRES_HOST_PORT:-5420}:5432"
     volumes:
@@ -93,7 +94,7 @@ services:
       migrate:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:${WEB_HOST_PORT:-8000}:8000"
+      - "${WEB_HOST_BIND:-127.0.0.1}:${WEB_HOST_PORT:-8000}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/', timeout=5)"]
       interval: 30s
@@ -144,6 +145,8 @@ services:
     # └────────────────────────────────────────────────────────────────────────────┘
     # Needs host Docker API (group_add = docker.sock GID). Set in shell or .env:
     #   export DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+    # UID/GID = owner of uploaded_data (usually 1000). DOCKER_GID is separate —
+    # do NOT set GID equal to DOCKER_GID or Compose rejects duplicate group_add.
     group_add:
       - "${DOCKER_GID:-959}"
     volumes:
