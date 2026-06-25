@@ -3,6 +3,7 @@ djangorestframework
 djangorestframework-simplejwt
 django-cors-headers
 gunicorn>=23.0.0
+whitenoise>=6.6.0
 markdown
 django-filter
 psycopg2-binary>=2.9.9

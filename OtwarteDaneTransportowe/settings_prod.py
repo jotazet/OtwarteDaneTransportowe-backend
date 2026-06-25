@@ -3,6 +3,13 @@ from django.core.exceptions import ImproperlyConfigured
 from .settings_base import *  # noqa
 from .settings_base import _env_bool, _env_list, INSECURE_SECRET_KEY_PLACEHOLDER  # noqa: F401
 
+REST_FRAMEWORK = {  # noqa: F405
+    **REST_FRAMEWORK,
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
+}
+
 DEBUG = False
 
 # Fail fast: never run production with the insecure development placeholder key.

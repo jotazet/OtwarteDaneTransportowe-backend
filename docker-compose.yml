@@ -77,7 +77,10 @@ services:
     <<: *app-service
     container_name: odt-migrate
     restart: "no"
-    command: python manage.py migrate
+    # collectstatic runs here too: the bind-mount (.:/app) shadows the staticfiles
+    # baked into the image, so assets must be regenerated into the host-mounted dir
+    # on each deploy for WhiteNoise to serve /static/ (admin, DRF, Swagger CSS).
+    command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput"
     depends_on:
       init_uploads:
         condition: service_completed_successfully

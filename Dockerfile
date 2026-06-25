@@ -23,6 +23,10 @@ RUN pip install -r /app/requirements.txt
 
 COPY . /app
 
+# Collect admin/DRF/Swagger static assets for WhiteNoise (no DB required).
+ENV DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_dev
+RUN python manage.py collectstatic --noinput
+
 RUN groupadd --system app \
  && useradd --system --gid app --home-dir /app app \
  && mkdir -p /app/uploaded_data /app/staticfiles \

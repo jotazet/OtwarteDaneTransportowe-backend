@@ -25,12 +25,13 @@ zewnętrznym reverse-proxy (nginx/Caddy). Aplikacja nasłuchuje lokalnie na
 9. [Uprawnienia plików (UID/GID)](#9-uprawnienia-plików-uidgid)
 10. [Uruchomienie](#10-uruchomienie)
 11. [Migracje, konto admina i role](#11-migracje-konto-admina-i-role)
-12. [Reverse-proxy + TLS](#12-reverse-proxy--tls)
-13. [Weryfikacja wdrożenia](#13-weryfikacja-wdrożenia)
-14. [Aktualizacje](#14-aktualizacje)
-15. [Kopie zapasowe i odtwarzanie](#15-kopie-zapasowe-i-odtwarzanie)
-16. [Checklista bezpieczeństwa](#16-checklista-bezpieczeństwa)
-17. [Troubleshooting](#17-troubleshooting)
+12. [Pliki statyczne (STATIC)](#12-pliki-statyczne-static)
+13. [Reverse-proxy + TLS](#13-reverse-proxy--tls)
+14. [Weryfikacja wdrożenia](#14-weryfikacja-wdrożenia)
+15. [Aktualizacje](#15-aktualizacje)
+16. [Kopie zapasowe i odtwarzanie](#16-kopie-zapasowe-i-odtwarzanie)
+17. [Checklista bezpieczeństwa](#17-checklista-bezpieczeństwa)
+18. [Troubleshooting](#18-troubleshooting)
 
 ---
 
@@ -359,7 +360,58 @@ docker compose exec web python manage.py migrate
 
 ---
 
-## 12. Reverse-proxy + TLS
+## 12. Pliki statyczne (STATIC)
+
+Pliki statyczne (CSS/JS panelu `/admin/`, DRF oraz Swagger UI) są serwowane
+bezpośrednio przez aplikację za pomocą **WhiteNoise** — nie wymagają osobnego
+serwera plików. Konfiguracja:
+
+- `STATIC_URL = '/static/'`, `STATIC_ROOT = staticfiles/` (`settings_base.py`).
+- `whitenoise.middleware.WhiteNoiseMiddleware` tuż po `SecurityMiddleware`.
+- `STATIC` jest **publiczny** (bez logowania) — to zamierzone, dotyczy wyłącznie
+  zasobów front-endowych Django/DRF, nie danych użytkowników.
+
+### Generowanie plików (`collectstatic`)
+
+Obraz uruchamia `collectstatic` przy budowie, ale w dev/serwerowym trybie z
+bind-mountem (`.:/app`) host **przesłania** katalog z obrazu. Dlatego usługa
+`migrate` w `docker-compose.yml` uruchamia `collectstatic` przy **każdym** starcie:
+
+```yaml
+command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput"
+```
+
+Dzięki temu po `git pull` + `up` pliki trafiają do `./staticfiles/` na hoście i są
+widoczne dla WhiteNoise. W razie potrzeby można uruchomić ręcznie:
+
+```bash
+docker compose exec web python manage.py collectstatic --noinput
+```
+
+### STATIC vs MEDIA
+
+| Ścieżka | Zawartość | Dostęp |
+| --- | --- | --- |
+| `/static/...` | CSS/JS admina, DRF, Swagger | Publiczny (WhiteNoise) |
+| `/internal-media/blog/...` | Obrazki wpisów blogowych | Publiczny |
+| `/internal-media/...` (feedy) | Pliki feedów | Tylko przez autoryzowane endpointy download |
+
+### Weryfikacja
+
+```bash
+# Wewnątrz hosta (bezpośrednio do aplikacji)
+curl -I http://127.0.0.1:8000/static/admin/css/base.css
+
+# Przez reverse-proxy / domenę
+curl -I https://api.example.org/static/admin/css/base.css
+```
+
+Oba powinny zwrócić **`200`**. Jeśli lokalnie `200`, a przez domenę `404` —
+reverse-proxy nie przekazuje ścieżki `/static/` (patrz sekcja 13).
+
+---
+
+## 13. Reverse-proxy + TLS
 
 Aplikacja nasłuchuje na `127.0.0.1:8000`. Przed nią postaw reverse-proxy z TLS.
 
@@ -408,11 +460,16 @@ server {
 > inaczej proxy odrzuci duże uploady przed aplikacją.
 
 Jeśli proxy nie działa na tym samym hoście co aplikacja, zmień bind portu `web`
-w compose (`WEB_HOST_PORT` / mapowanie), tak aby był osiągalny dla proxy.
+w compose (`WEB_HOST_BIND` / `WEB_HOST_PORT`), tak aby był osiągalny dla proxy
+(np. `WEB_HOST_BIND=0.0.0.0`).
+
+> Proxy musi przekazywać **cały** ruch do aplikacji, w tym ścieżkę `/static/`
+> (powyższy `location /` to zapewnia). Jeśli używasz wyłącznie reguł typu
+> `location /api/`, pliki statyczne (CSS admina/Swaggera) nie dotrą do Django.
 
 ---
 
-## 13. Weryfikacja wdrożenia
+## 14. Weryfikacja wdrożenia
 
 ```bash
 # Status i healthcheck usług
@@ -434,7 +491,7 @@ Oczekiwane: brak ostrzeżeń `security.W*`. Następnie sprawdź przez przegląda
 
 ---
 
-## 14. Aktualizacje
+## 15. Aktualizacje
 
 ```bash
 cd /opt/odt
@@ -451,7 +508,7 @@ Po zmianie zależności (`requirements.txt`) lub `Dockerfile` build jest wymagan
 
 ---
 
-## 15. Kopie zapasowe i odtwarzanie
+## 16. Kopie zapasowe i odtwarzanie
 
 ### Baza danych
 
@@ -476,7 +533,7 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 
 ---
 
-## 16. Checklista bezpieczeństwa
+## 17. Checklista bezpieczeństwa
 
 - [ ] `DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod`
 - [ ] `DJANGO_SECRET_KEY` — silny, unikalny (nie placeholder)
@@ -489,11 +546,12 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 - [ ] `DOCKER_GID` ustawiony; rozważone least-privilege proxy dla `docker.sock`
 - [ ] `.env` z uprawnieniami `600`, poza repozytorium git
 - [ ] `python manage.py check --deploy` bez ostrzeżeń `security.W*`
+- [ ] Pliki `/static/` dostępne (200) lokalnie i przez proxy (patrz sekcja 12)
 - [ ] Skonfigurowany backup bazy i `uploaded_data/`
 
 ---
 
-## 17. Troubleshooting
+## 18. Troubleshooting
 
 **Aplikacja nie startuje, `ImproperlyConfigured: DJANGO_SECRET_KEY...`**
 → Ustaw realny `DJANGO_SECRET_KEY` w `.env` (w prod placeholder jest blokowany).
@@ -520,6 +578,12 @@ domyślnie jest teraz `False` w `settings_prod`.
 
 **CORS — przeglądarka blokuje żądania**
 → Dodaj origin frontu do `CORS_ALLOWED_ORIGINS`; sprawdź `CORS_URLS_REGEX`.
+
+**Brak CSS w `/admin/` lub Swaggerze (pliki `/static/` zwracają 404)**
+→ Uruchom `collectstatic` (robi to usługa `migrate` przy starcie; ręcznie:
+`docker compose exec web python manage.py collectstatic --noinput`). Jeśli lokalnie
+`curl http://127.0.0.1:8000/static/admin/css/base.css` daje `200`, a przez domenę
+`404` — reverse-proxy nie przekazuje `/static/` (patrz sekcja 12 i 13).
 
 **Walidacja GTFS nie działa / „Cannot connect to Docker”**
 → Sprawdź `DOCKER_GID` (`stat -c '%g' /var/run/docker.sock`) i czy socket jest
