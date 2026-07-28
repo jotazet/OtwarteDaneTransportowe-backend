@@ -221,10 +221,27 @@ class FeedSubmission(models.Model):
     # Computed properties – derived from FeedSubmissionHistory
     # ------------------------------------------------------------------
 
+    def _prefetched_history(self):
+        """Prefetched history rows (newest first, via the history model's
+        Meta.ordering) or None when 'history' was not prefetched.
+
+        Serializer list views prefetch 'history'; resolving the properties
+        from that cache avoids a per-object query per property access (N+1).
+        """
+        cache = getattr(self, '_prefetched_objects_cache', None) or {}
+        return cache.get('history')
+
+    @property
+    def _latest_history_entry(self):
+        rows = self._prefetched_history()
+        if rows is not None:
+            return rows[0] if rows else None
+        return self.history.order_by('-created_at').first()
+
     @property
     def current_stage(self) -> int:
         """Returns the current stage (1–4) based on the latest history entry."""
-        latest = self.history.order_by('-created_at').first()
+        latest = self._latest_history_entry
         if latest is None:
             return 1
         return latest.stage_after
@@ -244,23 +261,30 @@ class FeedSubmission(models.Model):
     @property
     def is_rejected(self) -> bool:
         """True if the latest history entry is a rejection."""
-        latest = self.history.order_by('-created_at').first()
+        latest = self._latest_history_entry
         return latest is not None and latest.event_type == FeedSubmissionHistory.EVENT_REJECTED
 
     @property
     def rejection_cause(self):
         """Returns cause from last rejected history entry, or None."""
-        if not self.is_rejected:
+        latest = self._latest_history_entry
+        if latest is None or latest.event_type != FeedSubmissionHistory.EVENT_REJECTED:
             return None
-        latest = self.history.order_by('-created_at').first()
-        return latest.cause if latest else None
+        return latest.cause
 
     @property
     def published_at(self):
         """Returns created_at from the 'completed' history entry, or None."""
-        completed = self.history.filter(
-            event_type=FeedSubmissionHistory.EVENT_COMPLETED
-        ).order_by('-created_at').first()
+        rows = self._prefetched_history()
+        if rows is not None:
+            completed = next(
+                (h for h in rows if h.event_type == FeedSubmissionHistory.EVENT_COMPLETED),
+                None,
+            )
+        else:
+            completed = self.history.filter(
+                event_type=FeedSubmissionHistory.EVENT_COMPLETED
+            ).order_by('-created_at').first()
         return completed.created_at if completed else None
 
     # NOTE: realtime is handled via separate RealtimeSubmission flow
@@ -728,30 +752,49 @@ class RealtimeSubmission(models.Model):
         if errors:
             raise ValidationError(errors)
 
+    def _prefetched_history(self):
+        """See FeedSubmission._prefetched_history (same N+1 avoidance)."""
+        cache = getattr(self, '_prefetched_objects_cache', None) or {}
+        return cache.get('history')
+
+    @property
+    def _latest_history_entry(self):
+        rows = self._prefetched_history()
+        if rows is not None:
+            return rows[0] if rows else None
+        return self.history.order_by('-created_at').first()
+
     @property
     def current_stage(self) -> int:
-        latest = self.history.order_by('-created_at').first()
+        latest = self._latest_history_entry
         if latest is None:
             return 1
         return latest.stage_after
 
     @property
     def is_rejected(self) -> bool:
-        latest = self.history.order_by('-created_at').first()
+        latest = self._latest_history_entry
         return latest is not None and latest.event_type == RealtimeSubmissionHistory.EVENT_REJECTED
 
     @property
     def rejection_cause(self):
-        if not self.is_rejected:
+        latest = self._latest_history_entry
+        if latest is None or latest.event_type != RealtimeSubmissionHistory.EVENT_REJECTED:
             return None
-        latest = self.history.order_by('-created_at').first()
-        return latest.cause if latest else None
+        return latest.cause
 
     @property
     def published_at(self):
-        completed = self.history.filter(
-            event_type=RealtimeSubmissionHistory.EVENT_COMPLETED
-        ).order_by('-created_at').first()
+        rows = self._prefetched_history()
+        if rows is not None:
+            completed = next(
+                (h for h in rows if h.event_type == RealtimeSubmissionHistory.EVENT_COMPLETED),
+                None,
+            )
+        else:
+            completed = self.history.filter(
+                event_type=RealtimeSubmissionHistory.EVENT_COMPLETED
+            ).order_by('-created_at').first()
         return completed.created_at if completed else None
 
     def __str__(self):

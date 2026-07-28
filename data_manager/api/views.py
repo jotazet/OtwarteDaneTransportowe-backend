@@ -304,6 +304,8 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
             .annotate(latest_event=Subquery(latest_history.values('event_type')[:1]))
             .exclude(latest_event=FeedSubmissionHistory.EVENT_REJECTED)
             .select_related('transport_organization', 'submitted_by', 'static_entry')
+            # published_at resolves from the prefetch cache (see model properties).
+            .prefetch_related('history')
             .order_by('id')
         )
         published_rt = completed_realtime_submission_ids()
@@ -311,7 +313,7 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
             RealtimeSubmission.objects
             .filter(pk__in=published_rt, protocol=RealtimeSubmission.PROTOCOL_GBFS)
             .select_related('transport_organization')
-            .prefetch_related('endpoints')
+            .prefetch_related('endpoints', 'history')
             .order_by('id')
         )
         org_qs = (
@@ -335,7 +337,7 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
                 static_submission_id__in=published_static,
                 protocol__in=[RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI],
             )
-            .prefetch_related('endpoints')
+            .prefetch_related('endpoints', 'history')
         )
         context['rt_embed'] = {r.static_submission_id: r for r in rts}
         return context
