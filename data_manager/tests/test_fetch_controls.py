@@ -138,7 +138,8 @@ def test_static_fetch_errors_apply_pause_sequence_and_success_resets(
     assert FeedFetchError.objects.filter(static_entry=entry).count() == 4
 
     class Response:
-        content = b'feed-bytes'
+        # Minimal ZIP magic: fetched GTFS content must look like a ZIP archive.
+        content = b'PK\x03\x04feed-bytes'
 
         def raise_for_status(self):
             return None
