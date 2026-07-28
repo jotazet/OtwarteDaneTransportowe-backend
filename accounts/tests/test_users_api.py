@@ -44,7 +44,7 @@ def test_list_users_requires_admin_group(api_client, admin_user, regular_user):
     api_client.force_authenticate(user=admin_user)
     response = api_client.get('/api/users/')
     assert response.status_code == 200
-    usernames = {u['username'] for u in response.data}
+    usernames = {u['username'] for u in response.data['results']}
     assert 'admin_api' in usernames
     assert 'regular' in usernames
 

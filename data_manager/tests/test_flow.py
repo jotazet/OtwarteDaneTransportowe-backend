@@ -1161,7 +1161,7 @@ def test_eligible_static_submissions_for_realtime_endpoint(api_client, normal_us
     )
 
     assert response.status_code == 200, response.data
-    by_id = {item['id']: item for item in response.data}
+    by_id = {item['id']: item for item in response.data['results']}
     assert by_id[gtfs_submission.id]['allowed_realtime_protocols'] == ['gtfs_rt']
     assert by_id[netex_submission.id]['allowed_realtime_protocols'] == ['siri']
     assert other_submission.id not in by_id
@@ -1170,19 +1170,19 @@ def test_eligible_static_submissions_for_realtime_endpoint(api_client, normal_us
         f'/api/data_manager/realtime-submissions/eligible-static-submissions/{org.id}/gtfs/',
     )
     assert gtfs_response.status_code == 200, gtfs_response.data
-    assert [item['id'] for item in gtfs_response.data] == [gtfs_submission.id]
+    assert [item['id'] for item in gtfs_response.data['results']] == [gtfs_submission.id]
 
     netex_response = api_client.get(
         f'/api/data_manager/realtime-submissions/eligible-static-submissions/{org.id}/netex/',
     )
     assert netex_response.status_code == 200, netex_response.data
-    assert [item['id'] for item in netex_response.data] == [netex_submission.id]
+    assert [item['id'] for item in netex_response.data['results']] == [netex_submission.id]
 
     other_response = api_client.get(
         f'/api/data_manager/realtime-submissions/eligible-static-submissions/{org.id}/other/',
     )
     assert other_response.status_code == 200, other_response.data
-    assert other_response.data == []
+    assert other_response.data['results'] == []
 
 
 def test_gbfs_cannot_be_linked_to_static_submission(normal_user, org):

@@ -173,6 +173,10 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # Uniform list contract: every list endpoint pages with the standard
+    # envelope so responses stay bounded as the data grows.
+    'DEFAULT_PAGINATION_CLASS': 'OtwarteDaneTransportowe.pagination.DefaultPageNumberPagination',
+    'PAGE_SIZE': 50,
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',

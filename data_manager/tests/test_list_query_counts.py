@@ -33,5 +33,6 @@ def test_list_query_count_constant(django_assert_max_num_queries):
     with django_assert_max_num_queries(20):
         resp = client.get('/api/data_manager/feed-submissions/')
     assert resp.status_code == 200
-    assert len(resp.data) == 20
-    assert all(row['current_stage'] == 4 for row in resp.data)
+    rows = resp.data['results']
+    assert resp.data['count'] == 20
+    assert all(row['current_stage'] == 4 for row in rows)

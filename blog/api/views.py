@@ -37,14 +37,6 @@ class PostViewSet(viewsets.ModelViewSet):
             return PostListSerializer
         return PostSerializer
 
-    def list(self, request, *args, **kwargs):
-        # If no `page` param is provided, return all posts without pagination envelope
-        if 'page' not in request.query_params:
-            qs = self.get_queryset()
-            serializer = self.get_serializer(qs, many=True)
-            return Response(serializer.data)
-        return super().list(request, *args, **kwargs)
-
     def perform_create(self, serializer):
         serializer.save(author=self.request.user)
 

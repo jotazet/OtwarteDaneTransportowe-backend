@@ -672,11 +672,14 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
             if RealtimeSubmission.allowed_protocols_for_static_data_type(submission.data_type)
             - {rt.protocol for rt in submission.realtime_submissions.all()}
         ]
+        page = self.paginate_queryset(eligible)
         serializer = EligibleRealtimeStaticSubmissionSerializer(
-            eligible,
+            page if page is not None else eligible,
             many=True,
             context={'request': request},
         )
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):

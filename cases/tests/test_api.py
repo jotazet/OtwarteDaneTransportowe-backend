@@ -36,12 +36,12 @@ def test_anonymous_can_read_organizations_and_statuses(api_client, org):
     assert response.status_code == 200
     # is_public describes the organization type (public vs private company),
     # NOT visibility — private organizations are listed too.
-    assert [row['id'] for row in response.data] == [org.id]
+    assert [row['id'] for row in response.data['results']] == [org.id]
 
     # TransportOrganization.save() auto-creates an initial CaseStatus row.
     response = api_client.get('/api/cases/case-statuses/')
     assert response.status_code == 200
-    assert len(response.data) == 1
+    assert response.data['count'] == 1
 
 
 def test_anonymous_cannot_write(api_client, org):
