@@ -517,11 +517,25 @@ def validate_gtfs_feed_task(self, entry_id: int):
     container_output_dir = os.path.join(container_input_dir, report_dir_name)
     host_output_dir = os.path.join(host_input_dir, report_dir_name)
 
+    def _cleanup_workdirs() -> None:
+        """Remove the validator output dir and the URL-download temp dir.
+
+        Must run on EVERY exit path: the output dir name carries a random
+        suffix, so a leaked dir is never reused and repeated validation
+        failures (Docker down, missing/garbled report.json) would otherwise
+        grow the disk without bound. rmtree(ignore_errors=True) is a no-op
+        for dirs that were never created.
+        """
+        shutil.rmtree(container_output_dir, ignore_errors=True)
+        if validation_temp_dir:
+            shutil.rmtree(validation_temp_dir, ignore_errors=True)
+
     if not os.path.exists(container_file_path):
         _reject_submission(
             f"File not found in container: {container_file_path}",
             validation_error=True,
         )
+        _cleanup_workdirs()
         return
 
     # NOTE: Do not check host_file_path existence here.
@@ -542,6 +556,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
     except OSError as e:
         logger.error(f"Failed to create validation output dir: {e}")
         _set_validation_status(StaticFeedEntry.VALIDATION_ERROR, str(e))
+        _cleanup_workdirs()
         return
 
     logger.info(f"Validating {filename}...")
@@ -554,6 +569,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             f"Cannot connect to Docker (check the docker-socket-proxy service / DOCKER_HOST): {e}",
             validation_error=True,
         )
+        _cleanup_workdirs()
         return
 
     try:
@@ -592,9 +608,11 @@ def validate_gtfs_feed_task(self, entry_id: int):
 
     except docker.errors.ContainerError as e:
         _reject_submission(f"Validator container failed: {e}", validation_error=True)
+        _cleanup_workdirs()
         return
     except Exception as e:
         _reject_submission(f"Docker execution error: {e}", validation_error=True)
+        _cleanup_workdirs()
         return
 
     # Parse results
@@ -621,6 +639,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             f"report.json not found in output directory after {max_retries} retries: {container_output_dir}",
             validation_error=True,
         )
+        _cleanup_workdirs()
         return
 
     try:
@@ -628,6 +647,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             report_data = json.load(f)
     except json.JSONDecodeError as e:
         _reject_submission(f"Failed to decode report.json: {e}", validation_error=True)
+        _cleanup_workdirs()
         return
 
     def extract_notice_counts(payload: dict) -> tuple[int, int, dict]:
@@ -704,14 +724,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
         entry.save(update_fields=['validation_report'])
         val_report.report_file.save('report.json', ContentFile(report_bytes))
 
-    # Cleanup output dir
-    try:
-        # remove output directory to avoid leaving random reports on disk
-        shutil.rmtree(container_output_dir, ignore_errors=True)
-    except Exception as e:
-        logger.warning(f"Failed to cleanup {container_output_dir}: {e}")
-    if validation_temp_dir:
-        shutil.rmtree(validation_temp_dir, ignore_errors=True)
+    _cleanup_workdirs()
 
     # Update Submission Stage
     submission = entry.submission

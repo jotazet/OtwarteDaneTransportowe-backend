@@ -340,3 +340,30 @@ def test_weak_production_secret_keys_rejected(bad_key):
 
 def test_strong_production_secret_key_accepted():
     validate_production_secret_key('k' * 64)
+
+
+# ---------------------------------------------------------------------------
+# Disk-growth regression: validator workdirs must be reclaimed on failure
+# ---------------------------------------------------------------------------
+
+def test_failed_validation_leaves_no_workdirs(settings, tmp_path, monkeypatch, org, provider_user):
+    """Each validation run creates a random-suffix output dir; failures used to
+    leak it, growing the disk on every retry (Docker down, broken report)."""
+    import docker as docker_module
+
+    from data_manager.tasks import validate_gtfs_feed_task
+
+    settings.MEDIA_ROOT = tmp_path
+    entry = _entry(org, provider_user, url=None, download_time_1=None, hide_original=False)
+    entry.file.save('feed.zip', ContentFile(b'PK\x03\x04data'), save=True)
+
+    def failing_from_env():
+        raise docker_module.errors.DockerException('docker down')
+
+    monkeypatch.setattr('docker.from_env', failing_from_env)
+    monkeypatch.setenv('HOST_MEDIA_ROOT', str(tmp_path))
+
+    validate_gtfs_feed_task(entry.id)
+
+    leftovers = list(tmp_path.rglob('validation_report_*'))
+    assert leftovers == [], f'leaked validator workdirs: {leftovers}'
