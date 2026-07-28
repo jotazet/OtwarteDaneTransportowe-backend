@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import admin
 from django.utils.html import format_html
 
@@ -14,8 +15,42 @@ from data_manager.models import (
 )
 
 
+class _CredentialInlineForm(forms.ModelForm):
+    """Never render the stored (decrypted) auth credential in the admin.
+
+    The field stays writable: typing a new value replaces the credential,
+    leaving it blank keeps the existing one. Clearing a credential is done by
+    clearing ``auth_type`` (the fetcher ignores ``auth_value`` without it).
+    """
+
+    auth_value = forms.CharField(
+        required=False,
+        widget=forms.PasswordInput(render_value=False),
+        help_text='Leave blank to keep the existing credential.',
+    )
+
+    def clean_auth_value(self):
+        value = self.cleaned_data.get('auth_value')
+        if not value and self.instance.pk:
+            return self.instance.auth_value
+        return value
+
+
+class StaticFeedEntryInlineForm(_CredentialInlineForm):
+    class Meta:
+        model = StaticFeedEntry
+        fields = '__all__'
+
+
+class RealtimeEndpointRTInlineForm(_CredentialInlineForm):
+    class Meta:
+        model = RealtimeEndpointRT
+        fields = '__all__'
+
+
 class StaticFeedEntryInline(admin.StackedInline):
     model = StaticFeedEntry
+    form = StaticFeedEntryInlineForm
     extra = 0
     max_num = None
     fields = (
@@ -29,6 +64,7 @@ class StaticFeedEntryInline(admin.StackedInline):
 
 class RealtimeEndpointRTInline(admin.TabularInline):
     model = RealtimeEndpointRT
+    form = RealtimeEndpointRTInlineForm
     fk_name = 'submission'
     extra = 0
     fields = (
