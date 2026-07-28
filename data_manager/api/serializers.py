@@ -804,6 +804,29 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 
         return attrs
 
+    @staticmethod
+    def _schedule_source_refresh(entry: StaticFeedEntry) -> None:
+        """Queue a refetch/revalidation for a (new or changed) URL source.
+
+        The model signals only watch file/cached_file, so a URL change would
+        otherwise keep serving the stale cache until the next scheduled
+        download. Enqueued via on_commit so the Celery worker never sees an
+        uncommitted row (runs immediately outside a transaction).
+        """
+        from data_manager.models import FETCH_STATUS_ACTIVE
+
+        if entry.fetch_status != FETCH_STATUS_ACTIVE:
+            # Fresh URL ⇒ fresh failure budget; otherwise fetch_is_due()
+            # would skip the immediate refetch for a delayed/paused entry.
+            entry.resume_fetch()
+        entry_id = entry.pk
+        if entry.is_proxy_managed:
+            from data_manager.tasks import fetch_static_entry_task
+            transaction.on_commit(lambda: fetch_static_entry_task.delay(entry_id))
+        elif entry.submission.data_type == 'gtfs':
+            from data_manager.tasks import validate_gtfs_feed_task
+            transaction.on_commit(lambda: validate_gtfs_feed_task.delay(entry_id))
+
     def create(self, validated_data):
         static_entry_data = validated_data.pop('static_entry', None)
         submission = FeedSubmission(**validated_data)
@@ -816,21 +839,18 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
             entry.full_clean()
             entry.save()
             if entry.url:
-                if entry.is_proxy_managed:
-                    from data_manager.tasks import fetch_static_entry_task
-                    fetch_static_entry_task.delay(entry.id)
-                elif entry.submission.data_type == 'gtfs':
-                    from data_manager.tasks import validate_gtfs_feed_task
-                    validate_gtfs_feed_task.delay(entry.id)
+                self._schedule_source_refresh(entry)
 
         return submission
 
     @transaction.atomic
     def update(self, instance, validated_data):
         static_entry_data = validated_data.pop('static_entry', None)
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
+        if validated_data:
+            for attr, value in validated_data.items():
+                setattr(instance, attr, value)
+            # updated_at is auto_now and is only refreshed when listed here.
+            instance.save(update_fields=[*validated_data.keys(), 'updated_at'])
 
         if static_entry_data:
             try:
@@ -845,12 +865,20 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 
             if static_entry_data:
                 if entry is not None:
+                    old_url = entry.url
+                    update_fields = set(static_entry_data.keys())
                     for attr, value in static_entry_data.items():
                         setattr(entry, attr, value)
                     if static_entry_data.get('auth_type') is not None:
                         entry.hide_original = True
+                        update_fields.add('hide_original')
                     entry.full_clean()
-                    entry.save()
+                    # Explicit update_fields: the fetch scheduler updates
+                    # cached_file/cached_at concurrently via queryset.update();
+                    # a full save() would write back this instance's stale copy.
+                    entry.save(update_fields=sorted(update_fields))
+                    if entry.url and entry.url != old_url:
+                        self._schedule_source_refresh(entry)
                 else:
                     if static_entry_data.get('auth_type') is not None:
                         static_entry_data['hide_original'] = True
@@ -859,6 +887,8 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     )
                     new_entry.full_clean()
                     new_entry.save()
+                    if new_entry.url:
+                        self._schedule_source_refresh(new_entry)
 
         return instance
 

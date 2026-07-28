@@ -713,7 +713,9 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
             for attr, val in data.items():
                 setattr(instance, attr, val)
             if data:
-                instance.save()
+                # updated_at is auto_now and must be listed explicitly; a bare
+                # save() would also clobber concurrently-updated fields.
+                instance.save(update_fields=[*data.keys(), 'updated_at'])
             if endpoints_data is not None:
                 if restricted_realtime:
                     for ep in endpoints_data:
