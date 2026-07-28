@@ -10,6 +10,8 @@ Wywoływane wyłącznie przez Celery tasks (data_manager/tasks.py):
 Nie wywoływać bezpośrednio — logika harmonogramu należy do tasków.
 """
 import logging
+import os
+from urllib.parse import urlparse
 
 import requests
 from django.conf import settings
@@ -97,8 +99,6 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
         )
         response.raise_for_status()
 
-        import os
-        from urllib.parse import urlparse
         parsed = urlparse(entry.url)
         filename = os.path.basename(parsed.path) or 'feed.zip'
 
@@ -167,7 +167,10 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
             max_bytes=settings.MAX_FEED_FILE_SIZE_BYTES,
         )
         response.raise_for_status()
-        filename = endpoint.url.rstrip('/').split('/')[-1] or 'feed.pb'
+        # Derive the public cache filename from the URL *path* only — the raw
+        # last segment would keep the query string (e.g. '?token=...') and leak
+        # upstream credentials into the public download URL.
+        filename = os.path.basename(urlparse(endpoint.url).path) or 'feed.pb'
         endpoint.cached_file.save(filename, ContentFile(response.content), save=False)
         RealtimeEndpointRT.objects.filter(pk=endpoint.pk).update(
             cached_file=endpoint.cached_file.name,
