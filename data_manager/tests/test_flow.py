@@ -133,14 +133,22 @@ def test_gtfs_upload_flow_correct(api_client, admin_user, normal_user, org):
     submission.refresh_from_db()
     assert submission.current_stage == 4, f"Expected stage 4, got {submission.current_stage}"
 
-    # 4. Check if it's visible on the /feeds/ endpoint
+    # 4. Check if it's visible on the /feeds/ endpoint.
+    # The list view returns ORGANIZATIONS (with aggregated feed types); the
+    # detail view nests the published feed submissions themselves.
     feeds_url = '/api/data_manager/feeds/'
     response = api_client.get(feeds_url)
     assert response.status_code == 200
 
     results = response.data if isinstance(response.data, list) else response.data.get('results', [])
-    feed_ids = [f['id'] for f in results]
-    assert submission_id in feed_ids or static_entry.id in feed_ids, "Feed not found in /feeds/ endpoint after reaching stage 4"
+    org_row = next((row for row in results if row['id'] == org.id), None)
+    assert org_row is not None, "Organization not found in /feeds/ endpoint after reaching stage 4"
+    assert 'gtfs' in org_row['static_types'], "Published GTFS feed not reflected in organization static_types"
+
+    response = api_client.get(f'{feeds_url}{org.id}/')
+    assert response.status_code == 200
+    nested_feed_ids = [f['id'] for f in response.data['feeds']]
+    assert submission_id in nested_feed_ids, "Feed not found in organization detail after reaching stage 4"
 
 
 def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
