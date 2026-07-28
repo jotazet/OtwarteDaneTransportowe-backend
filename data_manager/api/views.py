@@ -27,6 +27,7 @@ from OtwarteDaneTransportowe.auth_roles import (
 from data_manager.api.serializers import (
     AdminFeedSubmissionSerializer,
     AdminRealtimeSubmissionSerializer,
+    annotate_fetch_health,
     EligibleRealtimeStaticSubmissionSerializer,
     FeedFetchErrorSerializer,
     FeedSubmissionListSerializer,
@@ -109,19 +110,22 @@ class ProxyManagedFeedListView(APIView):
     that can be paused or resumed by operators.
     """
     permission_classes = [IsAuthenticated]
-    pagination_class = FetchErrorPagination
+    # NOTE: plain APIView ignores pagination_class — pagination is done
+    # manually in get() below.
 
     def get(self, request):
-        static_qs = (
+        static_qs = annotate_fetch_health(
             StaticFeedEntry.objects
             .filter(hide_original=True, url__isnull=False)
             .exclude(url='')
-            .select_related('submission', 'submission__transport_organization', 'submission__submitted_by')
+            .select_related('submission', 'submission__transport_organization', 'submission__submitted_by'),
+            'static_entry',
         )
-        rt_qs = (
+        rt_qs = annotate_fetch_health(
             RealtimeEndpointRT.objects
             .filter(hide_original=True)
-            .select_related('submission', 'submission__transport_organization', 'submission__submitted_by')
+            .select_related('submission', 'submission__transport_organization', 'submission__submitted_by'),
+            'endpoint_rt',
         )
         if not can_confirm_feeds(request.user):
             static_qs = static_qs.filter(submission__submitted_by=request.user)
@@ -180,6 +184,64 @@ class FetchErrorListView(generics.ListAPIView):
             )
         qs = _filter_fetch_errors(request, qs)
         return qs.order_by('-occurred_at')
+
+
+def _validate_stage_value(raw):
+    """Parse the PATCH ``stage`` field early — BEFORE any content is saved —
+    so a malformed value cannot 400 after a partial commit. Returns int or None."""
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValidationError({'stage': 'Stage must be an integer.'})
+    if value < 1 or value > 4:
+        raise ValidationError({'stage': 'Stage must be between 1 and 4.'})
+    return value
+
+
+def _apply_stage_transition(request, submission, *, history_model, on_publish=None):
+    """Shared admin/helper stage transition for static and realtime submissions.
+
+    ``rejection_cause`` (non-empty) rejects back to stage 1; otherwise ``stage``
+    moves the submission (4 records EVENT_COMPLETED and fires ``on_publish``).
+    Note: EVENT_STAGE_ADVANCED is also recorded for demotions — the direction
+    lives in stage_before/stage_after; there is no separate 'reverted' event.
+    """
+    rejection_cause = (request.data.get('rejection_cause') or '').strip()
+    desired_stage = _validate_stage_value(request.data.get('stage'))
+
+    if rejection_cause:
+        history_model.objects.create(
+            submission=submission,
+            event_type=history_model.EVENT_REJECTED,
+            stage_before=submission.current_stage,
+            stage_after=1,
+            actor=request.user,
+            cause=rejection_cause,
+        )
+        return
+
+    if desired_stage is None:
+        return
+
+    current = submission.current_stage
+    if desired_stage == current:
+        return
+
+    history_model.objects.create(
+        submission=submission,
+        event_type=(
+            history_model.EVENT_COMPLETED
+            if desired_stage == 4
+            else history_model.EVENT_STAGE_ADVANCED
+        ),
+        stage_before=current,
+        stage_after=desired_stage,
+        actor=request.user,
+    )
+    if desired_stage == 4 and on_publish is not None:
+        on_publish(submission)
 
 
 def _request_changes_static_source(request) -> bool:
@@ -449,7 +511,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         instance = serializer.instance
-        output = FeedSubmissionSerializer(instance, context={'request': request})
+        output = self._read_serializer(request, instance)
         return Response(output.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
@@ -479,6 +541,10 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # Validate the stage transition input up front: content must not be
+        # saved before a malformed 'stage' 400s.
+        _validate_stage_value(request.data.get('stage'))
+
         was_rejected = instance.is_rejected
         restricted_static_edit = not can_edit_static_feed_source(request.user, instance)
         is_owner_resubmission = was_rejected and not can_confirm_feeds(request.user)
@@ -489,76 +555,45 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         context['defer_source_refresh'] = is_owner_resubmission
         serializer = self.get_serializer(instance, data=request.data, partial=partial, context=context)
         serializer.is_valid(raise_exception=True)
-        submission = serializer.save()
 
-        if is_owner_resubmission and _request_changes_static_source(request):
-            FeedSubmissionHistory.objects.create(
-                submission=submission,
-                event_type=FeedSubmissionHistory.EVENT_UPLOADED,
-                stage_before=1,
-                stage_after=2,
-                actor=request.user,
-            )
-            # Always restart verification — even when the resubmitted source
-            # values are identical (same url / same-named file), otherwise the
-            # submission would sit at stage 2 forever with nothing queued
-            # (the periodic scheduler only refreshes published feeds).
-            try:
-                entry = submission.static_entry
-            except StaticFeedEntry.DoesNotExist:
-                entry = None
-            if entry is not None:
-                FeedSubmissionWriteSerializer._schedule_source_refresh(entry)
+        with transaction.atomic():
+            submission = serializer.save()
 
-        if can_confirm_feeds(request.user):
-            self._admin_stage_transition(request, submission)
+            if is_owner_resubmission and _request_changes_static_source(request):
+                FeedSubmissionHistory.objects.create(
+                    submission=submission,
+                    event_type=FeedSubmissionHistory.EVENT_UPLOADED,
+                    stage_before=1,
+                    stage_after=2,
+                    actor=request.user,
+                )
+                # Always restart verification — even when the resubmitted source
+                # values are identical (same url / same-named file), otherwise the
+                # submission would sit at stage 2 forever with nothing queued
+                # (the periodic scheduler only refreshes published feeds).
+                try:
+                    entry = submission.static_entry
+                except StaticFeedEntry.DoesNotExist:
+                    entry = None
+                if entry is not None:
+                    FeedSubmissionWriteSerializer._schedule_source_refresh(entry)
 
-        output = FeedSubmissionSerializer(submission, context={'request': request})
+            if can_confirm_feeds(request.user):
+                _apply_stage_transition(
+                    request, submission, history_model=FeedSubmissionHistory
+                )
+
+        output = self._read_serializer(request, submission)
         return Response(output.data)
 
-    def _admin_stage_transition(self, request, submission: FeedSubmission):
-        rejection_cause = (request.data.get('rejection_cause') or '').strip()
-        desired_stage = request.data.get('stage')
-
-        if rejection_cause:
-            current = submission.current_stage
-            FeedSubmissionHistory.objects.create(
-                submission=submission,
-                event_type=FeedSubmissionHistory.EVENT_REJECTED,
-                stage_before=current,
-                stage_after=1,
-                actor=request.user,
-                cause=rejection_cause,
-            )
-            return
-
-        if desired_stage is None:
-            return
-
-        try:
-            desired_stage = int(desired_stage)
-        except (TypeError, ValueError):
-            raise ValidationError({'stage': 'Stage must be an integer.'})
-
-        if desired_stage < 1 or desired_stage > 4:
-            raise ValidationError({'stage': 'Stage must be between 1 and 4.'})
-
-        current = submission.current_stage
-        if desired_stage == current:
-            return
-
-        event_type = (
-            FeedSubmissionHistory.EVENT_COMPLETED
-            if desired_stage == 4
-            else FeedSubmissionHistory.EVENT_STAGE_ADVANCED
+    def _read_serializer(self, request, submission):
+        """Same output shape for GET and write responses (per requesting role)."""
+        serializer_class = (
+            AdminFeedSubmissionSerializer
+            if can_confirm_feeds(request.user)
+            else FeedSubmissionSerializer
         )
-        FeedSubmissionHistory.objects.create(
-            submission=submission,
-            event_type=event_type,
-            stage_before=current,
-            stage_after=desired_stage,
-            actor=request.user,
-        )
+        return serializer_class(submission, context={'request': request})
 
     def destroy(self, request, *args, **kwargs):
         # Policy: once uploaded, a submission is part of the review audit trail
@@ -708,8 +743,17 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                 actor=request.user,
             )
         validate_realtime_submission_task.delay(rts.id)
-        out = RealtimeSubmissionSerializer(rts, context={'request': request})
+        out = self._read_serializer(request, rts)
         return Response(out.data, status=status.HTTP_201_CREATED)
+
+    def _read_serializer(self, request, submission):
+        """Same output shape for GET and write responses (per requesting role)."""
+        serializer_class = (
+            AdminRealtimeSubmissionSerializer
+            if can_confirm_feeds(request.user)
+            else RealtimeSubmissionSerializer
+        )
+        return serializer_class(submission, context={'request': request})
 
     def update(self, request, *args, **kwargs):
         from data_manager.tasks import validate_realtime_submission_task
@@ -722,6 +766,8 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                     {'detail': 'Only Admin or Helper can confirm or reject submissions.'},
                     status=status.HTTP_403_FORBIDDEN,
                 )
+        # Early input check: content must not be saved before a bad 'stage' 400s.
+        _validate_stage_value(request.data.get('stage'))
 
         if is_helper_reviewer(request.user) and patch_request_includes_submission_content(request):
             return Response(
@@ -799,55 +845,22 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
 
                 schedule_realtime_endpoint_fetches(instance.id)
         if can_confirm_feeds(request.user):
-            self._admin_transition(request, instance)
-        out = RealtimeSubmissionSerializer(instance, context={'request': request})
+            from data_manager.tasks import schedule_realtime_endpoint_fetches
+
+            _apply_stage_transition(
+                request,
+                instance,
+                history_model=RealtimeSubmissionHistory,
+                # Publish side-effect (drift vs static made explicit): seed the
+                # realtime fetch loops; static feeds rely on the Beat schedule.
+                on_publish=lambda rts: schedule_realtime_endpoint_fetches(rts.id),
+            )
+        out = self._read_serializer(request, instance)
         return Response(out.data)
 
     def partial_update(self, request, *args, **kwargs):
         kwargs['partial'] = True
         return self.update(request, *args, **kwargs)
-
-    def _admin_transition(self, request, rts: RealtimeSubmission):
-        rejection_cause = (request.data.get('rejection_cause') or '').strip()
-        desired_stage = request.data.get('stage')
-        if rejection_cause:
-            cur = rts.current_stage
-            RealtimeSubmissionHistory.objects.create(
-                submission=rts,
-                event_type=RealtimeSubmissionHistory.EVENT_REJECTED,
-                stage_before=cur,
-                stage_after=1,
-                actor=request.user,
-                cause=rejection_cause,
-            )
-            return
-        if desired_stage is None:
-            return
-        try:
-            desired_stage = int(desired_stage)
-        except (TypeError, ValueError):
-            raise ValidationError({'stage': 'Stage must be an integer.'})
-        if desired_stage < 1 or desired_stage > 4:
-            raise ValidationError({'stage': 'Stage must be between 1 and 4.'})
-        cur = rts.current_stage
-        if desired_stage == cur:
-            return
-        ev = (
-            RealtimeSubmissionHistory.EVENT_COMPLETED
-            if desired_stage == 4
-            else RealtimeSubmissionHistory.EVENT_STAGE_ADVANCED
-        )
-        RealtimeSubmissionHistory.objects.create(
-            submission=rts,
-            event_type=ev,
-            stage_before=cur,
-            stage_after=desired_stage,
-            actor=request.user,
-        )
-        if desired_stage == 4:
-            from data_manager.tasks import schedule_realtime_endpoint_fetches
-
-            schedule_realtime_endpoint_fetches(rts.id)
 
     def destroy(self, request, *args, **kwargs):
         # Same deletion policy as static submissions: only Admin may delete
@@ -878,7 +891,7 @@ class StaticFeedEntryViewSet(viewsets.ReadOnlyModelViewSet):
     )
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = annotate_fetch_health(super().get_queryset(), 'static_entry')
         if not can_confirm_feeds(self.request.user):
             qs = qs.filter(submission__submitted_by=self.request.user)
         return qs
@@ -935,7 +948,7 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
     )
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = annotate_fetch_health(super().get_queryset(), 'endpoint_rt')
         if not can_confirm_feeds(self.request.user):
             qs = qs.filter(submission__submitted_by=self.request.user)
         return qs

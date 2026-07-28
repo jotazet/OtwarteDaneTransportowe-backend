@@ -3,7 +3,7 @@ from datetime import timedelta
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import OuterRef, Subquery
+from django.db.models import Count, OuterRef, Q, Subquery
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -80,10 +80,43 @@ def feed_display_name(submission) -> str | None:
     return f"#{submission.id} {name}".strip()
 
 
+def annotate_fetch_health(qs, error_fk: str):
+    """Attach fetch-health aggregates as annotations for list views.
+
+    Without this, `_fetch_health_fields` / `FetchHealthSerializerMixin` issue
+    two queries per row (latest error message + 7-day count). ``error_fk`` is
+    the FeedFetchError FK pointing at the queryset's model ('static_entry' or
+    'endpoint_rt').
+    """
+    since = timezone.now() - timedelta(days=7)
+    latest_error = (
+        FeedFetchError.objects
+        .filter(**{error_fk: OuterRef('pk')})
+        .order_by('-occurred_at', '-id')
+    )
+    return qs.annotate(
+        annotated_last_fetch_error_message=Subquery(latest_error.values('message')[:1]),
+        annotated_fetch_error_count_7d=Count(
+            'fetch_errors', filter=Q(fetch_errors__occurred_at__gte=since)
+        ),
+    )
+
+
+def _fetch_health_error_aggregates(obj) -> tuple[str | None, int]:
+    """(last error message, 7-day error count) — annotation-aware."""
+    if hasattr(obj, 'annotated_last_fetch_error_message'):
+        return obj.annotated_last_fetch_error_message, obj.annotated_fetch_error_count_7d
+    since = timezone.now() - timedelta(days=7)
+    last_error = obj.fetch_errors.order_by('-occurred_at', '-id').first()
+    return (
+        last_error.message if last_error else None,
+        obj.fetch_errors.filter(occurred_at__gte=since).count(),
+    )
+
+
 def _fetch_health_fields(obj) -> dict:
     """Proxy fetch status + recent error aggregates for a static entry or RT endpoint."""
-    since = timezone.now() - timedelta(days=7)
-    last_error = obj.fetch_errors.order_by('-occurred_at').first()
+    last_error_message, error_count_7d = _fetch_health_error_aggregates(obj)
     return {
         'fetch_status': obj.fetch_status,
         'fetch_failure_count': obj.fetch_failure_count,
@@ -92,8 +125,8 @@ def _fetch_health_fields(obj) -> dict:
         'fetch_pause_reason': obj.fetch_pause_reason or '',
         'last_fetch_success_at': obj.last_fetch_success_at,
         'last_fetch_error_at': obj.last_fetch_error_at,
-        'last_fetch_error_message': last_error.message if last_error else None,
-        'fetch_error_count_7d': obj.fetch_errors.filter(occurred_at__gte=since).count(),
+        'last_fetch_error_message': last_error_message,
+        'fetch_error_count_7d': error_count_7d,
     }
 
 
@@ -196,12 +229,10 @@ class FetchHealthSerializerMixin(serializers.Serializer):
     fetch_error_count_7d = serializers.SerializerMethodField()
 
     def get_last_fetch_error_message(self, obj):
-        error = obj.fetch_errors.order_by('-occurred_at').first()
-        return error.message if error else None
+        return _fetch_health_error_aggregates(obj)[0]
 
     def get_fetch_error_count_7d(self, obj):
-        since = timezone.now() - timedelta(days=7)
-        return obj.fetch_errors.filter(occurred_at__gte=since).count()
+        return _fetch_health_error_aggregates(obj)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -908,7 +939,8 @@ class AdminFeedSubmissionSerializer(FeedSubmissionSerializer):
     submitted_by_username = serializers.SerializerMethodField()
 
     class Meta(FeedSubmissionSerializer.Meta):
-        fields = FeedSubmissionSerializer.Meta.fields + ['submitted_by_username', 'note']
+        # 'note' is already in the parent field list.
+        fields = FeedSubmissionSerializer.Meta.fields + ['submitted_by_username']
         read_only_fields = FeedSubmissionSerializer.Meta.read_only_fields + ['submitted_by_username']
 
     def get_submitted_by_username(self, obj):

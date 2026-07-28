@@ -23,11 +23,8 @@ User = get_user_model()
 
 
 class UserViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.all().order_by('username')
+    queryset = User.objects.prefetch_related('groups').order_by('username')
     permission_classes = [IsAuthenticated, RequiresAdminGroup]
-
-    def get_queryset(self):
-        return User.objects.prefetch_related('groups').order_by('username')
 
     def get_permissions(self):
         if self.action in ('me', 'change_email', 'change_password'):
@@ -41,8 +38,6 @@ class UserViewSet(viewsets.ModelViewSet):
             return UserUpdateSerializer
         if self.action == 'reset_password':
             return PasswordResetResponseSerializer
-        if self.action == 'me':
-            return UserSerializer
         return UserSerializer
 
     def create(self, request, *args, **kwargs):
