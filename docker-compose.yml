@@ -129,32 +129,38 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Least-privilege gateway to the host Docker API for the GTFS validator
+  # worker. Only this container mounts /var/run/docker.sock; the worker talks
+  # to it over TCP with everything except the needed endpoints denied.
+  #
+  # Honest caveat: the containers-create API still accepts bind mounts and the
+  # privileged flag, so a compromised worker remains dangerous — the proxy
+  # removes exec/volumes/images-tampering and shrinks the surface, it does not
+  # eliminate it. Full closure = rootless Docker or a separate validator
+  # microservice (see DEPLOYMENT.md).
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: odt-docker-socket-proxy
+    restart: unless-stopped
+    environment:
+      # Allowed: list/inspect/create/start/wait/logs/remove containers + image pull.
+      CONTAINERS: 1
+      IMAGES: 1
+      POST: 1
+      # Everything else (EXEC, VOLUMES, NETWORKS, SECRETS, SWARM, ...) stays denied.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
   celery_validator_worker:
     <<: *app-service
     container_name: odt-celery-validator-worker
-    # ┌──────────────────────────── SECURITY WARNING ─────────────────────────────┐
-    # │ This worker mounts the host Docker socket to run the GTFS validator image. │
-    # │ Access to /var/run/docker.sock is effectively ROOT on the host. A          │
-    # │ compromise of this worker (e.g. via SSRF or a deserialization bug) lets an │
-    # │ attacker control the host.                                                 │
-    # │                                                                            │
-    # │ Mitigations in place: the validator container runs with                    │
-    # │ network_disabled, a non-root user, --rm, and bounded mem/pids/cpu limits   │
-    # │ (see data_manager/tasks.py:validate_gtfs_feed_task).                       │
-    # │                                                                            │
-    # │ RECOMMENDED for production: replace the raw socket with a least-privilege  │
-    # │ docker-socket-proxy (allow only container create/start/wait/remove), or    │
-    # │ run the validator as a separate REST microservice, or use rootless Docker. │
-    # └────────────────────────────────────────────────────────────────────────────┘
-    # Needs host Docker API (group_add = docker.sock GID). Set in shell or .env:
-    #   export DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
-    # UID/GID = owner of uploaded_data (usually 1000). DOCKER_GID is separate —
-    # do NOT set GID equal to DOCKER_GID or Compose rejects duplicate group_add.
-    group_add:
-      - "${DOCKER_GID:-959}"
-    volumes:
-      - .:/app
-      - /var/run/docker.sock:/var/run/docker.sock
+    # ┌──────────────────────────── SECURITY NOTE ────────────────────────────────┐
+    # │ This worker runs the GTFS validator image via the docker-socket-proxy     │
+    # │ service above (DOCKER_HOST) — it has no direct /var/run/docker.sock       │
+    # │ access. Validator containers additionally run with network_disabled,      │
+    # │ a non-root user, --rm and bounded mem/pids/cpu limits                     │
+    # │ (see data_manager/tasks.py:validate_gtfs_feed_task).                      │
+    # └───────────────────────────────────────────────────────────────────────────┘
     command: >
       celery -A OtwarteDaneTransportowe worker
       --loglevel=info
@@ -163,9 +169,11 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      docker-socket-proxy:
+        condition: service_started
     environment:
       <<: *app-env
-      DOCKER_GID: "${DOCKER_GID:-959}"
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
       UID: "${UID:-1000}"
       GID: "${GID:-1000}"
       HOST_PROJECT_PATH: "${HOST_PROJECT_PATH:-${PWD}}"

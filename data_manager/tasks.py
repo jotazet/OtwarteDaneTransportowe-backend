@@ -551,7 +551,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
         client = docker.from_env()
     except docker.errors.DockerException as e:
         _reject_submission(
-            f"Cannot connect to Docker (check DOCKER_GID / docker.sock): {e}",
+            f"Cannot connect to Docker (check the docker-socket-proxy service / DOCKER_HOST): {e}",
             validation_error=True,
         )
         return

@@ -21,7 +21,7 @@ zewnętrznym reverse-proxy (nginx/Caddy). Aplikacja nasłuchuje lokalnie na
 5. [Plik `.env` — pełna konfiguracja](#5-plik-env--pełna-konfiguracja)
 6. [PostgreSQL](#6-postgresql)
 7. [CORS i CSRF](#7-cors-i-csrf)
-8. [Docker socket dla walidatora (DOCKER_GID)](#8-docker-socket-dla-walidatora-docker_gid)
+8. [Docker API dla walidatora (docker-socket-proxy)](#8-docker-api-dla-walidatora-docker-socket-proxy)
 9. [Uprawnienia plików (UID/GID)](#9-uprawnienia-plików-uidgid)
 10. [Uruchomienie](#10-uruchomienie)
 11. [Migracje, konto admina i role](#11-migracje-konto-admina-i-role)
@@ -46,7 +46,8 @@ definiują następujące usługi:
 | `postgres` | Baza danych | `127.0.0.1:5420` (tylko lokalnie) |
 | `redis` | Broker Celery + cache | `127.0.0.1:6379` (tylko lokalnie) |
 | `celery_worker` | Kolejka `default` | — |
-| `celery_validator_worker` | Kolejka `feeds` + walidator GTFS (docker.sock) | — |
+| `celery_validator_worker` | Kolejka `feeds` + walidator GTFS (via socket-proxy) | — |
+| `docker-socket-proxy` | Least-privilege dostęp do Docker API hosta | — |
 | `celery_beat` | Harmonogram (django-celery-beat) | — |
 | `gtfs-realtime-validator` | Walidator GTFS-RT | `127.0.0.1:8082` |
 | `migrate` / `init_uploads` | Zadania startowe (jednorazowe) | — |
@@ -59,7 +60,8 @@ flowchart LR
   beat[celery_beat] --> redis
   redis --> worker[celery_worker]
   redis --> vworker[celery_validator_worker]
-  vworker -->|docker.sock| host[Docker hosta]
+  vworker -->|DOCKER_HOST tcp| sockproxy[docker-socket-proxy]
+  sockproxy -->|docker.sock ro| host[Docker hosta]
   host --> gtfs[gtfs-validator]
 ```
 
@@ -71,7 +73,8 @@ flowchart LR
 - Docker Engine + plugin `docker compose` (v2).
 - Otwarte porty `80` i `443` (dla reverse-proxy). Porty bazy/redis/web **nie** powinny
   być wystawione publicznie (w compose są zbindowane do `127.0.0.1`).
-- Dostęp do `/var/run/docker.sock` na hoście (wymagany przez walidator GTFS).
+- Docker socket hosta montuje wyłącznie usługa `docker-socket-proxy` (walidator GTFS
+  korzysta z niej przez `DOCKER_HOST`; nie trzeba nic konfigurować).
 
 ---
 
@@ -99,9 +102,6 @@ python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().
 
 # POSTGRES_PASSWORD (silne hasło bazy)
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-
-# GID grupy docker.sock na tym hoście (potrzebne walidatorowi)
-stat -c '%g' /var/run/docker.sock
 ```
 
 > Uwaga: `FEED_AUTH_ENCRYPTION_KEY` szyfruje klucze API/tokeny feedów „at rest”.
@@ -158,8 +158,9 @@ CSRF_TRUSTED_ORIGINS=https://api.example.org
 # ───────────────────────── Szyfrowanie poświadczeń feedów ─────────────────────────
 FEED_AUTH_ENCRYPTION_KEY=<wklej-klucz-Fernet>
 
-# ───────────────────────── Walidator GTFS (Docker socket) ─────────────────────────
-DOCKER_GID=<wynik: stat -c '%g' /var/run/docker.sock>
+# ───────────────────────── Walidator GTFS ─────────────────────────
+# Docker API idzie przez usługę docker-socket-proxy (DOCKER_HOST w compose) —
+# żadna konfiguracja hosta (dawniej DOCKER_GID) nie jest potrzebna.
 # Limity zasobów kontenera walidatora:
 # GTFS_VALIDATOR_MEM_LIMIT=2g
 # GTFS_VALIDATOR_PIDS_LIMIT=512
@@ -208,7 +209,6 @@ CELERY_FEEDS_CONCURRENCY=2
 | `CORS_ALLOWED_ORIGINS` | Origins przeglądarkowe frontu (whitelist). |
 | `CSRF_TRUSTED_ORIGINS` | Wymagane do POST za proxy TLS. |
 | `FEED_AUTH_ENCRYPTION_KEY` | Szyfrowanie poświadczeń feedów at-rest. |
-| `DOCKER_GID` | GID `docker.sock` — bez tego walidator GTFS nie zadziała. |
 | `REDIS_CACHE_URL` | Współdzielony cache (lock realtime + throttling). |
 
 ---
@@ -261,20 +261,20 @@ CORS jest obsługiwany przez `django-cors-headers`. Reguły:
 
 ---
 
-## 8. Docker socket dla walidatora (DOCKER_GID)
+## 8. Docker API dla walidatora (docker-socket-proxy)
 
 Usługa `celery_validator_worker` uruchamia walidator GTFS jako kontener przez
-zamontowany `/var/run/docker.sock`. Wymaga to dopasowania GID:
+usługę `docker-socket-proxy` (`tecnativa/docker-socket-proxy`). Tylko proxy
+montuje `/var/run/docker.sock` (read-only); worker łączy się przez
+`DOCKER_HOST=tcp://docker-socket-proxy:2375`, a dozwolone są wyłącznie endpointy
+`CONTAINERS`/`IMAGES` (+`POST`). Nic nie trzeba konfigurować na hoście.
 
-```bash
-echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
-```
-
-> ⚠️ **Bezpieczeństwo:** dostęp do `docker.sock` jest równoważny rootowi na hoście.
-> Złagodzenia są w miejscu (walidator: `network_disabled`, non-root, `--rm`, limity
-> `mem/pids/cpu`). Rekomendacja produkcyjna: zastąpić surowy socket least-privilege
-> proxy (np. `docker-socket-proxy` z dostępem tylko do create/start/wait/remove) albo
-> wydzielić walidator do osobnego mikroserwisu. Patrz komentarz w `docker-compose.yml`.
+> ⚠️ **Bezpieczeństwo (uczciwie):** proxy odcina exec/volumes/networks/secrets,
+> ale API `containers create` nadal przyjmuje bind-mounty i flagę `privileged`,
+> więc kompromitacja workera pozostaje groźna — powierzchnia jest zmniejszona,
+> nie wyeliminowana. Pełne domknięcie: rootless Docker albo walidator jako
+> osobny mikroserwis. Dodatkowe złagodzenia kontenera walidatora:
+> `network_disabled`, non-root, `--rm`, limity `mem/pids/cpu`.
 
 ---
 
@@ -543,7 +543,7 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 - [ ] `CSRF_TRUSTED_ORIGINS` + `CORS_ALLOWED_ORIGINS` zawężone do frontu
 - [ ] Reverse-proxy przekazuje `X-Forwarded-Proto: https`
 - [ ] Porty `postgres`/`redis`/`web` nie wystawione publicznie (tylko `127.0.0.1`)
-- [ ] `DOCKER_GID` ustawiony; rozważone least-privilege proxy dla `docker.sock`
+- [ ] `docker-socket-proxy` działa; rozważony rootless Docker / osobny mikroserwis walidatora
 - [ ] `.env` z uprawnieniami `600`, poza repozytorium git
 - [ ] `python manage.py check --deploy` bez ostrzeżeń `security.W*`
 - [ ] Pliki `/static/` dostępne (200) lokalnie i przez proxy (patrz sekcja 12)
@@ -586,8 +586,9 @@ domyślnie jest teraz `False` w `settings_prod`.
 `404` — reverse-proxy nie przekazuje `/static/` (patrz sekcja 12 i 13).
 
 **Walidacja GTFS nie działa / „Cannot connect to Docker”**
-→ Sprawdź `DOCKER_GID` (`stat -c '%g' /var/run/docker.sock`) i czy socket jest
-zamontowany w `celery_validator_worker`.
+→ Sprawdź, czy działa usługa `docker-socket-proxy` (`docker compose ps`,
+`docker compose logs docker-socket-proxy`) i czy `celery_validator_worker`
+ma `DOCKER_HOST=tcp://docker-socket-proxy:2375`.
 
 **Pliki w `uploaded_data/` należą do roota / brak zapisu**
 → Ustaw `UID`/`GID` w `.env` i przeładuj (usługa `init_uploads` zrobi `chown`).
