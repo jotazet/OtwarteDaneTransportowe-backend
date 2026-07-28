@@ -42,26 +42,18 @@ class PostViewSet(viewsets.ModelViewSet):
 
 
 class ReactionViewSet(viewsets.ModelViewSet):
+    """POST-only upsert of a per-IP reaction.
+
+    No read endpoints exist: the only route maps POST→create
+    (blog/api/urls.py) and http_method_names strips everything else, so
+    stored IP addresses are never exposed.
+    """
+
     queryset = Reaction.objects.select_related('post').all()
     serializer_class = ReactionSerializer
     # Reactions can be created/updated without authentication; IP is used to limit duplicates.
     permission_classes = [AllowAny]
-    # Only allow POST method to prevent IP address leakage
     http_method_names = ['post', 'options']
-
-    def list(self, request, *args, **kwargs):
-        """Disable list endpoint to prevent IP address leakage."""
-        return Response(
-            {'detail': 'Method not allowed. Only POST is supported for reactions.'},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED
-        )
-
-    def retrieve(self, request, *args, **kwargs):
-        """Disable retrieve endpoint to prevent IP address leakage."""
-        return Response(
-            {'detail': 'Method not allowed. Only POST is supported for reactions.'},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED
-        )
 
     def get_client_ip(self, request):
         return get_client_ip(request)

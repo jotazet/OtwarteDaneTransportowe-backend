@@ -10,7 +10,7 @@ def validate_tags(value):
         raise ValidationError("There is limit to 5 tags.")
     for tag in value:
         if len(tag) > 16:
-            raise ValidationError(f"Tag max length is 16 letters.")
+            raise ValidationError(f"Tag '{tag}' is too long (max 16 characters).")
 
 class Post(models.Model):
     title = models.CharField(max_length=24)
@@ -33,14 +33,10 @@ class Post(models.Model):
     def __str__(self):
         return f"Post(id={self.id}, title='{self.title}')"
 
-    def delete(self, *args, **kwargs):
-        """Ensure associated image file is deleted from storage when the post is deleted."""
-        if self.image:
-            storage = self.image.storage
-            name = self.image.name
-            if name and storage.exists(name):
-                storage.delete(name)
-        super().delete(*args, **kwargs)
+    # Image files are reclaimed by the post_delete/pre_save receivers in
+    # OtwarteDaneTransportowe.cleanup_files (registered via
+    # DataManagerConfig.ready()), which also cover bulk and cascade deletes —
+    # no delete() override needed.
 
 class Reaction(models.Model):
     REACTION_CHOICES = [

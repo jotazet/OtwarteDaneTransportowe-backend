@@ -97,6 +97,7 @@ Role sa zwyklymi grupami Django (`auth.Group`). Migracja tworzy grupy:
 
 - `Admin`
 - `Blogger`
+- `Editor`
 - `DataProvider`
 - `Helper`
 
@@ -107,7 +108,8 @@ Role sa zwyklymi grupami Django (`auth.Group`). Migracja tworzy grupy:
 | Rola | Mozliwosci |
 |------|------------|
 | `Admin` | Pelny dostep administracyjny. Dziedziczy wszystkie uprawnienia rol domenowych. |
-| `Blogger` | Tworzenie, edycja i usuwanie wpisow blogowych. |
+| `Blogger` | Tworzenie wpisow blogowych; edycja i usuwanie **wylacznie wlasnych** wpisow. |
+| `Editor` | Edycja i usuwanie **dowolnych** wpisow blogowych (takze cudzych). |
 | `DataProvider` | Dodawanie feedow statycznych i realtime oraz zarzadzanie wlasnymi zgloszeniami przed review. |
 | `Helper` | Kolejka feedow: **tylko** potwierdzanie/odrzucanie (`stage`, `rejection_cause`); cases (dostawcy, organizacje, statusy). **Bez** edycji URL/pliku ani tresci zgloszenia. |
 | Anonim | Publiczny odczyt, reakcje na blogu, pobieranie opublikowanych feedow. |
@@ -116,7 +118,7 @@ Role sa zwyklymi grupami Django (`auth.Group`). Migracja tworzy grupy:
 
 | Obszar | Publiczny odczyt | Zapis |
 |--------|------------------|-------|
-| Blog posts | Tak | `Blogger` lub `Admin` |
+| Blog posts | Tak | tworzenie: `Blogger`/`Editor`/`Admin`; edycja cudzych: `Editor`/`Admin` |
 | Blog reactions | Tak, `POST` bez logowania | Kazdy, limit po IP |
 | Data providers | Tak | `Helper` lub `Admin` |
 | Case statuses | Tak | `Helper` lub `Admin` |
@@ -194,6 +196,17 @@ DRF browsable API session login/logout. Przydatne developersko, frontend produkc
 
 ## 5. Mapa Endpointow
 
+### Kontrakt list (paginacja)
+
+Kazdy endpoint listowy zwraca standardowa koperte DRF:
+
+```json
+{ "count": 123, "next": "...?page=2", "previous": null, "results": [ ... ] }
+```
+
+Domyslnie 50 pozycji na strone (`page_size` do 200); wyjatki (np. blog: 4,
+bledy pobierania: 25) sa opisane przy endpointach.
+
 ### Systemowe
 
 | Metoda | Endpoint | Uprawnienia | Opis |
@@ -246,11 +259,11 @@ Przy `POST /api/users/` body **nie** zawiera hasla — przyklad odpowiedzi `201`
 | Metoda | Endpoint | Uprawnienia | Opis |
 |--------|----------|-------------|------|
 | `GET` | `/api/blog/posts/` | publiczny | Lista wpisow |
-| `POST` | `/api/blog/posts/` | `Blogger`/`Admin` | Utworzenie wpisu |
+| `POST` | `/api/blog/posts/` | `Blogger`/`Editor`/`Admin` | Utworzenie wpisu |
 | `GET` | `/api/blog/posts/{id}/` | publiczny | Szczegoly wpisu |
-| `PUT` | `/api/blog/posts/{id}/` | `Blogger`/`Admin` | Pelna edycja wpisu |
-| `PATCH` | `/api/blog/posts/{id}/` | `Blogger`/`Admin` | Czesciowa edycja wpisu |
-| `DELETE` | `/api/blog/posts/{id}/` | `Blogger`/`Admin` | Usuniecie wpisu |
+| `PUT` | `/api/blog/posts/{id}/` | wlasne: `Blogger`; dowolne: `Editor`/`Admin` | Pelna edycja wpisu |
+| `PATCH` | `/api/blog/posts/{id}/` | wlasne: `Blogger`; dowolne: `Editor`/`Admin` | Czesciowa edycja wpisu |
+| `DELETE` | `/api/blog/posts/{id}/` | wlasne: `Blogger`; dowolne: `Editor`/`Admin` | Usuniecie wpisu |
 | `POST` | `/api/blog/reactions/{post_id}/` | publiczny | Dodanie/zmiana/usuniecie reakcji po IP |
 
 ### Cases
@@ -281,7 +294,7 @@ Przy `POST /api/users/` body **nie** zawiera hasla — przyklad odpowiedzi `201`
 | `POST` | `/api/data_manager/feed-submissions/` | `DataProvider`/`Admin` | Dodanie statycznego feeda |
 | `GET` | `/api/data_manager/feed-submissions/{id}/` | wlasciciel lub `Helper`/`Admin` | Szczegoly statycznego zgloszenia |
 | `PUT/PATCH` | `/api/data_manager/feed-submissions/{id}/` | wlasciciel (reguly edycji ponizej) lub `Helper`/`Admin` | Edycja albo potwierdzenie/odrzucenie |
-| `DELETE` | `/api/data_manager/feed-submissions/{id}/` | wlasciciel tylko przy `current_stage=1` i bez odrzucenia; `Admin` dowolnie | Usuniecie zgloszenia |
+| `DELETE` | `/api/data_manager/feed-submissions/{id}/` | tylko `Admin` (zgloszenia sa czescia sladu audytowego) | Usuniecie zgloszenia |
 | `GET` | `/api/data_manager/feed-submissions/{id}/fetch-errors/?days=7` | wlasciciel lub `Helper`/`Admin` | Historia bledow pobierania statycznego feedu z ostatnich N dni |
 | `GET` | `/api/data_manager/feed-submissions/{id}/download/static/{endpoint_pk}/` | wlasciciel lub `Helper`/`Admin` | Pobranie prywatnego pliku statycznego z danego zgloszenia |
 | `GET` | `/api/data_manager/feed-submissions/{id}/download/realtime/{endpoint_pk}/` | wlasciciel lub `Helper`/`Admin` | Pobranie prywatnego cache endpointu RT powiazanego ze statycznym zgloszeniem |
@@ -298,7 +311,7 @@ Przy `POST /api/users/` body **nie** zawiera hasla — przyklad odpowiedzi `201`
 | `POST` | `/api/data_manager/realtime-submissions/` | `DataProvider`/`Admin` | Dodanie realtime feeda |
 | `GET` | `/api/data_manager/realtime-submissions/{id}/` | wlasciciel lub `Helper`/`Admin` | Szczegoly realtime zgloszenia |
 | `PUT/PATCH` | `/api/data_manager/realtime-submissions/{id}/` | wlasciciel (reguly edycji w 8.2) lub `Helper`/`Admin` | Edycja albo potwierdzenie/odrzucenie |
-| `DELETE` | `/api/data_manager/realtime-submissions/{id}/` | wlasciciel tylko na etapie 1 i bez odrzucenia; `Admin` dowolnie | Usuniecie realtime zgloszenia |
+| `DELETE` | `/api/data_manager/realtime-submissions/{id}/` | tylko `Admin` (zgloszenia sa czescia sladu audytowego) | Usuniecie realtime zgloszenia |
 | `GET` | `/api/data_manager/realtime-submissions/{id}/fetch-errors/?days=7` | wlasciciel lub `Helper`/`Admin` | Historia bledow pobierania endpointow realtime z ostatnich N dni |
 | `GET` | `/api/data_manager/realtime-endpoints/` | wlasciciel lub `Helper`/`Admin` | Lista endpointow realtime wraz ze statusem pobierania |
 | `GET` | `/api/data_manager/realtime-endpoints/{id}/` | wlasciciel lub `Helper`/`Admin` | Szczegoly pojedynczego endpointu realtime wraz ze statusem pobierania |
@@ -314,8 +327,9 @@ Przy `POST /api/users/` body **nie** zawiera hasla — przyklad odpowiedzi `201`
 | `GET` | `/feed/` | publiczny | Zwraca blad 400, wymagane ID feeda |
 | `GET` | `/feed/{feed_submission_id}/` | publiczny | Zwraca link do opublikowanego pliku statycznego |
 | `GET` | `/feed/{feed_submission_id}/{filename}` | publiczny | Pobiera opublikowany plik statyczny |
-| `GET` | `/feed/rt/{realtime_submission_id}/` | publiczny | Zwraca linki do opublikowanych plikow realtime |
-| `GET` | `/feed/rt/{realtime_submission_id}/{filename}` | publiczny | Pobiera opublikowany plik realtime |
+| `GET` | `/feed/rt/{realtime_submission_id}/` | publiczny | Zwraca linki do opublikowanych plikow realtime (per `endpoint_type`) |
+| `GET` | `/feed/rt/{realtime_submission_id}/{endpoint_type}/` | publiczny | Pobiera opublikowany plik realtime (trasa kanoniczna) |
+| `GET` | `/feed/rt/{realtime_submission_id}/{filename}` | publiczny | Legacy: pobiera plik po nazwie (utrzymane dla kompatybilnosci) |
 
 ---
 
@@ -323,16 +337,16 @@ Przy `POST /api/users/` body **nie** zawiera hasla — przyklad odpowiedzi `201`
 
 ### `GET /api/blog/posts/`
 
-Lista wpisow blogowych. Bez parametru `page` backend zwraca zwykla tablice. Z parametrem `page` wlacza paginacje DRF.
+Lista wpisow blogowych (paginowana koperta DRF, jak wszystkie listy).
 
 **Uprawnienia:** publiczny.
 
 **Query params:**
 
-- `page` - wlacza paginacje.
+- `page` - numer strony (domyslnie 1).
 - `page_size` - domyslnie 4, maksymalnie 50.
 
-**Response 200 bez `page`:**
+**Response 200 (`results` skrocone):**
 
 ```json
 [
@@ -370,7 +384,7 @@ Szczegoly wpisu. W przeciwienstwie do listy pole `content` zawiera pelna tresc.
 
 Tworzy wpis blogowy. Autor jest ustawiany automatycznie na zalogowanego uzytkownika.
 
-**Uprawnienia:** `Blogger` lub `Admin`.
+**Uprawnienia:** `Blogger`, `Editor` lub `Admin`.
 
 **Request JSON lub multipart przy obrazku:**
 
@@ -393,9 +407,7 @@ Tworzy wpis blogowy. Autor jest ustawiany automatycznie na zalogowanego uzytkown
 
 Edycja lub usuniecie wpisu.
 
-**Uprawnienia:** `Blogger` lub `Admin`.
-
-Aktualnie permission nie ogranicza edycji do autora wpisu. Kazdy `Blogger` moze edytowac kazdy wpis.
+**Uprawnienia:** `Blogger` moze edytowac/usuwac **tylko wlasne** wpisy; `Editor` i `Admin` moga edytowac i usuwac dowolne wpisy.
 
 ### `POST /api/blog/reactions/{post_id}/`
 
@@ -1081,7 +1093,7 @@ To nie jest lista pojedynczych feedow, tylko lista organizacji transportowych z 
           {
             "endpoint_type": "trip_update",
             "interval": 30,
-            "feed_url": "https://example.com/feed/rt/12/trip-updates.pb",
+            "feed_url": "https://example.com/feed/rt/12/trip_update/",
             "cached_at": "2026-04-27T11:00:00Z",
             "is_original": true
           }
@@ -1104,7 +1116,7 @@ To nie jest lista pojedynczych feedow, tylko lista organizacji transportowych z 
           {
             "endpoint_type": "gbfs",
             "interval": 60,
-            "feed_url": "https://example.com/feed/rt/14/gbfs.json",
+            "feed_url": "https://example.com/feed/rt/14/gbfs/",
             "cached_at": "2026-04-27T11:00:00Z"
           }
         ]
@@ -1155,15 +1167,24 @@ Zwraca linki do plikow realtime danego opublikowanego zgloszenia.
 ```json
 {
   "dynamic": {
-    "trip_update": "https://example.com/feed/rt/12/trip-updates.pb",
-    "vehicle_position": "https://example.com/feed/rt/12/vehicle-positions.pb"
+    "trip_update": "https://example.com/feed/rt/12/trip_update/",
+    "vehicle_position": "https://example.com/feed/rt/12/vehicle_position/"
   }
 }
 ```
 
-### `GET /feed/rt/{realtime_submission_id}/{filename}`
+### `GET /feed/rt/{realtime_submission_id}/{endpoint_type}/`
 
-Zwraca plik realtime jako `FileResponse`.
+Trasa kanoniczna: zwraca plik cache danego endpointu jako `FileResponse`.
+`endpoint_type` jest unikalny w ramach zgloszenia, wiec pobranie jest
+deterministyczne.
+
+**Uprawnienia:** publiczny, tylko opublikowane realtime feedy.
+
+### `GET /feed/rt/{realtime_submission_id}/{filename}` (legacy)
+
+Utrzymana dla kompatybilnosci: zwraca pierwszy plik o pasujacej nazwie.
+Nowi konsumenci powinni uzywac trasy z `endpoint_type`.
 
 **Uprawnienia:** publiczny, tylko opublikowane realtime feedy.
 
@@ -1239,20 +1260,23 @@ Feed statyczny ma `FeedSubmissionHistory`, realtime ma `RealtimeSubmissionHistor
 
 ### GTFS validator (Docker / Celery) — zawieszenie na „Step 2: Data verification”
 
-Walidacja uruchamia sie w workerze `celery_validator_worker` (kolejka `feeds`) i wymaga dostepu do `/var/run/docker.sock`.
+Walidacja uruchamia sie w workerze `celery_validator_worker` (kolejka `feeds`).
+Worker rozmawia z Docker API przez usluge `docker-socket-proxy`
+(`DOCKER_HOST=tcp://docker-socket-proxy:2375`) — zadna konfiguracja hosta nie
+jest potrzebna; socket montuje wylacznie proxy (read-only).
 
-1. Ustaw GID grupy socketa Dockera (na hoście Linux):
+1. Upewnij sie, ze proxy dziala:
    ```bash
-   export DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
-   docker compose up -d celery_validator_worker
+   docker compose up -d docker-socket-proxy celery_validator_worker
+   docker compose ps docker-socket-proxy
    ```
-   W kontenerze `id` powinno pokazywac grupe `959` (lub Twoje GID), np. `groups=1000,959`.
 
 2. Sprawdz logi:
    ```bash
    docker compose logs celery_validator_worker --tail 50
    ```
-   Blad `Permission denied` na `docker.sock` = zly `DOCKER_GID`.
+   Blad `Cannot connect to Docker` = proxy nie dziala albo brak `DOCKER_HOST`
+   w srodowisku workera (patrz `docker-compose.yml`).
 
 3. Ponow walidacje dla zgloszen zatrzymanych na etapie 2:
    ```bash
@@ -1460,7 +1484,7 @@ Role i dane profilu: z claimow JWT (`roles`, `first_name`, `last_name`) lub `GET
 
 Rekomendowana logika UI:
 
-- `Blogger`/`Admin` - pokazuj panel bloga.
+- `Blogger`/`Editor`/`Admin` - pokazuj panel bloga (`Blogger` edytuje tylko wlasne wpisy).
 - `DataProvider`/`Admin` - pokazuj formularze dodawania feedow.
 - `Helper`/`Admin` - pokazuj kolejke feedow do potwierdzenia oraz panel case/organizacji.
 

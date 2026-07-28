@@ -623,13 +623,6 @@ def validate_gtfs_feed_task(self, entry_id: int):
         )
         return
 
-    if not os.path.exists(report_file):
-        _reject_submission(
-            f"report.json not found in output directory: {container_output_dir}",
-            validation_error=True,
-        )
-        return
-
     try:
         with open(report_file, 'r', encoding='utf-8') as f:
             report_data = json.load(f)
