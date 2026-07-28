@@ -945,9 +945,10 @@ class PublishedEndpointRTSerializer(serializers.ModelSerializer):
         if obj.hide_original:
             if obj.cached_file:
                 if request:
-                    filename = obj.cached_file.name.split('/')[-1]
+                    # Canonical endpoint_type route: unique per submission,
+                    # unlike cache filenames which can collide between endpoints.
                     return request.build_absolute_uri(
-                        f'/feed/rt/{obj.submission_id}/{filename}'
+                        f'/feed/rt/{obj.submission_id}/{obj.endpoint_type}/'
                     )
             return None
         return obj.url

@@ -36,6 +36,14 @@ urlpatterns = [
     path('feed/<int:pk>/', PublicFeedDownloadView.as_view(), name='feed-download-info'),
     path('feed/<int:pk>/<str:filename>', PublicFeedDownloadView.as_view(), name='feed-download-file'),
     path('feed/rt/<int:pk>/', RealtimePublicFeedDownloadView.as_view(), name='feed-rt-download-info'),
+    # Canonical download route: endpoint_type is unique per submission (see
+    # RealtimeEndpointRT.Meta), unlike cache filenames which can collide.
+    path(
+        'feed/rt/<int:pk>/<str:endpoint_type>/',
+        RealtimePublicFeedDownloadView.as_view(),
+        name='feed-rt-download-endpoint',
+    ),
+    # Legacy filename route (no trailing slash), kept for old consumers.
     path('feed/rt/<int:pk>/<str:filename>', RealtimePublicFeedDownloadView.as_view(), name='feed-rt-download-file'),
 
     path('api/cases/', include('cases.api.urls')),

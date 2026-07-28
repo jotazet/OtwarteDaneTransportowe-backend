@@ -234,11 +234,20 @@ class PublicFeedDownloadView(APIView):
 
 
 class RealtimePublicFeedDownloadView(APIView):
-    """Opublikowany RealtimeSubmission (GBFS / proxy RT): /feed/rt/<pk>/"""
+    """Opublikowany RealtimeSubmission (GBFS / proxy RT).
+
+    Trasy:
+    - /feed/rt/<pk>/                      → info (URL per endpoint_type)
+    - /feed/rt/<pk>/<endpoint_type>/      → plik cache danego endpointu
+    - /feed/rt/<pk>/<filename>            → legacy: pierwszy pasujący plik
+      (endpoint_type jest unikalny per zgłoszenie, więc trasa typowa jest
+      deterministyczna; dopasowanie po nazwie pliku nie jest, bo dwa endpointy
+      mogą mieć URL-e o tej samej nazwie bazowej).
+    """
     permission_classes = [AllowAny]
     throttle_scope = 'feed_download'
 
-    def get(self, request, pk=None, filename=None):
+    def get(self, request, pk=None, endpoint_type=None, filename=None):
         if pk is None:
             return Response({"detail": "Specify a realtime feed ID."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -253,15 +262,24 @@ class RealtimePublicFeedDownloadView(APIView):
                 fn = ep.cached_file.name.split('/')[-1]
                 dynamic_files[ep.endpoint_type] = {'filename': fn, 'file': ep.cached_file}
 
+        if endpoint_type is not None:
+            payload = dynamic_files.get(endpoint_type)
+            if payload is None:
+                raise Http404("File not found.")
+            return FileResponse(
+                payload['file'].open('rb'), as_attachment=True, filename=payload['filename']
+            )
+
         if not filename:
             base = request.build_absolute_uri(f'/feed/rt/{rts.id}/')
             return Response({
                 'dynamic': {
-                    t: f"{base}{p['filename']}"
-                    for t, p in dynamic_files.items()
+                    t: f"{base}{t}/"
+                    for t in dynamic_files
                 }
             })
 
+        # Legacy filename matching, kept for backward compatibility.
         for payload in dynamic_files.values():
             if payload['filename'] == filename:
                 return FileResponse(payload['file'].open('rb'), as_attachment=True, filename=filename)
