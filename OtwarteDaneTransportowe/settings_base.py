@@ -1,10 +1,37 @@
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 INSECURE_SECRET_KEY_PLACEHOLDER = 'django-insecure-dev-placeholder'
+
+# Values that must never be accepted as a production SECRET_KEY. Covers the dev
+# placeholder plus the usual "forgot to replace the example value" suspects.
+WEAK_SECRET_KEYS = frozenset({
+    INSECURE_SECRET_KEY_PLACEHOLDER,
+    'change-me',
+    'changeme',
+    'secret',
+    '',
+})
+
+
+def validate_production_secret_key(key: str | None) -> None:
+    """Fail fast when the configured SECRET_KEY is unfit for production.
+
+    Rejects known weak/example values, anything shorter than 32 characters and
+    keys generated with the ``django-insecure-`` development prefix.
+    """
+    key = (key or '').strip()
+    if key in WEAK_SECRET_KEYS or len(key) < 32 or key.startswith('django-insecure-'):
+        raise ImproperlyConfigured(
+            'DJANGO_SECRET_KEY must be set to a strong, unique value in production '
+            '(at least 32 characters, not an example/placeholder value). '
+            'Generate one with: python3 -c "import secrets; print(secrets.token_urlsafe(64))"'
+        )
 
 # Path to the project root on the HOST machine.
 HOST_PROJECT_PATH = os.environ.get('HOST_PROJECT_PATH', str(BASE_DIR))

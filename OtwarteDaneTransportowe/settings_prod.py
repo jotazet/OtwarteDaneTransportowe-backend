@@ -1,7 +1,12 @@
 from django.core.exceptions import ImproperlyConfigured
 
 from .settings_base import *  # noqa
-from .settings_base import _env_bool, _env_list, INSECURE_SECRET_KEY_PLACEHOLDER  # noqa: F401
+from .settings_base import (  # noqa: F401
+    _env_bool,
+    _env_list,
+    INSECURE_SECRET_KEY_PLACEHOLDER,
+    validate_production_secret_key,
+)
 
 REST_FRAMEWORK = {  # noqa: F405
     **REST_FRAMEWORK,
@@ -12,12 +17,19 @@ REST_FRAMEWORK = {  # noqa: F405
 
 DEBUG = False
 
-# Fail fast: never run production with the insecure development placeholder key.
-if SECRET_KEY == INSECURE_SECRET_KEY_PLACEHOLDER:  # noqa: F405
-    raise ImproperlyConfigured(
-        'DJANGO_SECRET_KEY must be set to a strong, unique value in production. '
-        'Refusing to start with the insecure development placeholder.'
-    )
+# Fail fast: never run production with a weak, example or placeholder key.
+# (Catches e.g. the 'change-me' value from .env.example, which docker-compose
+# loads as an env_file fallback whenever .env is missing.)
+validate_production_secret_key(SECRET_KEY)  # noqa: F405
+
+# Same idea for the database password: docker-compose falls back to
+# .env.example, so a missing .env must not silently deploy example credentials.
+if DATABASES['default']['ENGINE'] != 'django.db.backends.sqlite3':  # noqa: F405
+    if DATABASES['default']['PASSWORD'] in {'change-me', 'postgres', ''}:  # noqa: F405
+        raise ImproperlyConfigured(
+            'POSTGRES_PASSWORD must be set to a strong, unique value in production. '
+            'Refusing to start with an example/default database password.'
+        )
 
 # Security hardening (minimal baseline)
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
