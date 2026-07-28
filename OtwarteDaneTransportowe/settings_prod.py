@@ -24,12 +24,11 @@ validate_production_secret_key(SECRET_KEY)  # noqa: F405
 
 # Same idea for the database password: docker-compose falls back to
 # .env.example, so a missing .env must not silently deploy example credentials.
-if DATABASES['default']['ENGINE'] != 'django.db.backends.sqlite3':  # noqa: F405
-    if DATABASES['default']['PASSWORD'] in {'change-me', 'postgres', ''}:  # noqa: F405
-        raise ImproperlyConfigured(
-            'POSTGRES_PASSWORD must be set to a strong, unique value in production. '
-            'Refusing to start with an example/default database password.'
-        )
+if DATABASES['default']['PASSWORD'] in {'change-me', 'postgres', ''}:  # noqa: F405
+    raise ImproperlyConfigured(
+        'POSTGRES_PASSWORD must be set to a strong, unique value in production. '
+        'Refusing to start with an example/default database password.'
+    )
 
 # Security hardening (minimal baseline)
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

@@ -13,10 +13,9 @@ docker-compose.override.yml
 .env.*
 !.env.example
 
-# User-uploaded data, generated static files, local DB
+# User-uploaded data, generated static files
 /uploaded_data/
 /staticfiles/
-db.sqlite3
 
 # Python
 .venv/
