@@ -10,7 +10,8 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.core.exceptions import ValidationError
+# DRF's ValidationError renders as HTTP 400; Django's would bubble up as 500.
+from rest_framework.exceptions import ValidationError
 from django.db.models import OuterRef, Q, Subquery, Prefetch
 
 from OtwarteDaneTransportowe.auth_roles import (
@@ -737,7 +738,16 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
             if endpoints_data is not None:
                 if restricted_realtime:
                     for ep in endpoints_data:
-                        obj = instance.endpoints.get(endpoint_type=ep['endpoint_type'])
+                        try:
+                            obj = instance.endpoints.get(endpoint_type=ep['endpoint_type'])
+                        except RealtimeEndpointRT.DoesNotExist:
+                            raise ValidationError({
+                                'endpoints': (
+                                    f"Unknown endpoint_type '{ep['endpoint_type']}' for this "
+                                    'submission; only interval changes to existing endpoints '
+                                    'are allowed after stage 1.'
+                                ),
+                            })
                         if obj.interval != ep['interval']:
                             obj.interval = ep['interval']
                             obj.full_clean()
