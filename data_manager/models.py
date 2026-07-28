@@ -914,23 +914,7 @@ def completed_submission_ids() -> list[int]:
 
 
 def _compute_completed_submission_ids() -> list[int]:
-    """Returns IDs of all submissions that are in 'completed' stage (4)."""
-    # Assuming stage 4 is the final 'published' stage.
-    # We can optimize by querying history: find submissions where latest history entry is stage_after=4.
-    # However, a simpler way for now:
-    # Filter submissions where current_stage property returns 4.
-    # Since current_stage is a property computed from history, doing it in Python for all might be slow.
-    # Better: Use a subquery or annotation if possible.
-    # But let's stick to the simplest correct implementation:
-
-    # We can fetch IDs of submissions that have *ever* reached stage 4,
-    # and haven't been reverted/rejected later?
-    # Actually, let's keep it simple: fetch all submissions and filter in python if count is low,
-    # or rely on a specific optimized query.
-
-    # Optimized query:
-    # Submissions where the latest history entry has stage_after=4.
-
+    """PKs of FeedSubmission whose latest history row is stage 4 (published)."""
     from django.db.models import Subquery, OuterRef
 
     latest_history = FeedSubmissionHistory.objects.filter(
