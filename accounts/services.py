@@ -40,10 +40,22 @@ def admin_group_user_count(exclude_user_id=None) -> int:
     return qs.count()
 
 
-def would_remove_last_admin(user, new_roles: list[str] | None) -> bool:
-    """True if user currently has Admin and new_roles would leave zero admins."""
+def would_remove_last_admin(user, new_roles: list[str] | None, new_is_active: bool | None = None) -> bool:
+    """True if the change (role removal, deletion or deactivation) would leave zero active admins.
+
+    ``new_roles is None`` means roles are unchanged; ``new_is_active is False``
+    means the user is being deactivated — a deactivated admin no longer counts,
+    whatever roles the payload keeps. Deletion callers pass ``(None, None)``.
+    """
     if not user.groups.filter(name=ROLE_ADMIN).exists():
         return False
-    if new_roles is not None and ROLE_ADMIN in new_roles:
+    if new_is_active is False:
+        # Deactivation removes this admin from the active pool regardless of roles.
+        return admin_group_user_count(exclude_user_id=user.pk) == 0
+    if new_roles is None:
+        # Roles unchanged: dangerous only for deletion (new_is_active is None);
+        # a reactivation (new_is_active is True) never removes an admin.
+        return new_is_active is None and admin_group_user_count(exclude_user_id=user.pk) == 0
+    if ROLE_ADMIN in new_roles:
         return False
     return admin_group_user_count(exclude_user_id=user.pk) == 0

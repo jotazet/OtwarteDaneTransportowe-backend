@@ -73,8 +73,11 @@ class UserViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         instance = serializer.instance
         roles = serializer.validated_data.get('roles')
-        if roles is not None and would_remove_last_admin(instance, new_roles=roles):
-            raise ValidationError('Cannot remove the Admin role from the last admin user.')
+        is_active = serializer.validated_data.get('is_active')
+        if (roles is not None or is_active is not None) and would_remove_last_admin(
+            instance, new_roles=roles, new_is_active=is_active
+        ):
+            raise ValidationError('Cannot remove the Admin role from, or deactivate, the last admin user.')
         serializer.save()
 
     @action(detail=True, methods=['post'], url_path='reset-password')
