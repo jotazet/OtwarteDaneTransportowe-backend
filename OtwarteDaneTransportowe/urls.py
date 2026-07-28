@@ -78,6 +78,11 @@ if settings.DEBUG:
 
 # MEDIA_URL is not mounted in full: feed packages must use the authenticated download views.
 # Blog post images (public) live under MEDIA_ROOT/blog/ and are safe to serve at MEDIA_URL/blog/.
+#
+# Trade-off: django.views.static.serve is not built for high-traffic production
+# use, but blog images are small, public and low-volume, and serve() itself is
+# path-traversal-safe. If image traffic grows, move this behind the reverse
+# proxy instead, e.g. nginx:  location /internal-media/blog/ { alias .../uploaded_data/blog/; }
 _blog_media_prefix = '/'.join(s for s in (settings.MEDIA_URL.strip('/'), 'blog') if s)
 urlpatterns += [
     re_path(
