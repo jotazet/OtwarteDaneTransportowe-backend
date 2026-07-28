@@ -236,7 +236,7 @@ class FeedSubmission(models.Model):
         rows = self._prefetched_history()
         if rows is not None:
             return rows[0] if rows else None
-        return self.history.order_by('-created_at').first()
+        return self.history.order_by('-created_at', '-id').first()
 
     @property
     def current_stage(self) -> int:
@@ -284,7 +284,7 @@ class FeedSubmission(models.Model):
         else:
             completed = self.history.filter(
                 event_type=FeedSubmissionHistory.EVENT_COMPLETED
-            ).order_by('-created_at').first()
+            ).order_by('-created_at', '-id').first()
         return completed.created_at if completed else None
 
     # NOTE: realtime is handled via separate RealtimeSubmission flow
@@ -335,7 +335,9 @@ class FeedSubmissionHistory(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['-created_at']
+        # -id tiebreak: rows written in one request can share created_at
+        # (auto_now_add microseconds); stage resolution must be deterministic.
+        ordering = ['-created_at', '-id']
         verbose_name = 'Feed Submission History'
         verbose_name_plural = 'Feed Submission Histories'
 
@@ -762,7 +764,7 @@ class RealtimeSubmission(models.Model):
         rows = self._prefetched_history()
         if rows is not None:
             return rows[0] if rows else None
-        return self.history.order_by('-created_at').first()
+        return self.history.order_by('-created_at', '-id').first()
 
     @property
     def current_stage(self) -> int:
@@ -794,7 +796,7 @@ class RealtimeSubmission(models.Model):
         else:
             completed = self.history.filter(
                 event_type=RealtimeSubmissionHistory.EVENT_COMPLETED
-            ).order_by('-created_at').first()
+            ).order_by('-created_at', '-id').first()
         return completed.created_at if completed else None
 
     def __str__(self):
@@ -833,7 +835,8 @@ class RealtimeSubmissionHistory(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['-created_at']
+        # -id tiebreak: see FeedSubmissionHistory.Meta.
+        ordering = ['-created_at', '-id']
 
     def __str__(self):
         return (
@@ -962,7 +965,7 @@ def _compute_completed_submission_ids() -> list[int]:
 
     latest_history = FeedSubmissionHistory.objects.filter(
         submission=OuterRef('pk')
-    ).order_by('-created_at')
+    ).order_by('-created_at', '-id')
 
     # This filters submissions where the *very last* history entry is stage 4.
     return list(
@@ -992,7 +995,7 @@ def _compute_completed_realtime_submission_ids() -> list[int]:
 
     latest_history = RealtimeSubmissionHistory.objects.filter(
         submission=OuterRef('pk')
-    ).order_by('-created_at')
+    ).order_by('-created_at', '-id')
 
     return list(
         RealtimeSubmission.objects.annotate(

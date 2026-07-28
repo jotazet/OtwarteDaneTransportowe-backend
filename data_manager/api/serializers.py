@@ -877,7 +877,14 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     # cached_file/cached_at concurrently via queryset.update();
                     # a full save() would write back this instance's stale copy.
                     entry.save(update_fields=sorted(update_fields))
-                    if entry.url and entry.url != old_url:
+                    # defer_source_refresh: the rejected-resubmission flow in the
+                    # view schedules the refresh itself (unconditionally, so a
+                    # resubmission with an unchanged url still re-validates).
+                    if (
+                        entry.url
+                        and entry.url != old_url
+                        and not self.context.get('defer_source_refresh')
+                    ):
                         self._schedule_source_refresh(entry)
                 else:
                     if static_entry_data.get('auth_type') is not None:
@@ -887,7 +894,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     )
                     new_entry.full_clean()
                     new_entry.save()
-                    if new_entry.url:
+                    if new_entry.url and not self.context.get('defer_source_refresh'):
                         self._schedule_source_refresh(new_entry)
 
         return instance

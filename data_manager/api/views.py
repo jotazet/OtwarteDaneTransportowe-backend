@@ -244,6 +244,11 @@ class RealtimePublicFeedDownloadView(APIView):
       (endpoint_type jest unikalny per zgłoszenie, więc trasa typowa jest
       deterministyczna; dopasowanie po nazwie pliku nie jest, bo dwa endpointy
       mogą mieć URL-e o tej samej nazwie bazowej).
+
+    Świadoma własność: gating patrzy wyłącznie na historię TEGO zgłoszenia RT.
+    Gdy statyczny rodzic (GTFS-RT/SIRI) zostanie później odpublikowany, RT
+    znika z katalogu organizacji (rt_embed filtruje po rodzicu), ale pozostaje
+    pobieralny tutaj i dalej odświeżany — decyzja produktowa, nie przeoczenie.
     """
     permission_classes = [AllowAny]
     throttle_scope = 'feed_download'
@@ -297,7 +302,7 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         approved_ids = completed_submission_ids()
-        latest_history = FeedSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by('-created_at')
+        latest_history = FeedSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by('-created_at', '-id')
         feeds_qs = (
             FeedSubmission.objects
             .filter(pk__in=approved_ids)
@@ -476,17 +481,17 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
 
         was_rejected = instance.is_rejected
         restricted_static_edit = not can_edit_static_feed_source(request.user, instance)
+        is_owner_resubmission = was_rejected and not can_confirm_feeds(request.user)
         context = self.get_serializer_context()
         context['restricted_static_edit'] = restricted_static_edit
+        # For resubmissions the view schedules the source refresh itself (below),
+        # so the serializer must not double-enqueue on a url change.
+        context['defer_source_refresh'] = is_owner_resubmission
         serializer = self.get_serializer(instance, data=request.data, partial=partial, context=context)
         serializer.is_valid(raise_exception=True)
         submission = serializer.save()
 
-        if (
-            not can_confirm_feeds(request.user)
-            and was_rejected
-            and _request_changes_static_source(request)
-        ):
+        if is_owner_resubmission and _request_changes_static_source(request):
             FeedSubmissionHistory.objects.create(
                 submission=submission,
                 event_type=FeedSubmissionHistory.EVENT_UPLOADED,
@@ -494,6 +499,16 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
                 stage_after=2,
                 actor=request.user,
             )
+            # Always restart verification — even when the resubmitted source
+            # values are identical (same url / same-named file), otherwise the
+            # submission would sit at stage 2 forever with nothing queued
+            # (the periodic scheduler only refreshes published feeds).
+            try:
+                entry = submission.static_entry
+            except StaticFeedEntry.DoesNotExist:
+                entry = None
+            if entry is not None:
+                FeedSubmissionWriteSerializer._schedule_source_refresh(entry)
 
         if can_confirm_feeds(request.user):
             self._admin_stage_transition(request, submission)
@@ -546,20 +561,15 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         )
 
     def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
+        # Policy: once uploaded, a submission is part of the review audit trail
+        # and only an Admin may delete it. (The previous owner-delete-at-stage-1
+        # branch was unreachable: submissions are born at stage 2.)
         if is_admin(request.user):
             return super().destroy(request, *args, **kwargs)
-        if not can_add_feeds(request.user) or instance.submitted_by_id != request.user.id:
-            return Response(
-                {'detail': 'Only Admin can delete other users submissions.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if instance.current_stage > 1 or instance.is_rejected:
-            return Response(
-                {'detail': 'Cannot delete a submission that has been reviewed or rejected.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        return super().destroy(request, *args, **kwargs)
+        return Response(
+            {'detail': 'Only Admin can delete submissions.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     @action(detail=True, methods=['get'], url_path='download/static/(?P<endpoint_pk>[^/.]+)')
     def download_static(self, request, pk=None, endpoint_pk=None):
@@ -762,15 +772,29 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                         o = RealtimeEndpointRT(submission=instance, **ep)
                         o.full_clean()
                         o.save()
-                    RealtimeSubmissionHistory.objects.create(
-                        submission=instance,
-                        event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
-                        stage_before=1,
-                        stage_after=1,
-                        actor=request.user,
-                    )
+                    if not can_confirm_feeds(request.user):
+                        # Owner resubmission (stage 1 / rejected): restart the
+                        # verification flow from stage 1.
+                        RealtimeSubmissionHistory.objects.create(
+                            submission=instance,
+                            event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+                            stage_before=instance.current_stage,
+                            stage_after=1,
+                            actor=request.user,
+                        )
+                    # Admin edits keep the current stage — a published feed must
+                    # not be silently unpublished by an endpoint tweak. The
+                    # re-validation below rejects (with an audit trail) if the
+                    # new endpoints turn out to be broken.
         if endpoints_data is not None and not restricted_realtime:
             validate_realtime_submission_task.delay(instance.id)
+            if instance.current_stage == 4:
+                # Endpoints were replaced (old fetch loops died with their
+                # rows); re-seed the self-scheduling loops for the new ones
+                # without waiting for the periodic bootstrap.
+                from data_manager.tasks import schedule_realtime_endpoint_fetches
+
+                schedule_realtime_endpoint_fetches(instance.id)
         if can_confirm_feeds(request.user):
             self._admin_transition(request, instance)
         out = RealtimeSubmissionSerializer(instance, context={'request': request})
@@ -823,20 +847,14 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
             schedule_realtime_endpoint_fetches(rts.id)
 
     def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
+        # Same deletion policy as static submissions: only Admin may delete
+        # (uploaded submissions belong to the review audit trail).
         if is_admin(request.user):
             return super().destroy(request, *args, **kwargs)
-        if not can_add_feeds(request.user) or instance.submitted_by_id != request.user.id:
-            return Response(
-                {'detail': 'Only Admin can delete other users submissions.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if instance.current_stage != 1 or instance.is_rejected:
-            return Response(
-                {'detail': 'Cannot delete except at stage 1.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        return super().destroy(request, *args, **kwargs)
+        return Response(
+            {'detail': 'Only Admin can delete submissions.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     @action(detail=True, methods=['get'], url_path='fetch-errors')
     def fetch_errors(self, request, pk=None):

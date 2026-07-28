@@ -1241,3 +1241,162 @@ def test_realtime_protocol_must_match_static_feed_type(normal_user, org):
         realtime.full_clean()
 
     assert 'static_submission' in exc.value.message_dict
+
+
+# ---------------------------------------------------------------------------
+# Regression: deletion policy, RT endpoint edits, resubmission re-validation,
+# history-ordering tiebreak
+# ---------------------------------------------------------------------------
+
+def test_owner_cannot_delete_submission_after_upload(api_client, normal_user, admin_user, org):
+    """Policy: uploaded submissions belong to the audit trail — only Admin deletes."""
+    api_client.force_authenticate(user=normal_user)
+    response = api_client.post(
+        '/api/data_manager/feed-submissions/',
+        {
+            'transport_organization': str(org.id),
+            'data_type': 'other',
+            'name': 'To delete',
+            'static_entry.url': 'https://example.org/data.bin',
+            'static_entry.download_time_1': '03:00',
+        },
+        format='multipart',
+    )
+    assert response.status_code == 201, response.data
+    submission_id = response.data['id']
+
+    response = api_client.delete(f'/api/data_manager/feed-submissions/{submission_id}/')
+    assert response.status_code == 403
+
+    api_client.force_authenticate(user=admin_user)
+    response = api_client.delete(f'/api/data_manager/feed-submissions/{submission_id}/')
+    assert response.status_code == 204
+    assert not FeedSubmission.objects.filter(pk=submission_id).exists()
+
+
+def test_owner_cannot_delete_realtime_submission(api_client, normal_user, admin_user, org):
+    rts = RealtimeSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=normal_user,
+        protocol=RealtimeSubmission.PROTOCOL_GBFS,
+    )
+    RealtimeSubmissionHistory.objects.create(
+        submission=rts, event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+        stage_before=0, stage_after=1, actor=normal_user,
+    )
+
+    api_client.force_authenticate(user=normal_user)
+    response = api_client.delete(f'/api/data_manager/realtime-submissions/{rts.id}/')
+    assert response.status_code == 403
+
+    api_client.force_authenticate(user=admin_user)
+    response = api_client.delete(f'/api/data_manager/realtime-submissions/{rts.id}/')
+    assert response.status_code == 204
+
+
+def test_admin_endpoint_edit_keeps_published_rt_stage(api_client, admin_role_user, normal_user, org):
+    """Replacing endpoints of a published RT must not silently unpublish it."""
+    rts = RealtimeSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=normal_user,
+        protocol=RealtimeSubmission.PROTOCOL_GBFS,
+    )
+    RealtimeSubmissionHistory.objects.create(
+        submission=rts, event_type=RealtimeSubmissionHistory.EVENT_COMPLETED,
+        stage_before=3, stage_after=4, actor=admin_role_user,
+    )
+    RealtimeEndpointRT.objects.create(
+        submission=rts, endpoint_type='gbfs',
+        url='https://example.org/gbfs.json', interval=30,
+    )
+
+    api_client.force_authenticate(user=admin_role_user)
+    with patch('data_manager.tasks.validate_realtime_submission_task.delay') as validate_mock, \
+         patch('data_manager.tasks.schedule_realtime_endpoint_fetches') as schedule_mock:
+        response = api_client.patch(
+            f'/api/data_manager/realtime-submissions/{rts.id}/',
+            {
+                'endpoints': [
+                    {'endpoint_type': 'gbfs', 'url': 'https://example.org/v2/gbfs.json', 'interval': 15},
+                ],
+            },
+            format='json',
+        )
+    assert response.status_code == 200, response.data
+
+    rts.refresh_from_db()
+    assert rts.current_stage == 4, 'admin endpoint edit must not unpublish a live feed'
+    assert not rts.history.filter(
+        event_type=RealtimeSubmissionHistory.EVENT_UPLOADED, stage_after=1,
+    ).exclude(stage_before=0).exists()
+    validate_mock.assert_called_once_with(rts.id)
+    schedule_mock.assert_called_once_with(rts.id)
+
+
+def test_rejected_resubmission_with_same_url_requeues_validation(
+    api_client, normal_user, admin_user, org, django_capture_on_commit_callbacks,
+):
+    """A resubmission must restart verification even when the url is unchanged."""
+    api_client.force_authenticate(user=normal_user)
+    url = 'https://example.org/feed.zip'
+    response = api_client.post(
+        '/api/data_manager/feed-submissions/',
+        {
+            'transport_organization': str(org.id),
+            'data_type': 'gtfs',
+            'name': 'Resubmit me',
+            'static_entry.url': url,
+            'static_entry.download_time_1': '03:00',
+        },
+        format='multipart',
+    )
+    assert response.status_code == 201, response.data
+    submission_id = response.data['id']
+
+    api_client.force_authenticate(user=admin_user)
+    response = api_client.patch(
+        f'/api/data_manager/feed-submissions/{submission_id}/',
+        {'rejection_cause': 'broken feed'},
+        format='json',
+    )
+    assert response.status_code == 200
+    submission = FeedSubmission.objects.get(pk=submission_id)
+    assert submission.is_rejected
+
+    api_client.force_authenticate(user=normal_user)
+    with patch('data_manager.tasks.validate_gtfs_feed_task.delay') as validate_mock:
+        with django_capture_on_commit_callbacks(execute=True):
+            response = api_client.patch(
+                f'/api/data_manager/feed-submissions/{submission_id}/',
+                {'static_entry': {'url': url}},
+                format='json',
+            )
+    assert response.status_code == 200, response.data
+
+    submission.refresh_from_db()
+    assert not submission.is_rejected
+    assert submission.current_stage == 2
+    validate_mock.assert_called_once_with(submission.static_entry.id)
+
+
+def test_latest_history_tie_resolves_by_id(normal_user, org):
+    """Two rows sharing created_at must resolve to the later (higher-id) one."""
+    submission = FeedSubmission.objects.create(
+        transport_organization=org, submitted_by=normal_user,
+        data_type='gtfs', name='Tie',
+    )
+    first = FeedSubmissionHistory.objects.create(
+        submission=submission, event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
+        stage_before=1, stage_after=2, actor=normal_user,
+    )
+    second = FeedSubmissionHistory.objects.create(
+        submission=submission, event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
+        stage_before=2, stage_after=3, actor=normal_user,
+    )
+    # Force an exact created_at tie (auto_now_add microseconds normally differ).
+    FeedSubmissionHistory.objects.filter(
+        pk__in=[first.pk, second.pk]
+    ).update(created_at=first.created_at)
+
+    submission = FeedSubmission.objects.get(pk=submission.pk)
+    assert submission.current_stage == 3
