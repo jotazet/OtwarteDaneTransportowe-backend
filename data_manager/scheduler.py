@@ -27,6 +27,11 @@ from data_manager.models import (
     completed_realtime_submission_ids,
 )
 from data_manager.net_security import OutboundURLBlocked, safe_get
+from data_manager.validators import (
+    InvalidFeedContent,
+    validate_realtime_feed_content,
+    validate_static_feed_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +101,11 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
         )
         response.raise_for_status()
 
+        # Reject garbage BEFORE touching the cache: a published feed keeps
+        # serving its last good copy when the upstream starts returning
+        # HTML error pages or truncated bodies.
+        validate_static_feed_content(entry.submission.data_type, response.content)
+
         parsed = urlparse(entry.url)
         filename = os.path.basename(parsed.path) or 'feed.zip'
 
@@ -112,7 +122,7 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
         validate_gtfs_feed_task.delay(entry.pk)
         return FETCH_OK
 
-    except OutboundURLBlocked as exc:
+    except (OutboundURLBlocked, InvalidFeedContent) as exc:
         _log_static_error(entry, FeedFetchError.ERROR_INVALID_CONTENT, exc)
         return FETCH_PERMANENT
     except requests.exceptions.Timeout as exc:
@@ -164,6 +174,10 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
             max_bytes=settings.MAX_FEED_FILE_SIZE_BYTES,
         )
         response.raise_for_status()
+
+        # Reject garbage BEFORE touching the cache (see _fetch_static_entry).
+        validate_realtime_feed_content(endpoint.submission.protocol, response.content)
+
         # Derive the public cache filename from the URL *path* only — the raw
         # last segment would keep the query string (e.g. '?token=...') and leak
         # upstream credentials into the public download URL.
@@ -176,7 +190,7 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
         endpoint.mark_fetch_success(now)
         logger.info('Refreshed realtime endpoint_rt=%d  url=%s', endpoint.pk, endpoint.url)
         return FETCH_OK
-    except OutboundURLBlocked as exc:
+    except (OutboundURLBlocked, InvalidFeedContent) as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc)
         return FETCH_PERMANENT
     except requests.exceptions.Timeout as exc:

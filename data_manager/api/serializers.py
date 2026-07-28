@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import OuterRef, Subquery
 from django.utils import timezone
@@ -17,6 +18,7 @@ from data_manager.models import (
 )
 from cases.models import TransportOrganization
 from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url
+from data_manager.validators import validate_uploaded_gtfs_zip
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +769,16 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
         static_entry = attrs.get('static_entry')
         if not static_entry:
             return attrs
+
+        # Content check for direct uploads: a GTFS feed must be a ZIP archive.
+        # Field-level validation cannot see data_type, hence it lives here.
+        if static_entry.get('file'):
+            data_type = attrs.get('data_type') or (self.instance.data_type if self.instance else None)
+            if data_type == 'gtfs':
+                try:
+                    validate_uploaded_gtfs_zip(static_entry['file'])
+                except DjangoValidationError as exc:
+                    raise serializers.ValidationError({'static_entry': {'file': list(exc.messages)}})
 
         if self.instance is None:
             if not static_entry.get('url') and not static_entry.get('file'):
