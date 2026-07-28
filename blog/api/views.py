@@ -1,16 +1,15 @@
 from datetime import timedelta
 
 from django.utils import timezone
-from django.conf import settings
 from rest_framework import viewsets
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
-from ipaddress import ip_address, ip_network
 
 from OtwarteDaneTransportowe.auth_roles import IsEditorOrOwnBloggerOrReadOnly
+from OtwarteDaneTransportowe.request_ip import get_client_ip
 from blog.api.serializers import PostSerializer, ReactionSerializer, PostListSerializer
 from blog.models import Post, Reaction
 
@@ -73,30 +72,7 @@ class ReactionViewSet(viewsets.ModelViewSet):
         )
 
     def get_client_ip(self, request):
-        remote = request.META.get('REMOTE_ADDR')
-        xff = request.META.get('HTTP_X_FORWARDED_FOR')
-
-        trusted = getattr(settings, 'TRUSTED_PROXY_CIDRS', []) or []
-        is_trusted_proxy = False
-        if remote and trusted:
-            try:
-                r_ip = ip_address(remote)
-                for cidr in trusted:
-                    try:
-                        if r_ip in ip_network(str(cidr), strict=False):
-                            is_trusted_proxy = True
-                            break
-                    except Exception:
-                        continue
-            except Exception:
-                is_trusted_proxy = False
-
-        if is_trusted_proxy and xff:
-            # X-Forwarded-For can contain multiple IPs: client, proxies...
-            candidate = xff.split(',')[0].strip()
-            return candidate or remote
-
-        return remote
+        return get_client_ip(request)
 
     def create(self, request, *args, **kwargs):
         """Create or update a reaction for a (post, IP) pair.

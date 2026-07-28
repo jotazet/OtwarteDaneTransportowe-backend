@@ -1,6 +1,7 @@
 from django.db.models import Count
 from rest_framework import serializers
 
+from OtwarteDaneTransportowe.request_ip import get_client_ip
 from blog.models import Post, Reaction
 
 
@@ -56,13 +57,10 @@ class PostSerializer(serializers.ModelSerializer):
         if not request:
             return None
 
-        # Get client IP using the same logic as in ReactionViewSet
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            client_ip = x_forwarded_for.split(',')[0].strip()
-        else:
-            client_ip = request.META.get('REMOTE_ADDR')
-
+        # Same trusted-proxy-aware IP resolution as ReactionViewSet, so reads
+        # and writes agree and a forged X-Forwarded-For cannot select another
+        # client's reaction.
+        client_ip = get_client_ip(request)
         if not client_ip:
             return None
 
