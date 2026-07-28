@@ -147,3 +147,48 @@ def test_update_user_roles(api_client, admin_user, regular_user):
     )
     assert response.status_code == 200
     assert set(response.data['roles']) == {ROLE_ADMIN, ROLE_DATA_PROVIDER}
+
+
+def test_cannot_deactivate_last_admin(api_client, admin_user):
+    api_client.force_authenticate(user=admin_user)
+    response = api_client.patch(
+        f'/api/users/{admin_user.pk}/',
+        {'is_active': False},
+        format='json',
+    )
+    assert response.status_code == 400
+    admin_user.refresh_from_db()
+    assert admin_user.is_active
+
+    # Keeping the Admin role in the same payload must not bypass the guard:
+    # a deactivated admin no longer counts, whatever roles remain.
+    response = api_client.patch(
+        f'/api/users/{admin_user.pk}/',
+        {'roles': [ROLE_ADMIN], 'is_active': False},
+        format='json',
+    )
+    assert response.status_code == 400
+
+
+def test_can_deactivate_admin_when_another_remains(api_client, admin_user, admin_group):
+    second = User.objects.create_user('admin2', 'admin2@example.com', 'pass')
+    second.groups.add(admin_group)
+
+    api_client.force_authenticate(user=admin_user)
+    response = api_client.patch(
+        f'/api/users/{second.pk}/',
+        {'is_active': False},
+        format='json',
+    )
+    assert response.status_code == 200
+    second.refresh_from_db()
+    assert not second.is_active
+
+    # Reactivating the (now sole active) admin's colleague is fine, and a
+    # plain reactivation payload never trips the guard.
+    response = api_client.patch(
+        f'/api/users/{second.pk}/',
+        {'is_active': True},
+        format='json',
+    )
+    assert response.status_code == 200
