@@ -71,6 +71,16 @@ def _completed_realtime_submission_ids() -> list[int]:
 # Pobieranie — feed statyczny
 # ---------------------------------------------------------------------------
 
+def _delete_stale_cache_file(field_file, old_name: str | None) -> None:
+    """Remove the previous cache file when a fetch stored it under a new name.
+
+    Same-name refreshes are rewritten in place by OverwriteStorage and must
+    not be deleted here.
+    """
+    if old_name and old_name != field_file.name and field_file.storage.exists(old_name):
+        field_file.storage.delete(old_name)
+
+
 # Outcome codes returned by the fetch helpers so the Celery task can decide
 # whether a retry is warranted. Exceptions are still swallowed here so direct
 # callers (management commands) stay resilient.
@@ -110,12 +120,16 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
         filename = os.path.basename(parsed.path) or 'feed.zip'
 
         now = timezone.now()
+        # This path bypasses model signals (save=False + queryset.update), so
+        # reclaim a differently-named previous cache file explicitly.
+        old_cached_name = entry.cached_file.name if entry.cached_file else None
         entry.cached_file.save(filename, ContentFile(response.content), save=False)
 
         StaticFeedEntry.objects.filter(pk=entry.pk).update(
             cached_file=entry.cached_file.name,
             cached_at=now,
         )
+        _delete_stale_cache_file(entry.cached_file, old_cached_name)
         entry.mark_fetch_success(now)
         logger.info('Refreshed static entry=%d  url=%s', entry.pk, entry.url)
 
@@ -182,11 +196,15 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
         # last segment would keep the query string (e.g. '?token=...') and leak
         # upstream credentials into the public download URL.
         filename = os.path.basename(urlparse(endpoint.url).path) or 'feed.pb'
+        # Signals are bypassed here (save=False + queryset.update): reclaim a
+        # differently-named previous cache file explicitly.
+        old_cached_name = endpoint.cached_file.name if endpoint.cached_file else None
         endpoint.cached_file.save(filename, ContentFile(response.content), save=False)
         RealtimeEndpointRT.objects.filter(pk=endpoint.pk).update(
             cached_file=endpoint.cached_file.name,
             cached_at=now,
         )
+        _delete_stale_cache_file(endpoint.cached_file, old_cached_name)
         endpoint.mark_fetch_success(now)
         logger.info('Refreshed realtime endpoint_rt=%d  url=%s', endpoint.pk, endpoint.url)
         return FETCH_OK
