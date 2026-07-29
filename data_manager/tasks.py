@@ -849,28 +849,57 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                 errors.append(f'{ep.endpoint_type}: blocked URL ({exc})')
             except Exception as exc:
                 errors.append(f'{ep.endpoint_type}: {exc}')
+        # Best-effort semantic validation via the gtfs-realtime-validator
+        # container. Its REST contract (verified empirically against the
+        # ghcr.io/mobilitydata image):
+        #   POST /api/gtfs-feed     form-encoded  gtfsUrl=<static feed url>
+        #                           -> JSON with 'feedId'
+        #   POST /api/gtfs-rt-feed  JSON {"gtfsRtUrl": ..., "gtfsFeedModel": {"feedId": N}}
+        # IMPORTANT: validator problems are logged as warnings, NOT appended to
+        # `errors` — an unreachable/misbehaving validator is an ops issue and
+        # must never auto-reject a healthy submission (a wrong endpoint path
+        # used to reject everything with 'validator GTFS: HTTP 404').
         if static_url:
             try:
                 assert_safe_outbound_url(static_url)
                 r0 = requests.post(
-                    f'{base.rstrip("/")}/api/gtfs',
-                    json={'url': static_url},
+                    f'{base.rstrip("/")}/api/gtfs-feed',
+                    data={'gtfsUrl': static_url},
                     timeout=60,
                 )
                 if r0.status_code >= 400:
-                    errors.append(f'validator GTFS: HTTP {r0.status_code}')
+                    logger.warning(
+                        'GTFS-RT validator: registering static feed failed '
+                        '(HTTP %s: %s) — skipping semantic validation for submission %s',
+                        r0.status_code, r0.text[:200], rts.id,
+                    )
                 else:
-                    gtfs_id = (r0.json() or {}).get('id') or (r0.json() or {}).get('gtfsFeedId')
+                    feed_id = (r0.json() or {}).get('feedId')
                     for ep in endpoints:
                         r1 = requests.post(
-                            f'{base.rstrip("/")}/api/gtfs-rt',
-                            json={'url': ep.url, 'gtfsFeedId': gtfs_id},
+                            f'{base.rstrip("/")}/api/gtfs-rt-feed',
+                            json={'gtfsRtUrl': ep.url, 'gtfsFeedModel': {'feedId': feed_id}},
                             timeout=60,
                         )
                         if r1.status_code >= 400:
-                            errors.append(f'{ep.endpoint_type}: validator RT HTTP {r1.status_code}')
+                            logger.warning(
+                                'GTFS-RT validator: endpoint %s (%s) not accepted '
+                                '(HTTP %s: %s) — submission %s continues without '
+                                'semantic validation of this endpoint',
+                                ep.endpoint_type, ep.url,
+                                r1.status_code, r1.text[:200], rts.id,
+                            )
             except Exception as exc:
-                errors.append(f'validator: {exc}')
+                logger.warning(
+                    'GTFS-RT validator unavailable (%s) — submission %s validated '
+                    'by link-checks only', exc, rts.id,
+                )
+        else:
+            logger.info(
+                'GTFS-RT validator skipped for submission %s: no public static '
+                'feed URL (uploaded file, or proxied without PUBLIC_BASE_URL)',
+                rts.id,
+            )
     else:
         for ep in endpoints:
             try:

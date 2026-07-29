@@ -1400,3 +1400,64 @@ def test_latest_history_tie_resolves_by_id(normal_user, org):
 
     submission = FeedSubmission.objects.get(pk=submission.pk)
     assert submission.current_stage == 3
+
+
+def test_broken_rt_validator_does_not_reject_healthy_submission(
+    monkeypatch, normal_user, org, settings, tmp_path,
+):
+    """Regression: a validator API error (e.g. 404 from a wrong endpoint path)
+    used to auto-reject every GTFS-RT submission ('validator GTFS: HTTP 404').
+    Validator problems are ops issues and must downgrade to log warnings."""
+    from data_manager.tasks import validate_realtime_submission_task
+
+    settings.MEDIA_ROOT = tmp_path
+    static_submission = FeedSubmission.objects.create(
+        transport_organization=org, submitted_by=normal_user,
+        data_type='gtfs', name='Static for RT',
+    )
+    FeedSubmissionHistory.objects.create(
+        submission=static_submission, event_type=FeedSubmissionHistory.EVENT_COMPLETED,
+        stage_before=3, stage_after=4, actor=normal_user,
+    )
+    StaticFeedEntry.objects.create(
+        submission=static_submission,
+        url='https://example.org/gtfs.zip',
+        download_time_1=time(3, 0),
+    )
+    rts = RealtimeSubmission.objects.create(
+        transport_organization=org, submitted_by=normal_user,
+        protocol=RealtimeSubmission.PROTOCOL_GTFS_RT,
+        static_submission=static_submission,
+    )
+    RealtimeSubmissionHistory.objects.create(
+        submission=rts, event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+        stage_before=0, stage_after=1, actor=normal_user,
+    )
+    RealtimeEndpointRT.objects.create(
+        submission=rts, endpoint_type='trip_update',
+        url='https://example.org/rt/feed', interval=30,
+    )
+
+    class _LinkOk:
+        status_code = 200
+        content = b'\x0a\x0bproto'
+
+    class _Validator404:
+        status_code = 404
+        text = 'Not Found'
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr('data_manager.tasks.validate_realtime_submission_task.delay', lambda *a, **k: None)
+    monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo',
+                        lambda host, port, *a, **k: [(2, 1, 6, '', ('93.184.216.34', port or 80))])
+    with patch('data_manager.net_security.safe_get', return_value=_LinkOk()), \
+         patch('data_manager.scheduler.safe_get', return_value=_LinkOk()), \
+         patch('requests.post', return_value=_Validator404()):
+        result = validate_realtime_submission_task(rts.id)
+
+    rts.refresh_from_db()
+    assert result['status'] == 'ok', result
+    assert not rts.is_rejected, rts.rejection_cause
+    assert rts.current_stage == 3

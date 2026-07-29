@@ -273,6 +273,13 @@ CELERY_TASK_TIME_LIMIT = 120
 # (development/testing only). Production MUST set this.
 FEED_AUTH_ENCRYPTION_KEY = os.getenv('FEED_AUTH_ENCRYPTION_KEY')
 
+# Public base URL of this API (scheme://host, no trailing slash), e.g.
+# https://api.example.org. Used to hand the GTFS-RT validator a downloadable
+# URL for PROXIED static feeds (their cached copy is only reachable through
+# our /feed/ routes). Unset => semantic validation is skipped for proxied
+# feeds (link-checks still run).
+PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', '').rstrip('/')
+
 # Proxy settings (used by blog reactions IP limiting)
 TRUSTED_PROXY_CIDRS = _env_list('TRUSTED_PROXY_CIDRS', default=[])
 
