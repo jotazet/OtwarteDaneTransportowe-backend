@@ -688,6 +688,14 @@ Endpoint bazowy:
 
 **Ograniczenia edycji dla wlasciciela (feed statyczny):**
 
+> **URL z jawnymi credentialami:** adres w formie `https://user:haslo@host/...`
+> jest dozwolony i traktowany jako **celowo publiczny** (np. feedy demo z
+> udokumentowanym loginem) — nie wymusza proxowania i jest pokazywany w
+> katalogu w oryginalnej postaci. Przy pobieraniu/walidacji serwer zamienia
+> go na naglowek `Authorization: Basic` (z dekodowaniem procent-encodingu).
+> **Sekretne** poswiadczenia nalezy podawac przez `auth_type`/`auth_value`
+> (szyfrowane, wymuszaja proxy i nigdy nie sa ujawniane).
+
 - **Pelna edycja** — wylacznie gdy zgloszenie jest **odrzucone** (`is_rejected=true`, zwykle `current_stage=1`) albo gdy w historii jest tylko etap **1** (rzadki przypadek bez przejscia na etap 2). Wtedy mozna zmieniac wszystkie pola, takze `name`, zrodlo (`url` / plik), `is_original`, `hide_original`, `auth_type`, `auth_value`.
 - **Edycja od etapu 2 do 4** — gdy **nie ma** odrzucenia i `current_stage` jest **2, 3 lub 4**, wlasciciel (`DataProvider`) moze zmieniac tylko:
   - na zgloszeniu: **`note`** (pole **`name` jest zablokowane**);

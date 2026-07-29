@@ -62,7 +62,6 @@ def test_any_private_ip_in_mixed_resolution_blocks(monkeypatch):
 @pytest.mark.parametrize('url', [
     'ftp://feeds.example.org/gtfs.zip',   # scheme
     'file:///etc/passwd',                 # scheme
-    'https://user:pass@example.org/x',    # userinfo
     'https:///nohost',                    # missing hostname
     '',                                   # empty
 ])
@@ -70,6 +69,75 @@ def test_malformed_or_disallowed_urls_are_blocked(monkeypatch, url):
     _patch_dns(monkeypatch, '93.184.216.34')
     with pytest.raises(OutboundURLBlocked):
         assert_safe_outbound_url(url)
+
+
+# ---------------------------------------------------------------------------
+# Userinfo URLs (intentionally-public credentials)
+# ---------------------------------------------------------------------------
+
+def test_split_userinfo_decodes_and_builds_basic_header():
+    import base64
+
+    from data_manager.net_security import split_userinfo
+
+    clean, headers = split_userinfo('https://kd_sample:Hm5mEuPC%3F1h7@kd.example.org/gtfs/feed.zip')
+    assert clean == 'https://kd.example.org/gtfs/feed.zip'
+    expected = base64.b64encode(b'kd_sample:Hm5mEuPC?1h7').decode()
+    assert headers == {'Authorization': f'Basic {expected}'}
+
+    # No credentials -> passthrough.
+    assert split_userinfo('https://example.org/x') == ('https://example.org/x', {})
+
+
+def test_userinfo_url_validates_against_real_host(monkeypatch):
+    # `https://trusted.com@evil-host/` must be validated against evil-host.
+    def fake_dns(host, port, *args, **kwargs):
+        ip = '10.0.0.5' if host == 'internal.example.org' else '93.184.216.34'
+        return _addrinfo(ip)(host, port)
+
+    monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo', fake_dns)
+    with pytest.raises(OutboundURLBlocked):
+        assert_safe_outbound_url('https://feeds.example.org@internal.example.org/x')
+    assert_safe_outbound_url('https://user:pass@feeds.example.org/x')  # public host: OK
+
+
+def test_safe_get_converts_userinfo_to_basic_auth(monkeypatch):
+    import base64
+
+    _patch_dns(monkeypatch, '93.184.216.34')
+    captured = {}
+
+    def fake_get(url, headers=None, **kwargs):
+        captured['url'] = url
+        captured['headers'] = headers
+        return _FakeResponse(body=b'PK\x03\x04data')
+
+    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    response = safe_get(
+        'https://kd_sample:Hm5mEuPC%3F1h7@feeds.example.org/feed.zip',
+        timeout=5, max_bytes=1024,
+    )
+    assert response.content == b'PK\x03\x04data'
+    assert '@' not in captured['url']  # credentials never travel in the URL
+    expected = base64.b64encode(b'kd_sample:Hm5mEuPC?1h7').decode()
+    assert captured['headers']['Authorization'] == f'Basic {expected}'
+
+
+def test_safe_get_explicit_auth_header_wins_over_userinfo(monkeypatch):
+    _patch_dns(monkeypatch, '93.184.216.34')
+    captured = {}
+
+    def fake_get(url, headers=None, **kwargs):
+        captured['headers'] = headers
+        return _FakeResponse(body=b'ok')
+
+    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    safe_get(
+        'https://user:pass@feeds.example.org/feed.zip',
+        headers={'Authorization': 'Bearer explicit-token'},
+        timeout=5, max_bytes=1024,
+    )
+    assert captured['headers']['Authorization'] == 'Bearer explicit-token'
 
 
 def test_dns_failure_is_blocked(monkeypatch):

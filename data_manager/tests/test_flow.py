@@ -1461,3 +1461,36 @@ def test_broken_rt_validator_does_not_reject_healthy_submission(
     assert result['status'] == 'ok', result
     assert not rts.is_rejected, rts.rejection_cause
     assert rts.current_stage == 3
+
+
+def test_static_url_with_public_credentials_is_accepted_and_stays_public(
+    api_client, normal_user, org, django_capture_on_commit_callbacks,
+):
+    """Product decision: user:pass@ URLs are allowed and treated as
+    intentionally-public credentials — no forced proxying, URL shown as-is.
+    Secret credentials still go through auth_type/auth_value (which proxies)."""
+    api_client.force_authenticate(user=normal_user)
+    url_with_creds = 'https://kd_sample:Hm5mEuPC%3F1h7@example.org/gtfs/google_transit.zip'
+
+    with patch('data_manager.tasks.validate_gtfs_feed_task.delay') as validate_mock:
+        with django_capture_on_commit_callbacks(execute=True):
+            response = api_client.post(
+                '/api/data_manager/feed-submissions/',
+                {
+                    'transport_organization': org.id,
+                    'data_type': 'gtfs',
+                    'name': 'Public-credentials feed',
+                    'static_entry': {
+                        'url': url_with_creds,
+                        'download_time_1': '03:00:00',
+                    },
+                },
+                format='json',
+            )
+    assert response.status_code == 201, response.data
+
+    entry = StaticFeedEntry.objects.get(submission_id=response.data['id'])
+    assert entry.url == url_with_creds          # stored verbatim
+    assert entry.hide_original is False         # NOT forced into proxy mode
+    assert entry.auth_type is None
+    validate_mock.assert_called_once_with(entry.id)  # validation still queued

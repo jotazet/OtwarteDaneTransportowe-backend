@@ -31,6 +31,37 @@ def _is_public_ip(ip: str) -> bool:
     return True
 
 
+def split_userinfo(url: str) -> tuple[str, dict]:
+    """Split ``user:pass@`` credentials out of a URL.
+
+    Returns ``(clean_url_without_userinfo, headers)`` where headers carries
+    the equivalent ``Authorization: Basic`` header (percent-encoding in the
+    credentials is decoded first — the same thing a browser does). URLs
+    without userinfo return ``(url, {})``.
+
+    Product decision: URLs with embedded credentials are ALLOWED and treated
+    as intentionally public (e.g. demo feeds with documented sample logins).
+    Secret credentials belong in auth_type/auth_value (encrypted, proxied).
+    The SSRF host checks still apply to the real hostname — urlsplit parses
+    the host after the ``@``, so `https://trusted.com@evil.com/` is validated
+    against evil.com.
+    """
+    parts = urlsplit((url or "").strip())
+    if not parts.username and not parts.password:
+        return url, {}
+    import base64
+    from urllib.parse import unquote, urlunsplit
+
+    user = unquote(parts.username or "")
+    password = unquote(parts.password or "")
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    clean = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    return clean, {"Authorization": f"Basic {token}"}
+
+
 def resolve_public_ips(url: str) -> tuple[str, int, set[str]]:
     """
     Validate an outbound URL and return ``(hostname, port, resolved_public_ips)``.
@@ -38,8 +69,10 @@ def resolve_public_ips(url: str) -> tuple[str, int, set[str]]:
     SSRF guard:
     - scheme must be http/https
     - must have hostname
-    - disallow userinfo (user:pass@host)
     - resolve DNS and block if ANY resolved IP is private/loopback/link-local/etc.
+
+    Userinfo (``user:pass@host``) is permitted — see :func:`split_userinfo`;
+    validation always runs against the real hostname after the ``@``.
 
     Raises :class:`OutboundURLBlocked` on any violation.
     """
@@ -49,9 +82,6 @@ def resolve_public_ips(url: str) -> tuple[str, int, set[str]]:
 
     if not parts.hostname:
         raise OutboundURLBlocked("URL must include a hostname.")
-
-    if parts.username or parts.password:
-        raise OutboundURLBlocked("Userinfo in URL is not allowed.")
 
     port = parts.port or (443 if parts.scheme == "https" else 80)
 
@@ -133,12 +163,18 @@ def safe_get(
     """
     current_url = url
     for _ in range(max_redirects + 1):
-        hostname, _port, allowed_ips = resolve_public_ips(current_url)
+        # Embedded user:pass@ (if any) becomes a Basic Authorization header for
+        # THIS hop; the request itself always goes to a credential-free URL.
+        # Explicitly passed headers (auth_type/auth_value) take precedence.
+        clean_url, userinfo_headers = split_userinfo(current_url)
+        request_headers = {**userinfo_headers, **(headers or {})} or None
+
+        hostname, _port, allowed_ips = resolve_public_ips(clean_url)
 
         with _pinned_dns(hostname, allowed_ips):
             response = requests.get(
-                current_url,
-                headers=headers,
+                clean_url,
+                headers=request_headers,
                 timeout=timeout,
                 allow_redirects=False,
                 stream=True,
