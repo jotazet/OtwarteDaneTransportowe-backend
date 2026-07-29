@@ -141,6 +141,84 @@ def _pinned_dns(hostname: str, allowed_ips: set[str]):
         socket.getaddrinfo = real_getaddrinfo
 
 
+# Per-process cache: hostname -> path of a CA bundle extended with the host's
+# AIA-fetched intermediates. Realtime loops hit the same hosts every few
+# seconds; the chain must not be re-fetched each time.
+_AIA_BUNDLE_CACHE: dict[str, str] = {}
+_AIA_INTERMEDIATE_MAX_BYTES = 100_000
+
+
+def _ca_bundle_with_aia_intermediates(hostname: str, port: int) -> str | None:
+    """Best-effort fix for servers that omit their intermediate certificate.
+
+    Reads the server's leaf certificate, follows its Authority Information
+    Access (CA Issuers) URLs — exactly what browsers do — and writes a CA
+    bundle of ``certifi`` roots + the fetched intermediates. Returns the
+    bundle path, or None when the chain cannot be completed (caller should
+    re-raise the original SSL error). The intermediates are UNTRUSTED input:
+    they only help verification succeed if they genuinely link the leaf to a
+    trusted root, so this cannot make a forged certificate pass.
+    """
+    cached = _AIA_BUNDLE_CACHE.get(hostname)
+    if cached:
+        return cached
+
+    import ssl
+    import tempfile
+
+    import certifi
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
+    try:
+        leaf_pem = ssl.get_server_certificate((hostname, port), timeout=10)
+        leaf = x509.load_pem_x509_certificate(leaf_pem.encode())
+        aia = leaf.extensions.get_extension_for_class(
+            x509.AuthorityInformationAccess
+        ).value
+        issuer_urls = [
+            desc.access_location.value
+            for desc in aia
+            if desc.access_method == x509.oid.AuthorityInformationAccessOID.CA_ISSUERS
+        ]
+    except Exception:
+        return None
+
+    intermediate_pems: list[str] = []
+    for issuer_url in issuer_urls[:3]:
+        try:
+            # CA repositories are public hosts; keep the SSRF guard on anyway.
+            resolve_public_ips(issuer_url)
+            fetched = requests.get(issuer_url, timeout=10)
+            if (
+                fetched.status_code >= 400
+                or len(fetched.content) > _AIA_INTERMEDIATE_MAX_BYTES
+            ):
+                continue
+            try:
+                cert = x509.load_der_x509_certificate(fetched.content)
+            except ValueError:
+                cert = x509.load_pem_x509_certificate(fetched.content)
+            intermediate_pems.append(
+                cert.public_bytes(serialization.Encoding.PEM).decode()
+            )
+        except Exception:
+            continue
+
+    if not intermediate_pems:
+        return None
+
+    with open(certifi.where(), encoding='utf-8') as fh:
+        roots = fh.read()
+    bundle = tempfile.NamedTemporaryFile(
+        'w', suffix='.pem', prefix=f'ca-aia-{hostname}-', delete=False
+    )
+    bundle.write(roots + '\n' + '\n'.join(intermediate_pems))
+    bundle.close()
+    _AIA_BUNDLE_CACHE[hostname] = bundle.name
+    return bundle.name
+
+
 def safe_get(
     url: str,
     *,
@@ -172,13 +250,32 @@ def safe_get(
         hostname, _port, allowed_ips = resolve_public_ips(clean_url)
 
         with _pinned_dns(hostname, allowed_ips):
-            response = requests.get(
-                clean_url,
-                headers=request_headers,
-                timeout=timeout,
-                allow_redirects=False,
-                stream=True,
-            )
+            try:
+                response = requests.get(
+                    clean_url,
+                    headers=request_headers,
+                    timeout=timeout,
+                    allow_redirects=False,
+                    stream=True,
+                )
+            except requests.exceptions.SSLError as exc:
+                # Misconfigured upstream: server does not send its intermediate
+                # certificate (browsers hide this by AIA-fetching it). Complete
+                # the chain ourselves and retry ONCE — full verification stays
+                # in force, the chain must still anchor at a trusted root.
+                if "certificate verify failed" not in str(exc).lower():
+                    raise
+                bundle = _ca_bundle_with_aia_intermediates(hostname, _port)
+                if not bundle:
+                    raise
+                response = requests.get(
+                    clean_url,
+                    headers=request_headers,
+                    timeout=timeout,
+                    allow_redirects=False,
+                    stream=True,
+                    verify=bundle,
+                )
 
         if response.is_redirect:
             location = response.headers.get('Location')

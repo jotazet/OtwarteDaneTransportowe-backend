@@ -226,3 +226,67 @@ def test_safe_get_aborts_oversized_body(monkeypatch):
     )
     with pytest.raises(OutboundURLBlocked, match='byte limit'):
         safe_get('https://feeds.example.org/gtfs.zip', timeout=5, max_bytes=1000)
+
+
+# ---------------------------------------------------------------------------
+# Incomplete server chains (AIA completion)
+# ---------------------------------------------------------------------------
+
+def test_verify_failure_retries_with_aia_bundle(monkeypatch):
+    import requests as requests_module
+
+    _patch_dns(monkeypatch, '93.184.216.34')
+    calls = []
+
+    def fake_get(url, verify=True, **kwargs):
+        calls.append(verify)
+        if len(calls) == 1:
+            raise requests_module.exceptions.SSLError(
+                'certificate verify failed: unable to get local issuer certificate'
+            )
+        return _FakeResponse(body=b'PK\x03\x04ok')
+
+    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    monkeypatch.setattr(
+        'data_manager.net_security._ca_bundle_with_aia_intermediates',
+        lambda host, port: '/tmp/fake-bundle.pem',
+    )
+    response = safe_get('https://broken-chain.example.org/f.zip', timeout=5, max_bytes=1024)
+    assert response.content == b'PK\x03\x04ok'
+    assert calls == [True, '/tmp/fake-bundle.pem']  # retried once with the bundle
+
+
+def test_other_ssl_errors_are_not_retried(monkeypatch):
+    import requests as requests_module
+
+    _patch_dns(monkeypatch, '93.184.216.34')
+
+    def fake_get(url, **kwargs):
+        raise requests_module.exceptions.SSLError('handshake failure')
+
+    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    bundle_mock_called = []
+    monkeypatch.setattr(
+        'data_manager.net_security._ca_bundle_with_aia_intermediates',
+        lambda host, port: bundle_mock_called.append(1) or '/tmp/x',
+    )
+    with pytest.raises(requests_module.exceptions.SSLError):
+        safe_get('https://feeds.example.org/f.zip', timeout=5, max_bytes=1024)
+    assert not bundle_mock_called  # AIA path only for verify failures
+
+
+def test_verify_failure_propagates_when_chain_cannot_be_completed(monkeypatch):
+    import requests as requests_module
+
+    _patch_dns(monkeypatch, '93.184.216.34')
+
+    def fake_get(url, **kwargs):
+        raise requests_module.exceptions.SSLError('certificate verify failed')
+
+    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    monkeypatch.setattr(
+        'data_manager.net_security._ca_bundle_with_aia_intermediates',
+        lambda host, port: None,
+    )
+    with pytest.raises(requests_module.exceptions.SSLError):
+        safe_get('https://feeds.example.org/f.zip', timeout=5, max_bytes=1024)
