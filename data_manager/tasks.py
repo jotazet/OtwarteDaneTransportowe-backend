@@ -50,6 +50,35 @@ RT_BOOTSTRAP_JITTER_MAX_SECONDS = 2
 RT_ALIVE_TTL_BUFFER_SECONDS = 120
 
 
+def enqueue(task, *args, **kwargs) -> bool:
+    """Queue a Celery task without letting broker trouble break the request.
+
+    ``.delay()`` is a network call to the broker. When Redis is down or
+    misconfigured it raises, and because these calls happen inside request
+    handling (upload signals, submission create/update) the whole API call
+    used to fail with HTTP 500 — even though the submission itself had been
+    saved successfully. Losing the queued job is recoverable (the periodic
+    dispatchers re-seed realtime loops; stuck static validations are picked up
+    by ``manage.py retry_gtfs_validation``); failing the user's upload is not.
+
+    Returns True when the task was queued. Logs an error otherwise.
+    """
+    try:
+        task.delay(*args, **kwargs)
+        return True
+    except Exception:  # noqa: BLE001 - any broker/transport failure
+        # Broad on purpose: kombu/redis raise a wide range of transport errors
+        # and none of them should turn a successful write into a 500.
+        logger.exception(
+            'Could not queue %s(%s) — broker unreachable? The task was NOT '
+            'scheduled; use manage.py retry_gtfs_validation (static) or wait '
+            'for the periodic bootstrap (realtime).',
+            getattr(task, 'name', task),
+            ', '.join(map(repr, args)),
+        )
+        return False
+
+
 def _rt_alive_key(endpoint_id: int) -> str:
     return f'rt-endpoint-alive:{endpoint_id}'
 

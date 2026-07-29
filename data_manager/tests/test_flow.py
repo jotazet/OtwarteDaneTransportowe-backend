@@ -1494,3 +1494,34 @@ def test_static_url_with_public_credentials_is_accepted_and_stays_public(
     assert entry.hide_original is False         # NOT forced into proxy mode
     assert entry.auth_type is None
     validate_mock.assert_called_once_with(entry.id)  # validation still queued
+
+
+def test_upload_succeeds_when_broker_is_down(api_client, normal_user, org):
+    """A broker outage must not turn a successful upload into HTTP 500.
+
+    The post_save signal queues GTFS validation inside the request; when Redis
+    is unreachable .delay() raises, and that used to bubble up as a 500 after
+    the submission had already been written."""
+    api_client.force_authenticate(user=normal_user)
+    gtfs_path = os.path.join(os.path.dirname(__file__), 'GTFS_correct.zip')
+
+    def broker_down(*args, **kwargs):
+        raise OSError('Error 111 connecting to redis:6379. Connection refused.')
+
+    with patch('data_manager.tasks.validate_gtfs_feed_task.delay', side_effect=broker_down):
+        with open(gtfs_path, 'rb') as fh:
+            response = api_client.post(
+                '/api/data_manager/feed-submissions/',
+                {
+                    'transport_organization': str(org.id),
+                    'data_type': 'gtfs',
+                    'name': 'Upload with broker down',
+                    'static_entry.file': fh,
+                },
+                format='multipart',
+            )
+
+    assert response.status_code == 201, response.data
+    submission = FeedSubmission.objects.get(pk=response.data['id'])
+    assert submission.static_entry.file  # file stored despite the outage
+    assert submission.current_stage == 2

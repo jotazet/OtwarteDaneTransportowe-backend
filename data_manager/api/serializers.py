@@ -851,12 +851,14 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
             # would skip the immediate refetch for a delayed/paused entry.
             entry.resume_fetch()
         entry_id = entry.pk
+        # enqueue(): an on_commit callback raising would surface as a 500 AFTER
+        # the data was committed; a broker outage must not do that.
         if entry.is_proxy_managed:
-            from data_manager.tasks import fetch_static_entry_task
-            transaction.on_commit(lambda: fetch_static_entry_task.delay(entry_id))
+            from data_manager.tasks import enqueue, fetch_static_entry_task
+            transaction.on_commit(lambda: enqueue(fetch_static_entry_task, entry_id))
         elif entry.submission.data_type == 'gtfs':
-            from data_manager.tasks import validate_gtfs_feed_task
-            transaction.on_commit(lambda: validate_gtfs_feed_task.delay(entry_id))
+            from data_manager.tasks import enqueue, validate_gtfs_feed_task
+            transaction.on_commit(lambda: enqueue(validate_gtfs_feed_task, entry_id))
 
     def create(self, validated_data):
         static_entry_data = validated_data.pop('static_entry', None)

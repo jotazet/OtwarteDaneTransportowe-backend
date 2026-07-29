@@ -718,7 +718,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):
-        from data_manager.tasks import validate_realtime_submission_task
+        from data_manager.tasks import enqueue, validate_realtime_submission_task
 
         serializer = self.get_serializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -742,7 +742,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                 stage_after=1,
                 actor=request.user,
             )
-        validate_realtime_submission_task.delay(rts.id)
+        enqueue(validate_realtime_submission_task, rts.id)
         out = self._read_serializer(request, rts)
         return Response(out.data, status=status.HTTP_201_CREATED)
 
@@ -756,7 +756,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         return serializer_class(submission, context={'request': request})
 
     def update(self, request, *args, **kwargs):
-        from data_manager.tasks import validate_realtime_submission_task
+        from data_manager.tasks import enqueue, validate_realtime_submission_task
 
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
@@ -836,7 +836,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                     # re-validation below rejects (with an audit trail) if the
                     # new endpoints turn out to be broken.
         if endpoints_data is not None and not restricted_realtime:
-            validate_realtime_submission_task.delay(instance.id)
+            enqueue(validate_realtime_submission_task, instance.id)
             if instance.current_stage == 4:
                 # Endpoints were replaced (old fetch loops died with their
                 # rows); re-seed the self-scheduling loops for the new ones
