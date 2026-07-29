@@ -5,6 +5,7 @@ from rest_framework import viewsets
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 
@@ -39,6 +40,47 @@ class PostViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(author=self.request.user)
+
+
+class MyReactionsView(APIView):
+    """GET /api/blog/reactions/mine/?post_ids=1,2,3
+
+    Returns ``{"<post_id>": "<reaction>"}` for the CALLER only, resolved from
+    their own client IP — no other visitor's IP or reaction is exposed.
+
+    Why this exists: ``PostSerializer.your_reaction`` is only meaningful when
+    the request comes straight from the visitor's browser. Pages rendered
+    server-side (Next.js SSR) reach the API from the frontend server, so that
+    field would reflect the SERVER's identity and be identical for everyone.
+    Clients must therefore read their own reaction state from here, in the
+    browser.
+    """
+
+    permission_classes = [AllowAny]
+    MAX_POST_IDS = 100
+
+    def get(self, request):
+        client_ip = get_client_ip(request)
+        if not client_ip:
+            return Response({})
+
+        raw = (request.query_params.get('post_ids') or '').split(',')
+        post_ids = []
+        for value in raw:
+            value = value.strip()
+            if value.isdigit():
+                post_ids.append(int(value))
+            if len(post_ids) >= self.MAX_POST_IDS:
+                break
+        if not post_ids:
+            return Response({})
+
+        rows = Reaction.objects.filter(
+            post_id__in=post_ids,
+            ip_address=client_ip,
+            reaction__isnull=False,
+        ).values_list('post_id', 'reaction')
+        return Response({str(post_id): reaction for post_id, reaction in rows})
 
 
 class ReactionViewSet(viewsets.ModelViewSet):

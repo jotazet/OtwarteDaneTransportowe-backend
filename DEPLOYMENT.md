@@ -210,6 +210,7 @@ CELERY_FEEDS_CONCURRENCY=2
 | `CSRF_TRUSTED_ORIGINS` | Wymagane do POST za proxy TLS. |
 | `FEED_AUTH_ENCRYPTION_KEY` | Szyfrowanie poświadczeń feedów at-rest. |
 | `REDIS_CACHE_URL` | Współdzielony cache (lock realtime + throttling). |
+| `TRUSTED_PROXY_CIDRS` | **Wymagane za reverse-proxy.** Bez tego każdy odwiedzający jest widziany z adresem proxy: reakcje na blogu zapadają się do JEDNEJ wspólnej reakcji na post (każdy nadpisuje poprzedniego) i jednego wspólnego limitu dziennego. Proxy musi też przekazywać `X-Forwarded-For`. Brak wartości zgłasza `manage.py check` jako `blog.W001`. |
 
 ---
 
@@ -594,6 +595,12 @@ ma `DOCKER_HOST=tcp://docker-socket-proxy:2375`.
 → Ustaw `UID`/`GID` w `.env` i przeładuj (usługa `init_uploads` zrobi `chown`).
 
 **Feedy realtime nie odświeżają się / lock nie działa**
+**Reakcje na blogu: wszyscy nadpisują sobie reakcję / jedna reakcja globalnie**
+→ Backend widzi wszystkich z jednym IP (adres proxy). Ustaw `TRUSTED_PROXY_CIDRS`
+na sieć proxy (np. `172.16.0.0/12,127.0.0.1/32`) i upewnij się, że nginx/Caddy
+przekazuje `X-Forwarded-For`. Weryfikacja: `docker compose exec web python
+manage.py check` nie może zgłaszać `blog.W001`.
+
 → Upewnij się, że `REDIS_CACHE_URL` jest ustawiony (współdzielony cache jest
 wymagany dla locka i throttlingu między procesami).
 

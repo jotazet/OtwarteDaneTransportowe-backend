@@ -192,7 +192,44 @@ zostać zapisana mimo błędu).
 
 ---
 
-## 7. Checklist migracji frontendu
+## 7. ⚠️ Reakcje na blogu: `your_reaction` NIE może pochodzić z SSR
+
+**Nowy endpoint:**
+
+```
+GET /api/blog/reactions/mine/?post_ids=1,2,3
+→ { "1": "like", "3": "angry" }        // brak klucza = brak reakcji
+```
+
+Zwraca **wyłącznie reakcje wywołującego** (rozpoznawanego po jego adresie IP);
+cudze reakcje ani adresy nigdy nie są ujawniane.
+
+**Dlaczego to konieczne:** pole `your_reaction` w odpowiedzi `/api/blog/posts/`
+opisuje tego, kto wykonał żądanie. Gdy stronę renderuje serwer (Next.js SSR),
+żądanie wychodzi z **serwera frontendu** — więc `your_reaction` opisywało jego,
+identycznie dla wszystkich odwiedzających. Objaw: każdy widział cudzą reakcję
+jako swoją, a interfejs pozwalał ją nadpisać.
+
+**Migracja:**
+
+- ❌ nie używaj `post.your_reaction` z danych pobranych w komponencie serwerowym,
+- ✅ w komponencie klienckim pobierz swój stan z `/api/blog/reactions/mine/`
+  (w tym repo zrobione w `ReactionPanel`; helper: `fetchMyReactions()` w
+  `lib/api/blog.ts`),
+- `reactions_summary` (globalne liczniki) pozostaje poprawne z SSR — to dane
+  publiczne, niezależne od tożsamości.
+
+Pole `your_reaction` zostaje w API (jest poprawne dla żądań wysyłanych wprost
+z przeglądarki), ale przy SSR musi być ignorowane.
+
+**Wymóg wdrożeniowy:** backend za reverse-proxy musi mieć ustawione
+`TRUSTED_PROXY_CIDRS`, a proxy przekazywać `X-Forwarded-For` — inaczej wszyscy
+odwiedzający dzielą jedną tożsamość (jedna reakcja na post, wspólny limit
+dzienny). `manage.py check` sygnalizuje brak jako `blog.W001`.
+
+---
+
+## 8. Checklist migracji frontendu
 
 - [ ] Wszystkie fetche list przełączone na `data.results` (+ obsługa `next`/`count`).
 - [ ] Blog: pobieranie wpisów przez paginację (nie ma już gołej tablicy bez `?page`).
@@ -200,4 +237,7 @@ zostać zapisana mimo błędu).
 - [ ] Przycisk „Usuń zgłoszenie" widoczny tylko dla roli `Admin`.
 - [ ] Obsługa nowych komunikatów 400 (stage, endpoint_type, nie-ZIP GTFS, ostatni admin).
 - [ ] Przyciski edycji bloga wg ról: `Blogger` = własne, `Editor`/`Admin` = wszystkie.
-- [ ] (Ops) `TRUSTED_PROXY_CIDRS` ustawione w produkcji za reverse-proxy.
+- [ ] Reakcje: stan „moja reakcja" czytany z `/api/blog/reactions/mine/` w
+      przeglądarce (nie z `your_reaction` z SSR).
+- [ ] (Ops) `TRUSTED_PROXY_CIDRS` ustawione w produkcji za reverse-proxy +
+      proxy przekazuje `X-Forwarded-For` (`manage.py check` bez `blog.W001`).

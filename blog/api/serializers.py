@@ -52,7 +52,14 @@ class PostSerializer(serializers.ModelSerializer):
         return base
 
     def get_your_reaction(self, obj: Post):
-        """Return the reaction from the current user's IP, or null if none."""
+        """Return the reaction from the current user's IP, or null if none.
+
+        Only meaningful for requests made DIRECTLY by the visitor's browser.
+        A server-side renderer (Next.js SSR) calls the API from its own host,
+        so this field would then describe the frontend server, identically for
+        every visitor. Such clients must read their own state from
+        ``GET /api/blog/reactions/mine/`` in the browser instead.
+        """
         request = self.context.get('request')
         if not request:
             return None
