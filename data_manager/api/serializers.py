@@ -6,6 +6,7 @@ from django.db import transaction
 from django.db.models import Count, OuterRef, Q, Subquery
 from django.utils import timezone
 from rest_framework import serializers
+from rest_framework.settings import api_settings
 
 from data_manager.models import (
     FeedFetchError,
@@ -78,6 +79,24 @@ def feed_display_name(submission) -> str | None:
         return None
     name = (submission.name or '').strip()
     return f"#{submission.id} {name}".strip()
+
+
+def raise_as_drf_validation_error(exc: DjangoValidationError, *, field: str | None = None):
+    """Re-raise a MODEL-level ValidationError as a DRF one.
+
+    ``Model.full_clean()`` raises ``django.core.exceptions.ValidationError``,
+    which DRF's exception handler does not recognise — it escapes as HTTP 500
+    instead of a 400 describing the offending field (e.g. sending
+    ``download_time_1`` together with an uploaded file). ``field`` nests the
+    errors under a parent key so the client can map them back onto the form
+    (e.g. ``{"static_entry": {"download_time_1": [...]}}``).
+    """
+    detail = (
+        exc.message_dict
+        if hasattr(exc, 'message_dict')
+        else {api_settings.NON_FIELD_ERRORS_KEY: list(exc.messages)}
+    )
+    raise serializers.ValidationError({field: detail} if field else detail)
 
 
 def annotate_fetch_health(qs, error_fk: str):
@@ -860,6 +879,9 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
             from data_manager.tasks import enqueue, validate_gtfs_feed_task
             transaction.on_commit(lambda: enqueue(validate_gtfs_feed_task, entry_id))
 
+    # Atomic: a rejected static entry (full_clean below) must not leave the
+    # parent submission behind as an orphan with no source.
+    @transaction.atomic
     def create(self, validated_data):
         static_entry_data = validated_data.pop('static_entry', None)
         submission = FeedSubmission(**validated_data)
@@ -869,7 +891,10 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
             if static_entry_data.get('auth_type') is not None:
                 static_entry_data['hide_original'] = True
             entry = StaticFeedEntry(submission=submission, **static_entry_data)
-            entry.full_clean()
+            try:
+                entry.full_clean()
+            except DjangoValidationError as exc:
+                raise_as_drf_validation_error(exc, field='static_entry')
             entry.save()
             if entry.url:
                 self._schedule_source_refresh(entry)
@@ -905,7 +930,10 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     if static_entry_data.get('auth_type') is not None:
                         entry.hide_original = True
                         update_fields.add('hide_original')
-                    entry.full_clean()
+                    try:
+                        entry.full_clean()
+                    except DjangoValidationError as exc:
+                        raise_as_drf_validation_error(exc, field='static_entry')
                     # Explicit update_fields: the fetch scheduler updates
                     # cached_file/cached_at concurrently via queryset.update();
                     # a full save() would write back this instance's stale copy.
@@ -925,7 +953,10 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     new_entry = StaticFeedEntry(
                         submission=instance, **static_entry_data
                     )
-                    new_entry.full_clean()
+                    try:
+                        new_entry.full_clean()
+                    except DjangoValidationError as exc:
+                        raise_as_drf_validation_error(exc, field='static_entry')
                     new_entry.save()
                     if new_entry.url and not self.context.get('defer_source_refresh'):
                         self._schedule_source_refresh(new_entry)

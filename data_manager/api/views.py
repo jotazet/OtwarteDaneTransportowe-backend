@@ -24,10 +24,13 @@ from OtwarteDaneTransportowe.auth_roles import (
     is_helper_reviewer,
     patch_request_includes_submission_content,
 )
+from django.core.exceptions import ValidationError as DjangoValidationError
+
 from data_manager.api.serializers import (
     AdminFeedSubmissionSerializer,
     AdminRealtimeSubmissionSerializer,
     annotate_fetch_health,
+    raise_as_drf_validation_error,
     EligibleRealtimeStaticSubmissionSerializer,
     FeedFetchErrorSerializer,
     FeedSubmissionListSerializer,
@@ -733,7 +736,10 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                 if ep.get('auth_type'):
                     ep['hide_original'] = True
                 o = RealtimeEndpointRT(submission=rts, **ep)
-                o.full_clean()
+                try:
+                    o.full_clean()
+                except DjangoValidationError as exc:
+                    raise_as_drf_validation_error(exc, field='endpoints')
                 o.save()
             RealtimeSubmissionHistory.objects.create(
                 submission=rts,
@@ -811,7 +817,10 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                             })
                         if obj.interval != ep['interval']:
                             obj.interval = ep['interval']
-                            obj.full_clean()
+                            try:
+                                obj.full_clean()
+                            except DjangoValidationError as exc:
+                                raise_as_drf_validation_error(exc, field='endpoints')
                             obj.save(update_fields=['interval'])
                 else:
                     instance.endpoints.all().delete()
@@ -819,7 +828,10 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                         if ep.get('auth_type'):
                             ep['hide_original'] = True
                         o = RealtimeEndpointRT(submission=instance, **ep)
-                        o.full_clean()
+                        try:
+                            o.full_clean()
+                        except DjangoValidationError as exc:
+                            raise_as_drf_validation_error(exc, field='endpoints')
                         o.save()
                     if not can_confirm_feeds(request.user):
                         # Owner resubmission (stage 1 / rejected): restart the

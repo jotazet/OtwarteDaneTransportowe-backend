@@ -1525,3 +1525,51 @@ def test_upload_succeeds_when_broker_is_down(api_client, normal_user, org):
     submission = FeedSubmission.objects.get(pk=response.data['id'])
     assert submission.static_entry.file  # file stored despite the outage
     assert submission.current_stage == 2
+
+
+def test_file_upload_with_download_time_returns_400_not_500(api_client, normal_user, org):
+    """Regression (production 500): uploading a ZIP together with
+    download_time_1 (which only applies to URL sources) hit the model's
+    clean(), whose Django ValidationError escaped DRF as HTTP 500."""
+    api_client.force_authenticate(user=normal_user)
+    gtfs_path = os.path.join(os.path.dirname(__file__), 'GTFS_correct.zip')
+    before = FeedSubmission.objects.count()
+
+    with open(gtfs_path, 'rb') as fh:
+        response = api_client.post(
+            '/api/data_manager/feed-submissions/',
+            {
+                'transport_organization': str(org.id),
+                'data_type': 'gtfs',
+                'name': 'File plus download time',
+                'static_entry.file': fh,
+                'static_entry.download_time_1': '03:00:00',
+            },
+            format='multipart',
+        )
+
+    assert response.status_code == 400, response.status_code
+    assert 'download_time_1' in str(response.data), response.data
+    # Atomic create: the rejected entry must not leave an orphan submission.
+    assert FeedSubmission.objects.count() == before
+
+
+def test_url_without_download_time_returns_400_not_500(api_client, normal_user, org):
+    """Mirror case: a URL source REQUIRES download_time_1."""
+    api_client.force_authenticate(user=normal_user)
+    before = FeedSubmission.objects.count()
+
+    response = api_client.post(
+        '/api/data_manager/feed-submissions/',
+        {
+            'transport_organization': org.id,
+            'data_type': 'gtfs',
+            'name': 'URL without schedule',
+            'static_entry': {'url': 'https://example.org/gtfs.zip'},
+        },
+        format='json',
+    )
+
+    assert response.status_code == 400, response.status_code
+    assert 'download_time_1' in str(response.data), response.data
+    assert FeedSubmission.objects.count() == before
