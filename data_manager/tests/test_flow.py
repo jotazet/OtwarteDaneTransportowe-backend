@@ -25,6 +25,33 @@ from data_manager.tasks import validate_gtfs_feed_task
 
 pytestmark = pytest.mark.django_db
 
+
+def gtfs_rt_feed_bytes(version: str = '2.0') -> bytes:
+    """A minimal but genuinely valid serialized GTFS-RT FeedMessage."""
+    from google.transit import gtfs_realtime_pb2
+
+    message = gtfs_realtime_pb2.FeedMessage()
+    message.header.gtfs_realtime_version = version
+    return message.SerializeToString()
+
+
+def fake_download(body: bytes, status_code: int = 200):
+    """Stand-in for net_security.safe_download (context manager + stream)."""
+    import io
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    @contextmanager
+    def _cm(*args, **kwargs):
+        response = MagicMock()
+        response.status_code = status_code
+        response.content = body
+        response.raise_for_status = MagicMock()
+        yield response, io.BytesIO(body)
+
+    return _cm
+
+
 @pytest.fixture
 def api_client():
     return APIClient()
@@ -1103,7 +1130,7 @@ def test_realtime_validation_advances_to_stage_3_and_caches_proxy(org, normal_us
 
     with (
         patch('data_manager.net_security.safe_get', return_value=mock_response),
-        patch('data_manager.scheduler.safe_get', return_value=mock_response),
+        patch('data_manager.scheduler.safe_download', fake_download(b'{"data":{}}')),
     ):
         result = validate_realtime_submission_task(rts.id)
 
@@ -1402,12 +1429,19 @@ def test_latest_history_tie_resolves_by_id(normal_user, org):
     assert submission.current_stage == 3
 
 
-def test_broken_rt_validator_does_not_reject_healthy_submission(
+def test_healthy_gtfs_rt_submission_advances_to_stage_3(
     monkeypatch, normal_user, org, settings, tmp_path,
 ):
-    """Regression: a validator API error (e.g. 404 from a wrong endpoint path)
-    used to auto-reject every GTFS-RT submission ('validator GTFS: HTTP 404').
-    Validator problems are ops issues and must downgrade to log warnings."""
+    """A GTFS-RT submission whose endpoints answer with a valid protobuf feed
+    reaches stage 3.
+
+    History: this used to assert that a BROKEN gtfs-realtime-validator did not
+    auto-reject the submission. That validator integration is gone — it only
+    ever registered feeds and never read a result back, so it could not report
+    anything, while its JVM held ~3.9 GB. What survives is the part that always
+    did the work: the per-endpoint link check, now with the body actually
+    parsed as GTFS-RT protobuf.
+    """
     from data_manager.tasks import validate_realtime_submission_task
 
     settings.MEDIA_ROOT = tmp_path
@@ -1440,21 +1474,12 @@ def test_broken_rt_validator_does_not_reject_healthy_submission(
 
     class _LinkOk:
         status_code = 200
-        content = b'\x0a\x0bproto'
-
-    class _Validator404:
-        status_code = 404
-        text = 'Not Found'
-
-        def json(self):
-            return {}
+        content = gtfs_rt_feed_bytes()
 
     monkeypatch.setattr('data_manager.tasks.validate_realtime_submission_task.delay', lambda *a, **k: None)
     monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo',
                         lambda host, port, *a, **k: [(2, 1, 6, '', ('93.184.216.34', port or 80))])
-    with patch('data_manager.net_security.safe_get', return_value=_LinkOk()), \
-         patch('data_manager.scheduler.safe_get', return_value=_LinkOk()), \
-         patch('requests.post', return_value=_Validator404()):
+    with patch('data_manager.net_security.safe_get', return_value=_LinkOk()):
         result = validate_realtime_submission_task(rts.id)
 
     rts.refresh_from_db()
@@ -1462,6 +1487,57 @@ def test_broken_rt_validator_does_not_reject_healthy_submission(
     assert not rts.is_rejected, rts.rejection_cause
     assert rts.current_stage == 3
 
+
+def test_gtfs_rt_submission_serving_garbage_is_rejected(
+    monkeypatch, normal_user, org, settings, tmp_path,
+):
+    """An endpoint that answers 200 with non-protobuf bytes must not be published.
+
+    Before protobuf parsing, anything not starting with '<' passed the check and
+    landed in the public cache.
+    """
+    from data_manager.tasks import validate_realtime_submission_task
+
+    settings.MEDIA_ROOT = tmp_path
+    static_submission = FeedSubmission.objects.create(
+        transport_organization=org, submitted_by=normal_user,
+        data_type='gtfs', name='Static for RT',
+    )
+    FeedSubmissionHistory.objects.create(
+        submission=static_submission, event_type=FeedSubmissionHistory.EVENT_COMPLETED,
+        stage_before=3, stage_after=4, actor=normal_user,
+    )
+    StaticFeedEntry.objects.create(
+        submission=static_submission,
+        url='https://example.org/gtfs.zip',
+        download_time_1=time(3, 0),
+    )
+    rts = RealtimeSubmission.objects.create(
+        transport_organization=org, submitted_by=normal_user,
+        protocol=RealtimeSubmission.PROTOCOL_GTFS_RT,
+        static_submission=static_submission,
+    )
+    RealtimeSubmissionHistory.objects.create(
+        submission=rts, event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+        stage_before=0, stage_after=1, actor=normal_user,
+    )
+    RealtimeEndpointRT.objects.create(
+        submission=rts, endpoint_type='trip_update',
+        url='https://example.org/rt/feed', interval=30,
+    )
+
+    class _Garbage:
+        status_code = 200
+        content = b'\x00\x01\x02 definitely not a feed'
+
+    monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo',
+                        lambda host, port, *a, **k: [(2, 1, 6, '', ('93.184.216.34', port or 80))])
+    with patch('data_manager.net_security.safe_get', return_value=_Garbage()):
+        result = validate_realtime_submission_task(rts.id)
+
+    rts.refresh_from_db()
+    assert result['status'] == 'rejected', result
+    assert rts.is_rejected
 
 def test_static_url_with_public_credentials_is_accepted_and_stays_public(
     api_client, normal_user, org, django_capture_on_commit_callbacks,

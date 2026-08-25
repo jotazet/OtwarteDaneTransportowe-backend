@@ -1,5 +1,8 @@
 """EncryptedCharField round-trips, feed content validation, cache filename
 derivation, orphaned-file cleanup and the production secret-key guard."""
+import io
+from contextlib import contextmanager
+
 import pytest
 from cryptography.fernet import Fernet
 from django.core.exceptions import ImproperlyConfigured, ValidationError
@@ -64,11 +67,36 @@ def _entry(org, user, **kwargs):
 
 
 class _Response:
-    def __init__(self, content):
+    def __init__(self, content, status_code=200):
         self.content = content
+        self.status_code = status_code
 
     def raise_for_status(self):
         return None
+
+
+def _fake_download(body: bytes):
+    """Stand-in for net_security.safe_download.
+
+    The real one is a context manager yielding ``(response, body_file)`` and
+    streams the body to a spooled temp file instead of holding it in memory,
+    so the fake has to yield a file object too.
+    """
+
+    @contextmanager
+    def _cm(*args, **kwargs):
+        yield _Response(body), io.BytesIO(body)
+
+    return _cm
+
+
+def gtfs_rt_feed_bytes(version: str = '2.0') -> bytes:
+    """A minimal but genuinely valid serialized GTFS-RT FeedMessage."""
+    from google.transit import gtfs_realtime_pb2
+
+    message = gtfs_realtime_pb2.FeedMessage()
+    message.header.gtfs_realtime_version = version
+    return message.SerializeToString()
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +176,13 @@ def test_validate_static_feed_content(data_type, content, ok):
 @pytest.mark.parametrize('protocol,content,ok', [
     ('gbfs', b'{"data": {}}', True),
     ('gbfs', b'not json', False),
-    ('gtfs_rt', b'\x0a\x0bbinaryproto', True),
+    ('gtfs_rt', gtfs_rt_feed_bytes(), True),
     ('gtfs_rt', b'<html>err</html>', False),
+    # Used to pass: the old check only asked "does it start with '<'?", so any
+    # binary blob reached the public cache. The body is parsed as protobuf now.
+    ('gtfs_rt', b'\x0a\x0bbinaryproto', False),
+    ('gtfs_rt', b'\x00\x01\x02rubbish', False),
+    ('gtfs_rt', b'PK\x03\x04zipfile', False),
     ('siri', b'<?xml version="1.0"?><Siri/>', True),
     ('siri', b'<!DOCTYPE html><html>err</html>', False),
     ('siri', b'', False),
@@ -181,8 +214,8 @@ def test_bad_refresh_keeps_last_good_cache(settings, tmp_path, monkeypatch, org,
     entry.cached_file.save('gtfs.zip', ContentFile(b'PK\x03\x04good'), save=True)
 
     monkeypatch.setattr(
-        'data_manager.scheduler.safe_get',
-        lambda *a, **kw: _Response(b'<!doctype html><html>login page</html>'),
+        'data_manager.scheduler.safe_download',
+        _fake_download(b'<!doctype html><html>login page</html>'),
     )
     _fetch_static_entry(entry)
 
@@ -217,7 +250,7 @@ def test_rt_cache_filename_drops_query_string(settings, tmp_path, monkeypatch, o
     endpoint = _rt_endpoint(org, provider_user, 'https://example.org/api/gbfs.json?token=SECRET')
 
     monkeypatch.setattr(
-        'data_manager.scheduler.safe_get', lambda *a, **kw: _Response(b'{"data": 1}'),
+        'data_manager.scheduler.safe_download', _fake_download(b'{"data": 1}'),
     )
     _fetch_realtime_endpoint_rt(endpoint, timezone.now())
 
@@ -231,7 +264,7 @@ def test_rt_cache_filename_fallback_for_bare_path(settings, tmp_path, monkeypatc
     endpoint = _rt_endpoint(org, provider_user, 'https://example.org/')
 
     monkeypatch.setattr(
-        'data_manager.scheduler.safe_get', lambda *a, **kw: _Response(b'{"data": 1}'),
+        'data_manager.scheduler.safe_download', _fake_download(b'{"data": 1}'),
     )
     _fetch_realtime_endpoint_rt(endpoint, timezone.now())
 
@@ -296,7 +329,7 @@ def test_scheduler_refresh_reclaims_renamed_cache(settings, tmp_path, monkeypatc
     legacy_name = entry.cached_file.name
 
     monkeypatch.setattr(
-        'data_manager.scheduler.safe_get', lambda *a, **kw: _Response(b'PK\x03\x04fresh'),
+        'data_manager.scheduler.safe_download', _fake_download(b'PK\x03\x04fresh'),
     )
     monkeypatch.setattr('data_manager.tasks.validate_gtfs_feed_task.delay', lambda *a, **kw: None)
     _fetch_static_entry(entry)

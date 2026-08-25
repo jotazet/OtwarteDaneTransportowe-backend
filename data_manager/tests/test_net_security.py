@@ -290,3 +290,214 @@ def test_verify_failure_propagates_when_chain_cannot_be_completed(monkeypatch):
     )
     with pytest.raises(requests_module.exceptions.SSLError):
         safe_get('https://feeds.example.org/f.zip', timeout=5, max_bytes=1024)
+
+
+# ---------------------------------------------------------------------------
+# Credentials must not survive a redirect off the original origin
+# ---------------------------------------------------------------------------
+
+def _multi_host_dns(monkeypatch, mapping: dict):
+    """Resolve each hostname to its own public IP.
+
+    A literal IP resolves to itself, mirroring real getaddrinfo — _pinned_dns
+    relies on exactly that to re-resolve the addresses it pinned.
+    """
+    def fake(host, port, *args, **kwargs):
+        if host[0].isdigit():
+            return _addrinfo(host)(host, port)
+        return _addrinfo(mapping.get(host, '93.184.216.34'))(host, port)
+
+    monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo', fake)
+
+
+def _recording_get(monkeypatch, responses):
+    """Patch requests.get, recording the headers sent on each hop."""
+    sent = []
+    queue = iter(responses)
+
+    def fake_get(url, headers=None, **kwargs):
+        sent.append((url, dict(headers or {})))
+        return next(queue)
+
+    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    return sent
+
+
+def test_auth_header_is_dropped_on_cross_host_redirect(monkeypatch):
+    """A feed that 302s elsewhere must not hand over its stored API key.
+
+    safe_get follows redirects by hand, and used to replay the caller's headers
+    verbatim on every hop — so any upstream able to redirect could harvest the
+    feed's decrypted auth_value. ``requests`` strips auth across hosts; so do we.
+    """
+    _multi_host_dns(monkeypatch, {
+        'feeds.example.org': '93.184.216.34',
+        'evil.example.com': '1.1.1.1',
+    })
+    sent = _recording_get(monkeypatch, [
+        _FakeResponse(redirect_to='https://evil.example.com/collect'),
+        _FakeResponse(body=b'PK\x03\x04payload'),
+    ])
+
+    safe_get(
+        'https://feeds.example.org/gtfs.zip',
+        headers={'X-API-Key': 'super-secret'},
+        timeout=5,
+        max_bytes=1024,
+    )
+
+    first_url, first_headers = sent[0]
+    second_url, second_headers = sent[1]
+    assert first_headers.get('X-API-Key') == 'super-secret'
+    assert 'evil.example.com' in second_url
+    assert 'X-API-Key' not in second_headers, second_headers
+
+
+def test_userinfo_credentials_are_dropped_on_cross_host_redirect(monkeypatch):
+    """user:pass@ in the original URL must not follow the redirect either."""
+    _multi_host_dns(monkeypatch, {
+        'feeds.example.org': '93.184.216.34',
+        'evil.example.com': '1.1.1.1',
+    })
+    sent = _recording_get(monkeypatch, [
+        _FakeResponse(redirect_to='https://evil.example.com/collect'),
+        _FakeResponse(body=b'ok'),
+    ])
+
+    safe_get('https://user:pw@feeds.example.org/gtfs.zip', timeout=5, max_bytes=1024)
+
+    assert 'Authorization' in sent[0][1]
+    assert 'Authorization' not in sent[1][1], sent[1][1]
+
+
+def test_auth_header_survives_same_host_redirect(monkeypatch):
+    """Redirects within one origin are ordinary; the credential must be kept."""
+    _multi_host_dns(monkeypatch, {'feeds.example.org': '93.184.216.34'})
+    sent = _recording_get(monkeypatch, [
+        _FakeResponse(redirect_to='https://feeds.example.org/gtfs/latest.zip'),
+        _FakeResponse(body=b'PK\x03\x04payload'),
+    ])
+
+    safe_get(
+        'https://feeds.example.org/gtfs.zip',
+        headers={'X-API-Key': 'super-secret'},
+        timeout=5,
+        max_bytes=1024,
+    )
+
+    assert sent[1][1].get('X-API-Key') == 'super-secret'
+
+
+def test_auth_header_is_dropped_on_https_to_http_downgrade(monkeypatch):
+    """Same host, but the credential would go out in clear text."""
+    _multi_host_dns(monkeypatch, {'feeds.example.org': '93.184.216.34'})
+    sent = _recording_get(monkeypatch, [
+        _FakeResponse(redirect_to='http://feeds.example.org/gtfs.zip'),
+        _FakeResponse(body=b'ok'),
+    ])
+
+    safe_get(
+        'https://feeds.example.org/gtfs.zip',
+        headers={'Authorization': 'Bearer tok'},
+        timeout=5,
+        max_bytes=1024,
+    )
+
+    assert 'Authorization' not in sent[1][1], sent[1][1]
+
+
+# ---------------------------------------------------------------------------
+# Streaming and size caps
+# ---------------------------------------------------------------------------
+
+def test_safe_download_streams_without_materialising_the_body(monkeypatch):
+    from data_manager.net_security import safe_download
+
+    _patch_dns(monkeypatch, '93.184.216.34')
+    chunks = [b'x' * 1024] * 16
+    monkeypatch.setattr(
+        'data_manager.net_security.requests.get',
+        lambda *a, **kw: _FakeResponse(chunks=chunks),
+    )
+
+    with safe_download(
+        'https://feeds.example.org/gtfs.zip', timeout=5, max_bytes=1 << 20
+    ) as (_response, body):
+        assert body.read() == b'x' * 16384
+        body.seek(0)
+        assert body.read(4) == b'xxxx'          # rewindable, i.e. a real stream
+
+
+def test_aia_intermediate_fetch_is_size_capped(monkeypatch, tmp_path):
+    """The issuer URL comes from an UNTRUSTED server certificate.
+
+    The old code did requests.get() and only checked len(response.content)
+    afterwards, so an issuer URL serving gigabytes was fully buffered first.
+    The fetch goes through safe_get now, which aborts mid-stream.
+    """
+    import data_manager.net_security as ns
+
+    _patch_dns(monkeypatch, '93.184.216.34')
+    monkeypatch.setattr(ns, '_AIA_BUNDLE_CACHE', {})
+
+    served = {'bytes': 0}
+
+    def endless_chunks():
+        while True:
+            served['bytes'] += 8192
+            if served['bytes'] > 50 * 1024 * 1024:   # fuse: the cap must bite first
+                raise AssertionError('size cap did not stop the download')
+            yield b'\x00' * 8192
+
+    monkeypatch.setattr(
+        'data_manager.net_security.requests.get',
+        lambda *a, **kw: _FakeResponse(chunks=endless_chunks()),
+    )
+    with pytest.raises(OutboundURLBlocked, match='byte limit'):
+        ns.safe_get(
+            'https://ca.example.org/intermediate.der',
+            timeout=5,
+            max_bytes=ns._AIA_INTERMEDIATE_MAX_BYTES,
+        )
+    assert served['bytes'] <= ns._AIA_INTERMEDIATE_MAX_BYTES + 8192
+
+
+# ---------------------------------------------------------------------------
+# DNS pinning is scoped to the installing thread
+# ---------------------------------------------------------------------------
+
+def test_dns_pin_does_not_leak_into_other_threads(monkeypatch):
+    """socket.getaddrinfo is process-global.
+
+    Without the thread check, one task's pin rewrote every other concurrent
+    connection's DNS — a cross-request hijack under any threaded pool.
+    """
+    import socket as socket_module
+    import threading
+
+    from data_manager.net_security import _pinned_dns
+
+    def fake(host, port, *args, **kwargs):
+        # Literal IPs resolve to themselves, as the real resolver does.
+        return _addrinfo(host if host[0].isdigit() else '8.8.4.4')(host, port)
+
+    monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo', fake)
+
+    seen = {}
+    started = threading.Event()
+    release = threading.Event()
+
+    def other_thread():
+        started.wait(timeout=5)
+        seen['ip'] = socket_module.getaddrinfo('feeds.example.org', 443)[0][4][0]
+        release.set()
+
+    worker = threading.Thread(target=other_thread)
+    worker.start()
+    with _pinned_dns('feeds.example.org', {'104.16.0.1'}):
+        assert socket_module.getaddrinfo('feeds.example.org', 443)[0][4][0] == '104.16.0.1'
+        started.set()
+        release.wait(timeout=5)
+    worker.join(timeout=5)
+
+    assert seen['ip'] == '8.8.4.4', 'the pin leaked into another thread'

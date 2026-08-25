@@ -1,8 +1,21 @@
-from django.db.models import Count
+from django.db.models import Count, Q
 from rest_framework import serializers
 
 from OtwarteDaneTransportowe.request_ip import get_client_ip
 from blog.models import Post, Reaction
+
+
+def reaction_count_annotations() -> dict:
+    """Per-type reaction counts, computed by the database.
+
+    One conditional COUNT per reaction type; Postgres resolves them all from a
+    single join. Soft-removed reactions (reaction IS NULL) are excluded, matching
+    what the old in-Python tally did.
+    """
+    return {
+        f'count_{key}': Count('reaction', filter=Q(reaction__reaction=key))
+        for key, _ in Reaction.REACTION_CHOICES
+    }
 
 
 class PostSerializer(serializers.ModelSerializer):
@@ -28,20 +41,17 @@ class PostSerializer(serializers.ModelSerializer):
         read_only_fields = ['author', 'author_username', 'date', 'updated_at', 'reactions_summary', 'your_reaction']
 
     def get_reactions_summary(self, obj: Post):
-        # Always return all possible reaction keys, even if count is 0
+        # Always return all possible reaction keys, even if count is 0.
         base = {key: 0 for key, _ in Reaction.REACTION_CHOICES}
 
-        # If Reaction objects were prefetched, use them (avoids N+1).
-        cache = getattr(obj, '_prefetched_objects_cache', {}) or {}
-        prefetched = cache.get('reaction_set')
-        if prefetched is not None:
-            for r in prefetched:
-                # Ignore soft-removed reactions
-                if not r.reaction:
-                    continue
-                base[r.reaction] = base.get(r.reaction, 0) + 1
+        # Preferred path: counts annotated by reaction_count_annotations().
+        if hasattr(obj, f'count_{Reaction.REACTION_CHOICES[0][0]}'):
+            for key in base:
+                base[key] = getattr(obj, f'count_{key}', 0) or 0
             return base
 
+        # Fallback for callers that serialize a bare instance (e.g. write
+        # responses), where the queryset annotations are not present.
         rows = (
             Reaction.objects.filter(post=obj, reaction__isnull=False)
             .values('reaction')
@@ -71,7 +81,15 @@ class PostSerializer(serializers.ModelSerializer):
         if not client_ip:
             return None
 
-        # Check if there's a reaction from this IP for this post
+        # Preferred path: the view prefetched this caller's own reactions for
+        # the whole page (to_attr='caller_reactions'), so no query per post.
+        prefetched = getattr(obj, 'caller_reactions', None)
+        if prefetched is not None:
+            for reaction in prefetched:
+                if reaction.ip_address == client_ip:
+                    return reaction.reaction or None
+            return None
+
         try:
             reaction = Reaction.objects.get(post=obj, ip_address=client_ip)
             return reaction.reaction or None

@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import requests
 from django.conf import settings
-from django.core.files.base import ContentFile
+from django.core.files.base import File
 from django.utils import timezone
 
 from data_manager.models import (
@@ -26,11 +26,11 @@ from data_manager.models import (
     completed_submission_ids,
     completed_realtime_submission_ids,
 )
-from data_manager.net_security import OutboundURLBlocked, safe_get
+from data_manager.net_security import OutboundURLBlocked, safe_download
 from data_manager.validators import (
     InvalidFeedContent,
-    validate_realtime_feed_content,
-    validate_static_feed_content,
+    validate_realtime_feed_stream,
+    validate_static_feed_stream,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,27 +103,30 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
 
     headers = _build_auth_headers(entry.auth_type, entry.auth_value)
     try:
-        response = safe_get(
+        # safe_download streams the body to a spooled temp file. Buffering a
+        # 200 MB feed in memory (twice, as bytes) used to spike every worker.
+        with safe_download(
             entry.url,
             headers=headers,
             timeout=60,
             max_bytes=settings.MAX_FEED_FILE_SIZE_BYTES,
-        )
-        response.raise_for_status()
+            total_timeout=settings.FEED_FETCH_TOTAL_TIMEOUT_SECONDS,
+        ) as (response, body):
+            response.raise_for_status()
 
-        # Reject garbage BEFORE touching the cache: a published feed keeps
-        # serving its last good copy when the upstream starts returning
-        # HTML error pages or truncated bodies.
-        validate_static_feed_content(entry.submission.data_type, response.content)
+            # Reject garbage BEFORE touching the cache: a published feed keeps
+            # serving its last good copy when the upstream starts returning
+            # HTML error pages or truncated bodies. Only the head is read.
+            validate_static_feed_stream(entry.submission.data_type, body)
 
-        parsed = urlparse(entry.url)
-        filename = os.path.basename(parsed.path) or 'feed.zip'
+            parsed = urlparse(entry.url)
+            filename = os.path.basename(parsed.path) or 'feed.zip'
 
-        now = timezone.now()
-        # This path bypasses model signals (save=False + queryset.update), so
-        # reclaim a differently-named previous cache file explicitly.
-        old_cached_name = entry.cached_file.name if entry.cached_file else None
-        entry.cached_file.save(filename, ContentFile(response.content), save=False)
+            now = timezone.now()
+            # This path bypasses model signals (save=False + queryset.update),
+            # so reclaim a differently-named previous cache file explicitly.
+            old_cached_name = entry.cached_file.name if entry.cached_file else None
+            entry.cached_file.save(filename, File(body), save=False)
 
         StaticFeedEntry.objects.filter(pk=entry.pk).update(
             cached_file=entry.cached_file.name,
@@ -181,25 +184,27 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
 
     headers = _build_auth_headers(endpoint.auth_type, endpoint.auth_value)
     try:
-        response = safe_get(
+        with safe_download(
             endpoint.url,
             headers=headers,
             timeout=30,
-            max_bytes=settings.MAX_FEED_FILE_SIZE_BYTES,
-        )
-        response.raise_for_status()
+            max_bytes=settings.MAX_REALTIME_FEED_BYTES,
+            total_timeout=settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS,
+        ) as (response, body):
+            response.raise_for_status()
 
-        # Reject garbage BEFORE touching the cache (see _fetch_static_entry).
-        validate_realtime_feed_content(endpoint.submission.protocol, response.content)
+            # Reject garbage BEFORE touching the cache (see _fetch_static_entry).
+            # GTFS-RT is parsed as protobuf here, not merely prefix-checked.
+            validate_realtime_feed_stream(endpoint.submission.protocol, body)
 
-        # Derive the public cache filename from the URL *path* only — the raw
-        # last segment would keep the query string (e.g. '?token=...') and leak
-        # upstream credentials into the public download URL.
-        filename = os.path.basename(urlparse(endpoint.url).path) or 'feed.pb'
-        # Signals are bypassed here (save=False + queryset.update): reclaim a
-        # differently-named previous cache file explicitly.
-        old_cached_name = endpoint.cached_file.name if endpoint.cached_file else None
-        endpoint.cached_file.save(filename, ContentFile(response.content), save=False)
+            # Derive the public cache filename from the URL *path* only — the
+            # raw last segment would keep the query string (e.g. '?token=...')
+            # and leak upstream credentials into the public download URL.
+            filename = os.path.basename(urlparse(endpoint.url).path) or 'feed.pb'
+            # Signals are bypassed here (save=False + queryset.update): reclaim
+            # a differently-named previous cache file explicitly.
+            old_cached_name = endpoint.cached_file.name if endpoint.cached_file else None
+            endpoint.cached_file.save(filename, File(body), save=False)
         RealtimeEndpointRT.objects.filter(pk=endpoint.pk).update(
             cached_file=endpoint.cached_file.name,
             cached_at=now,

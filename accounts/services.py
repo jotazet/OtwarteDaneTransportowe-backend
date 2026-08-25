@@ -31,6 +31,9 @@ def user_role_names(user) -> list[str]:
 def set_user_roles(user, role_names: list[str]) -> None:
     groups = Group.objects.filter(name__in=role_names)
     user.groups.set(groups)
+    # auth_roles.role_names() caches group names on the instance for the life
+    # of the request; this write must not leave a stale copy behind.
+    user.__dict__.pop('_cached_role_names', None)
 
 
 def admin_group_user_count(exclude_user_id=None) -> int:

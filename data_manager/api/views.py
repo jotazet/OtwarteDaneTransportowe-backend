@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from datetime import timedelta
 
 from django.db import transaction
@@ -12,7 +13,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 # DRF's ValidationError renders as HTTP 400; Django's would bubble up as 500.
 from rest_framework.exceptions import ValidationError
-from django.db.models import OuterRef, Q, Subquery, Prefetch
+from django.db.models import CharField, F, OuterRef, Q, Subquery, Prefetch, Value
+from django.db.models.functions import Coalesce, Concat
 
 from OtwarteDaneTransportowe.auth_roles import (
     IsFeedParticipant,
@@ -60,6 +62,20 @@ from data_manager.models import (
     completed_submission_ids,
 )
 from cases.models import TransportOrganization
+
+
+def _page_url(request, page_number: int) -> str | None:
+    """Absolute URL for another page of the current request."""
+    if page_number < 1:
+        return None
+    query = request.query_params.copy()
+    if page_number == 1:
+        query.pop('page', None)
+    else:
+        query['page'] = page_number
+    encoded = query.urlencode()
+    base = request.build_absolute_uri(request.path)
+    return f'{base}?{encoded}' if encoded else base
 
 
 class FetchErrorPagination(PageNumberPagination):
@@ -116,31 +132,66 @@ class ProxyManagedFeedListView(APIView):
     # NOTE: plain APIView ignores pagination_class — pagination is done
     # manually in get() below.
 
+    @staticmethod
+    def _ordered(qs):
+        """Order in SQL by the same key the response is sorted on.
+
+        ``feed_name`` is the computed ``"#<id> <name>"`` label, so the sort key
+        has to be built with Concat to keep the ordering identical to the old
+        in-Python sort (a plain id sort would put '#10' after '#9').
+        """
+        return qs.annotate(
+            sort_region=Coalesce(F('submission__transport_organization__region'), Value('')),
+            sort_org=Coalesce(
+                F('submission__transport_organization__transport_organization'), Value('')
+            ),
+            sort_feed=Concat(
+                Value('#'),
+                'submission_id',
+                Value(' '),
+                Coalesce('submission__name', Value('')),
+                output_field=CharField(),
+            ),
+        ).order_by('sort_region', 'sort_org', 'sort_feed', 'id')
+
     def get(self, request):
-        static_qs = annotate_fetch_health(
+        static_qs = self._ordered(annotate_fetch_health(
             StaticFeedEntry.objects
             .filter(hide_original=True, url__isnull=False)
             .exclude(url='')
             .select_related('submission', 'submission__transport_organization', 'submission__submitted_by'),
             'static_entry',
-        )
-        rt_qs = annotate_fetch_health(
+        ))
+        rt_qs = self._ordered(annotate_fetch_health(
             RealtimeEndpointRT.objects
             .filter(hide_original=True)
             .select_related('submission', 'submission__transport_organization', 'submission__submitted_by'),
             'endpoint_rt',
-        )
+        ))
         if not can_confirm_feeds(request.user):
             static_qs = static_qs.filter(submission__submitted_by=request.user)
             rt_qs = rt_qs.filter(submission__submitted_by=request.user)
 
+        paginator = FetchErrorPagination()
+        page_size = paginator.get_page_size(request) or paginator.page_size
+        try:
+            page_number = max(1, int(request.query_params.get(paginator.page_query_param, 1)))
+        except (TypeError, ValueError):
+            page_number = 1
+        cutoff = page_number * page_size
+
+        # The two sources have to be merged and sorted in Python (they are
+        # different models), but only the rows that could still land on the
+        # requested page are materialised. Loading BOTH tables in full — with
+        # select_related and a fetch-health subquery per row — then sorting and
+        # throwing away all but one page was unbounded work on every request.
         items = [
             ProxyManagedFeedListSerializer.from_static_entry(entry)
-            for entry in static_qs
+            for entry in static_qs[:cutoff]
         ]
         items.extend(
             ProxyManagedFeedListSerializer.from_realtime_endpoint(endpoint)
-            for endpoint in rt_qs
+            for endpoint in rt_qs[:cutoff]
         )
         items.sort(
             key=lambda row: (
@@ -152,10 +203,18 @@ class ProxyManagedFeedListView(APIView):
             )
         )
 
-        paginator = FetchErrorPagination()
-        page = paginator.paginate_queryset(items, request)
-        serializer = ProxyManagedFeedListSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        # Counting is a COUNT(*) per source; no rows are built for it.
+        total = static_qs.count() + rt_qs.count()
+        offset = (page_number - 1) * page_size
+        window = items[offset:offset + page_size]
+
+        serializer = ProxyManagedFeedListSerializer(window, many=True)
+        return Response(OrderedDict([
+            ('count', total),
+            ('next', _page_url(request, page_number + 1) if cutoff < total else None),
+            ('previous', _page_url(request, page_number - 1) if page_number > 1 else None),
+            ('results', serializer.data),
+        ]))
 
 
 class FetchErrorListView(generics.ListAPIView):
@@ -397,20 +456,53 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
         )
         return org_qs
 
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        published_static = set(completed_submission_ids())
-        rt_pub = set(completed_realtime_submission_ids())
+    def _rt_embed_for(self, organizations) -> dict:
+        """GTFS-RT / SIRI submissions attached to the feeds being serialized.
+
+        Scoped to the organizations actually in the response. Building this from
+        EVERY published realtime submission — with endpoints and history
+        prefetched — ran on every request to this public endpoint, including
+        single-object retrieves, and grew without bound as feeds were added.
+        """
+        static_ids = {
+            feed.id
+            for organization in organizations
+            for feed in (getattr(organization, 'feeds', None) or [])
+        }
+        if not static_ids:
+            return {}
         rts = (
             RealtimeSubmission.objects.filter(
-                pk__in=rt_pub,
-                static_submission_id__in=published_static,
+                pk__in=set(completed_realtime_submission_ids()),
+                # org.feeds is already restricted to published submissions.
+                static_submission_id__in=static_ids,
                 protocol__in=[RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI],
             )
             .prefetch_related('endpoints', 'history')
         )
-        context['rt_embed'] = {r.static_submission_id: r for r in rts}
+        return {r.static_submission_id: r for r in rts}
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        # Set by list()/retrieve() just before serialization; empty for any
+        # other code path, which is what the serializers already expect.
+        context['rt_embed'] = self._rt_embed_for(getattr(self, '_organizations_in_response', []))
         return context
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        organizations = page if page is not None else list(queryset)
+        self._organizations_in_response = organizations
+        serializer = self.get_serializer(organizations, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        self._organizations_in_response = [instance]
+        return Response(self.get_serializer(instance).data)
 
     def get_serializer_class(self):
         if self.action == 'list':

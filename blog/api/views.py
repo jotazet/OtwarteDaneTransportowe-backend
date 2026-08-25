@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.pagination import PageNumberPagination
@@ -11,7 +12,12 @@ from django.shortcuts import get_object_or_404
 
 from OtwarteDaneTransportowe.auth_roles import IsEditorOrOwnBloggerOrReadOnly
 from OtwarteDaneTransportowe.request_ip import get_client_ip
-from blog.api.serializers import PostSerializer, ReactionSerializer, PostListSerializer
+from blog.api.serializers import (
+    PostListSerializer,
+    PostSerializer,
+    ReactionSerializer,
+    reaction_count_annotations,
+)
 from blog.models import Post, Reaction
 
 
@@ -22,15 +28,31 @@ class PostDefaultPagination(PageNumberPagination):
 
 
 class PostViewSet(viewsets.ModelViewSet):
-    queryset = (
-        Post.objects.select_related('author')
-        .prefetch_related('reaction_set')
-        .all()
-        .order_by('-date')
-    )
+    queryset = Post.objects.select_related('author').order_by('-date')
     serializer_class = PostSerializer
     permission_classes = [IsEditorOrOwnBloggerOrReadOnly]
     pagination_class = PostDefaultPagination
+
+    def get_queryset(self):
+        """Posts with reaction counts aggregated in SQL.
+
+        Prefetching ``reaction_set`` pulled every Reaction row of every post on
+        the page into Python just to count them by type — unbounded work and
+        memory for a number the database can produce directly. ``your_reaction``
+        gets its own prefetch narrowed to the caller's IP, replacing a per-post
+        query with one for the whole page.
+        """
+        qs = super().get_queryset().annotate(**reaction_count_annotations())
+        client_ip = get_client_ip(self.request)
+        if client_ip:
+            qs = qs.prefetch_related(
+                Prefetch(
+                    'reaction_set',
+                    queryset=Reaction.objects.filter(ip_address=client_ip),
+                    to_attr='caller_reactions',
+                )
+            )
+        return qs
 
     def get_serializer_class(self):
         # Use truncated content for list view, full content elsewhere

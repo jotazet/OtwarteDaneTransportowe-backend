@@ -16,22 +16,49 @@ ALLOWED_ROLE_NAMES = frozenset({
 })
 
 
+def role_names(user) -> frozenset:
+    """Group names held by ``user``, cached on the instance.
+
+    These helpers are called repeatedly within one request (permission classes,
+    get_serializer_class, per-object checks), and each call used to issue its
+    own EXISTS query. ``request.user`` lives exactly as long as the request, so
+    caching there is safe; :func:`accounts.services.set_user_roles` drops the
+    cache when it changes a user's groups.
+    """
+    if not (user and getattr(user, 'is_authenticated', False)):
+        return frozenset()
+    cached = getattr(user, '_cached_role_names', None)
+    if cached is None:
+        cached = frozenset(user.groups.values_list('name', flat=True))
+        user._cached_role_names = cached
+    return cached
+
+
 def is_admin(user) -> bool:
-    return bool(
-        user
-        and user.is_authenticated
-        and (
-            user.is_superuser
-            or user.is_staff
-            or user.groups.filter(name=ROLE_ADMIN).exists()
-        )
-    )
+    """Admin = the ``Admin`` group, or a Django superuser.
+
+    ``is_staff`` deliberately does NOT grant anything here. It used to, and
+    because :func:`has_role` short-circuits on this function, every account
+    created merely for django-admin access silently gained Helper, Blogger,
+    Editor and DataProvider rights in the API — while ``RequiresAdminGroup``
+    and the feed-source edit rules checked the GROUP instead. Two conflicting
+    definitions of "admin" coexisted. The group is now the single source of
+    truth, with superuser as the only implicit override.
+
+    Note the deliberate asymmetry with :func:`has_admin_role`, which requires
+    the group even from a superuser — see its docstring.
+
+    Run ``manage.py audit_staff_roles`` to list accounts affected by this.
+    """
+    if not (user and getattr(user, 'is_authenticated', False)):
+        return False
+    return bool(user.is_superuser) or ROLE_ADMIN in role_names(user)
 
 
 def has_role(user, role: str) -> bool:
     if is_admin(user):
         return True
-    return bool(user and user.is_authenticated and user.groups.filter(name=role).exists())
+    return role in role_names(user)
 
 
 def can_publish_blog(user) -> bool:
@@ -50,28 +77,31 @@ def can_confirm_feeds(user) -> bool:
 
 
 def has_admin_role(user) -> bool:
-    """True when the user has the Django group ``Admin`` (role), not merely staff/superuser."""
-    return bool(
-        user
-        and user.is_authenticated
-        and user.groups.filter(name=ROLE_ADMIN).exists()
-    )
+    """True only for holders of the ``Admin`` GROUP — a superuser is not enough.
+
+    Deliberately stricter than :func:`is_admin`, and the difference is the point:
+    editing a published feed's source (url, credentials, file) and managing user
+    accounts require the application-level Admin role, which is granted and
+    audited in the app, rather than the Django-level superuser flag handed out
+    for shell and admin-site access.
+    See ``test_superuser_without_admin_role_cannot_change_url_at_stage_3``.
+
+    The two are allowed to differ; what was NOT allowed — and is now gone — is
+    ``is_staff`` silently satisfying is_admin() and handing every role to any
+    django-admin account.
+    """
+    return ROLE_ADMIN in role_names(user)
 
 
 def is_helper_reviewer(user) -> bool:
     """Helper group without Admin role — confirmation queue only, no feed content edits."""
-    return bool(
-        user
-        and user.is_authenticated
-        and user.groups.filter(name=ROLE_HELPER).exists()
-        and not has_admin_role(user)
-    )
+    return ROLE_HELPER in role_names(user) and not has_admin_role(user)
 
 
 def _is_submission_owner_provider(user, submission) -> bool:
     return (
         submission.submitted_by_id == user.id
-        and user.groups.filter(name=ROLE_DATA_PROVIDER).exists()
+        and ROLE_DATA_PROVIDER in role_names(user)
     )
 
 

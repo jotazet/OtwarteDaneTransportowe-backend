@@ -216,7 +216,17 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv('FILE_UPLOAD_MAX_MEMORY_SIZE', str(5
 DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv('DATA_UPLOAD_MAX_MEMORY_SIZE', str(10 * 1024 * 1024)))
 # Hard cap (bytes) for any single feed file (uploaded by a user OR fetched by the
 # server from a remote URL). Enforced by validators and the fetch helpers.
+# Fetches stream to a spooled temp file, so this is a disk bound, not a RAM one.
 MAX_FEED_FILE_SIZE_BYTES = int(os.getenv('MAX_FEED_FILE_SIZE_BYTES', str(200 * 1024 * 1024)))
+# Realtime payloads (protobuf / JSON / SIRI XML) are orders of magnitude smaller
+# than a static schedule archive and ARE parsed in full during validation, so
+# they get their own, much tighter cap.
+MAX_REALTIME_FEED_BYTES = int(os.getenv('MAX_REALTIME_FEED_BYTES', str(32 * 1024 * 1024)))
+# Total wall-clock budget per download. requests' own timeout is per socket
+# read, so a slow-trickling upstream could otherwise outlive the Celery soft
+# time limit and get killed before the failure bookkeeping runs.
+FEED_FETCH_TOTAL_TIMEOUT_SECONDS = int(os.getenv('FEED_FETCH_TOTAL_TIMEOUT_SECONDS', '600'))
+REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS = int(os.getenv('REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS', '60'))
 # Hard cap (bytes) for blog post images.
 MAX_IMAGE_FILE_SIZE_BYTES = int(os.getenv('MAX_IMAGE_FILE_SIZE_BYTES', str(10 * 1024 * 1024)))
 
@@ -266,6 +276,20 @@ CELERY_TASK_ROUTES = {
 }
 CELERY_TASK_SOFT_TIME_LIMIT = 90
 CELERY_TASK_TIME_LIMIT = 120
+
+# Memory hygiene for long-running workers.
+#
+# CPython returns freed memory to the OS only grudgingly (glibc arenas stay
+# resident), so a single large feed download used to raise a worker's RSS
+# permanently. Recycling child processes releases that high-water mark.
+#   max_tasks_per_child  — recycle after N tasks regardless of memory
+#   max_memory_per_child — recycle as soon as the child exceeds this (KiB)
+#   prefetch_multiplier  — 1 task in flight per child; the default of 4 keeps
+#                          up to 4 reserved payloads alive per child for tasks
+#                          this long-running, with no throughput benefit.
+CELERY_WORKER_MAX_TASKS_PER_CHILD = int(os.getenv('CELERY_WORKER_MAX_TASKS_PER_CHILD', '50'))
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = int(os.getenv('CELERY_WORKER_MAX_MEMORY_PER_CHILD', '300000'))
+CELERY_WORKER_PREFETCH_MULTIPLIER = int(os.getenv('CELERY_WORKER_PREFETCH_MULTIPLIER', '1'))
 
 
 # Fernet key used by data_manager.fields.EncryptedCharField to encrypt stored

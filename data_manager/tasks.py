@@ -48,6 +48,8 @@ RT_BOOTSTRAP_JITTER_MAX_SECONDS = 2
 # wygasnie, bootstrap moze ja ponownie zasiac — bez tworzenia duplikatow,
 # dopoki marker istnieje.
 RT_ALIVE_TTL_BUFFER_SECONDS = 120
+# Ile minut wstecz dispatcher statyczny nadrabia zgubione tiki Beata.
+STATIC_DISPATCH_CATCHUP_MINUTES = 10
 
 
 def enqueue(task, *args, **kwargs) -> bool:
@@ -59,7 +61,8 @@ def enqueue(task, *args, **kwargs) -> bool:
     used to fail with HTTP 500 — even though the submission itself had been
     saved successfully. Losing the queued job is recoverable (the periodic
     dispatchers re-seed realtime loops; stuck static validations are picked up
-    by ``manage.py retry_gtfs_validation``); failing the user's upload is not.
+    by ``manage.py retry_gtfs_validation``, stuck realtime verifications by
+    ``manage.py retry_realtime_validation``); failing the user's upload is not.
 
     Returns True when the task was queued. Logs an error otherwise.
     """
@@ -151,17 +154,33 @@ def refresh_static_feeds_task() -> dict:
     Sprawdza download_time_1/2 == teraz i kolejkuje fetch per wpis.
     Lekki — tylko jedno zapytanie do DB + N .delay() calls.
     """
+    from datetime import timedelta
+
     from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, StaticFeedEntry
     from django.db.models import Q
     _, _, _completed, _ = _scheduler()
 
+    # One clock read: two calls could straddle a minute boundary and dispatch
+    # against a different minute than the one being logged.
     now = timezone.now()
-    now_time = timezone.now().time().replace(second=0, microsecond=0)
+    now_time = now.time().replace(second=0, microsecond=0)
     completed_ids = _completed()
+
+    # Catch-up window. Matching download_time == this exact minute meant a Beat
+    # tick lost to a restart, clock skew or a backed-up queue silently skipped
+    # that day's download until tomorrow. Look back a few minutes instead, and
+    # use last_fetch_success_at to keep the window from re-dispatching an entry
+    # that already succeeded.
+    window_start = now - timedelta(minutes=STATIC_DISPATCH_CATCHUP_MINUTES)
+    window_times = [
+        (now - timedelta(minutes=offset)).time().replace(second=0, microsecond=0)
+        for offset in range(STATIC_DISPATCH_CATCHUP_MINUTES + 1)
+    ]
 
     scheduled_due = (
         Q(fetch_status=FETCH_STATUS_ACTIVE)
-        & (Q(download_time_1=now_time) | Q(download_time_2=now_time))
+        & (Q(download_time_1__in=window_times) | Q(download_time_2__in=window_times))
+        & (Q(last_fetch_success_at__isnull=True) | Q(last_fetch_success_at__lt=window_start))
     )
     retry_due = Q(fetch_status=FETCH_STATUS_DELAYED, next_fetch_after__lte=now)
 
@@ -186,6 +205,12 @@ def refresh_static_feeds_task() -> dict:
     bind=True,
     name='data_manager.fetch_static_entry',
     queue='feeds',
+    # Must exceed FEED_FETCH_TOTAL_TIMEOUT_SECONDS (600). Under the global
+    # 90 s default a slow 200 MB download was killed mid-fetch, so
+    # mark_fetch_failure() never ran: no FeedFetchError, no retry schedule,
+    # and the feed quietly stopped refreshing.
+    soft_time_limit=660,
+    time_limit=720,
 )
 def fetch_static_entry_task(self, entry_id: int) -> dict:
     """Pobiera i zapisuje cache dla jednego StaticFeedEntry.
@@ -472,329 +497,330 @@ def validate_gtfs_feed_task(self, entry_id: int):
         )
         logger.warning(f"Submission {submission.id} rejected: {reason}")
 
-    # 1. Determine which file to validate
-    # Prefer cached_file if present (latest proxy download), else user file.
-    # For non-proxy URL feeds, download once to a temp dir for validation only.
+    # Both work dirs carry a random suffix, so a leaked one is never reused and
+    # repeated failures would grow the disk without bound. Declared here, before
+    # the first statement that can raise, and reclaimed by the finally at the
+    # end — which also covers SoftTimeLimitExceeded, the case that used to kill
+    # this task mid-run and leak the directory (25 orphans on disk).
+    # rmtree(ignore_errors=True) is a no-op for dirs that were never created.
     validation_temp_dir = None
-    file_field = entry.cached_file if entry.cached_file else entry.file
-
-    if not file_field and entry.url:
-        from urllib.parse import urlparse
-
-        import requests
-        from data_manager.net_security import OutboundURLBlocked, safe_get
-        from data_manager.scheduler import _build_auth_headers
-
-        validation_temp_dir = os.path.join(
-            settings.MEDIA_ROOT,
-            str(entry.submission_id),
-            'validation',
-            f'tmp_{entry.id}_{random.randint(1000, 9999)}',
-        )
-        os.makedirs(validation_temp_dir, exist_ok=True)
-        try:
-            response = safe_get(
-                entry.url,
-                headers=_build_auth_headers(entry.auth_type, entry.auth_value),
-                timeout=60,
-                max_bytes=settings.MAX_FEED_FILE_SIZE_BYTES,
-            )
-            response.raise_for_status()
-            parsed = urlparse(entry.url)
-            filename = os.path.basename(parsed.path) or 'feed.zip'
-            container_file_path = os.path.join(validation_temp_dir, filename)
-            with open(container_file_path, 'wb') as fh:
-                fh.write(response.content)
-            container_input_dir = validation_temp_dir
-        except OutboundURLBlocked as exc:
-            _reject_submission(str(exc), validation_error=True)
-            shutil.rmtree(validation_temp_dir, ignore_errors=True)
-            return
-        except requests.exceptions.RequestException as exc:
-            _reject_submission(
-                f'Failed to download feed for validation: {exc}',
-                validation_error=True,
-            )
-            shutil.rmtree(validation_temp_dir, ignore_errors=True)
-            return
-    elif not file_field:
-        logger.info(f"No file found for StaticFeedEntry {entry_id}. Skipping validation.")
-        _set_validation_status(
-            StaticFeedEntry.VALIDATION_ERROR,
-            'No file available for validation.',
-        )
-        return
-    else:
-        # file_field.name is relative to MEDIA_ROOT (e.g. '1/2/static/feed.zip')
-        relative_path = file_field.name
-        if relative_path.startswith('uploaded_data/'):
-            relative_path = relative_path[len('uploaded_data/'):]
-        filename = os.path.basename(relative_path)
-        container_file_path = file_field.path
-        container_input_dir = os.path.dirname(container_file_path)
-
-    relative_dir = os.path.relpath(container_input_dir, settings.MEDIA_ROOT)
-    # HOST_PROJECT_PATH is the absolute path to project root on the host machine
-    host_project_path = os.environ.get('HOST_PROJECT_PATH', str(settings.BASE_DIR))
-    host_media_root = os.environ.get('HOST_MEDIA_ROOT', os.path.join(host_project_path, 'uploaded_data'))
-
-    # Host paths for Docker bind mounts
-    host_input_dir = os.path.join(host_media_root, relative_dir)
-    host_file_path = os.path.join(host_input_dir, filename)
-
-    report_dir_name = f"validation_report_{entry.id}_{random.randint(1000, 9999)}"
-    container_output_dir = os.path.join(container_input_dir, report_dir_name)
-    host_output_dir = os.path.join(host_input_dir, report_dir_name)
+    container_output_dir = None
 
     def _cleanup_workdirs() -> None:
-        """Remove the validator output dir and the URL-download temp dir.
-
-        Must run on EVERY exit path: the output dir name carries a random
-        suffix, so a leaked dir is never reused and repeated validation
-        failures (Docker down, missing/garbled report.json) would otherwise
-        grow the disk without bound. rmtree(ignore_errors=True) is a no-op
-        for dirs that were never created.
-        """
-        shutil.rmtree(container_output_dir, ignore_errors=True)
+        # Closures read the CURRENT binding, so both names resolve to whatever
+        # the body below assigned by the time this runs.
+        if container_output_dir:
+            shutil.rmtree(container_output_dir, ignore_errors=True)
         if validation_temp_dir:
             shutil.rmtree(validation_temp_dir, ignore_errors=True)
 
-    if not os.path.exists(container_file_path):
-        _reject_submission(
-            f"File not found in container: {container_file_path}",
-            validation_error=True,
-        )
-        _cleanup_workdirs()
-        return
-
-    # NOTE: Do not check host_file_path existence here.
-    # This code runs inside the worker container and does not have access
-    # to host filesystem paths like /home/jakub/..., which causes false rejections.
-
-    # Prepare output directory
     try:
-        # Create the container-visible output dir (project bind mount), which also
-        # materializes the directory on the host via the /app volume.
-        os.makedirs(container_output_dir, exist_ok=True)
-        try:
-            # Group-writable so the validator container (same UID:GID) can write,
-            # but not world-writable.
-            os.chmod(container_output_dir, 0o770)
-        except Exception:
-            pass
-    except OSError as e:
-        logger.error(f"Failed to create validation output dir: {e}")
-        _set_validation_status(StaticFeedEntry.VALIDATION_ERROR, str(e))
-        _cleanup_workdirs()
-        return
+        # 1. Determine which file to validate
+        # Prefer cached_file if present (latest proxy download), else user file.
+        # For non-proxy URL feeds, download once to a temp dir for validation only.
+        file_field = entry.cached_file if entry.cached_file else entry.file
 
-    logger.info(f"Validating {filename}...")
-    logger.info(f"Host Input: {host_input_dir}, Host Output: {host_output_dir}")
+        if not file_field and entry.url:
+            from urllib.parse import urlparse
 
-    try:
-        client = docker.from_env()
-    except docker.errors.DockerException as e:
-        _reject_submission(
-            f"Cannot connect to Docker (check the docker-socket-proxy service / DOCKER_HOST): {e}",
-            validation_error=True,
-        )
-        _cleanup_workdirs()
-        return
+            import requests
+            from data_manager.net_security import OutboundURLBlocked, safe_download
+            from data_manager.scheduler import _build_auth_headers
 
-    try:
-        volumes = {
-            host_input_dir: {'bind': '/input', 'mode': 'ro'},
-            host_output_dir: {'bind': '/output', 'mode': 'rw'},
-        }
-
-        command = ["-i", f"/input/{filename}", "-o", "/output"]
-        validator_uid = os.environ.get('UID', '1000')
-        validator_gid = os.environ.get('GID', '1000')
-
-        # Bound resource usage so a malicious/zip-bomb feed cannot exhaust the host.
-        mem_limit = os.environ.get('GTFS_VALIDATOR_MEM_LIMIT', '2g')
-        pids_limit = int(os.environ.get('GTFS_VALIDATOR_PIDS_LIMIT', '512'))
-        run_kwargs = dict(
-            image="ghcr.io/mobilitydata/gtfs-validator:latest",
-            command=command,
-            volumes=volumes,
-            remove=True,
-            detach=False,
-            user=f"{validator_uid}:{validator_gid}",
-            network_disabled=True,
-            mem_limit=mem_limit,
-            pids_limit=pids_limit,
-            cap_drop=['ALL'],
-            security_opt=['no-new-privileges:true'],
-        )
-        nano_cpus = os.environ.get('GTFS_VALIDATOR_NANO_CPUS')
-        if nano_cpus:
-            run_kwargs['nano_cpus'] = int(nano_cpus)
-
-        container = client.containers.run(**run_kwargs)
-
-        logger.info("Validation container finished.")
-
-    except docker.errors.ContainerError as e:
-        _reject_submission(f"Validator container failed: {e}", validation_error=True)
-        _cleanup_workdirs()
-        return
-    except Exception as e:
-        _reject_submission(f"Docker execution error: {e}", validation_error=True)
-        _cleanup_workdirs()
-        return
-
-    # Parse results
-    # The validator writes files into the host_output_dir (bound to /output in the
-    # validator container). Read report.json from the container-visible path that
-    # mirrors the host directory via the /app bind mount.
-    report_file = os.path.join(container_output_dir, 'report.json')
-
-    # Add a small retry loop to handle potential filesystem delays with Docker volumes
-    max_retries = 5
-    retry_delay = 1  # seconds
-    for attempt in range(max_retries):
-        if os.path.exists(report_file):
-            break
-        logger.warning(
-            "report.json not found at %s (attempt %d). Retrying in %ds...",
-            report_file,
-            attempt + 1,
-            retry_delay,
-        )
-        time.sleep(retry_delay)
-    else:
-        _reject_submission(
-            f"report.json not found in output directory after {max_retries} retries: {container_output_dir}",
-            validation_error=True,
-        )
-        _cleanup_workdirs()
-        return
-
-    try:
-        with open(report_file, 'r', encoding='utf-8') as f:
-            report_data = json.load(f)
-    except json.JSONDecodeError as e:
-        _reject_submission(f"Failed to decode report.json: {e}", validation_error=True)
-        _cleanup_workdirs()
-        return
-
-    def extract_notice_counts(payload: dict) -> tuple[int, int, dict]:
-        """Parse a GTFS Validator report payload and return (error_count, warning_count, error_code_counts).
-
-        This mirrors the original nested function used inside validate_gtfs_feed_task.
-        """
-        summary = payload.get('summary', {}) if isinstance(payload, dict) else {}
-
-        # Summary-based fallbacks
-        error_fallback = (
-            summary.get('errorCount') or summary.get('error_count') or summary.get('errors') or 0
-        )
-        warning_fallback = (
-            summary.get('warningCount') or summary.get('warning_count') or summary.get('warnings') or 0
-        )
-
-        # Look for notices lists in known fields
-        candidates = []
-        for key in ('notices', 'results', 'noticeResults', 'validationResults'):
-            value = payload.get(key)
-            if isinstance(value, list):
-                candidates.append(value)
-        notices = candidates[0] if candidates else []
-
-        error_count = 0
-        warning_count = 0
-        error_code_counts = {}
-        if isinstance(notices, list):
-            for notice in notices:
-                if not isinstance(notice, dict):
-                    continue
-                severity = str(notice.get('severity', '')).upper()
-                total = int(notice.get('totalNotices', 0) or 0)
-                code = str(notice.get('code', '')).strip()
-                if severity == 'ERROR':
-                    error_count += max(1, total)
-                    if code:
-                        error_code_counts[code] = error_code_counts.get(code, 0) + max(1, total)
-                elif severity == 'WARNING':
-                    warning_count += max(1, total)
-
-        if error_count == 0 and warning_count == 0:
-            # Fallback to summary counts when notices are missing
-            error_count = int(error_fallback or 0)
-            warning_count = int(warning_fallback or 0)
-
-        return error_count, warning_count, error_code_counts
-
-    error_count, warning_count, error_code_counts = extract_notice_counts(report_data)
-
-    # Create/Update ValidationReport
-    # The FeedValidationReport model is not linked from the report side; StaticFeedEntry
-    # holds a OneToOneField `validation_report`. Update existing report if present,
-    # otherwise create a new FeedValidationReport and attach it to the entry.
-    from django.core.files.base import ContentFile
-
-    report_bytes = json.dumps(report_data, ensure_ascii=False).encode('utf-8')
-    if entry.validation_report_id:
-        val_report = entry.validation_report
-        val_report.error_count = error_count
-        val_report.warning_count = warning_count
-        val_report.report_file.save('report.json', ContentFile(report_bytes))
-        val_report.save()
-    else:
-        val_report = FeedValidationReport.objects.create(
-            error_count=error_count,
-            warning_count=warning_count,
-        )
-        # Link the report to its entry BEFORE saving the file so that
-        # validation_file_path can resolve the submission id (otherwise the file
-        # would land in 'unknown/validation/' and collide across submissions).
-        entry.validation_report = val_report
-        entry.save(update_fields=['validation_report'])
-        val_report.report_file.save('report.json', ContentFile(report_bytes))
-
-    _cleanup_workdirs()
-
-    # Update Submission Stage
-    submission = entry.submission
-
-    if error_count > 0:
-        # Build rejection_cause as "code: count" list
-        if error_code_counts:
-            parts = [f"{code}: {count}" for code, count in sorted(error_code_counts.items())]
-            cause = ", ".join(parts)
-        else:
-            cause = f"Validation failed with {error_count} errors."
-        _reject_submission(cause)
-    else:
-        _set_validation_status(StaticFeedEntry.VALIDATION_VALID, None)
-        # Re-fetch submission fresh state in case it changed
-        submission.refresh_from_db()
-        current_stage = submission.current_stage
-        # Prevent advancing if already advanced by something else
-        if current_stage < 3:
-            FeedSubmissionHistory.objects.create(
-                submission=submission,
-                event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
-                stage_before=current_stage,
-                stage_after=3,
-                actor=None,
+            validation_temp_dir = os.path.join(
+                settings.MEDIA_ROOT,
+                str(entry.submission_id),
+                'validation',
+                f'tmp_{entry.id}_{random.randint(1000, 9999)}',
             )
-            logger.info(f"Submission {submission.id} advanced to Stage 3 (valid GTFS, awaiting admin).")
+            os.makedirs(validation_temp_dir, exist_ok=True)
+            try:
+                parsed = urlparse(entry.url)
+                filename = os.path.basename(parsed.path) or 'feed.zip'
+                container_file_path = os.path.join(validation_temp_dir, filename)
+                # Copied chunk by chunk: a 200 MB archive must not be held in
+                # memory just to be written straight back out to disk.
+                with safe_download(
+                    entry.url,
+                    headers=_build_auth_headers(entry.auth_type, entry.auth_value),
+                    timeout=60,
+                    max_bytes=settings.MAX_FEED_FILE_SIZE_BYTES,
+                    total_timeout=settings.FEED_FETCH_TOTAL_TIMEOUT_SECONDS,
+                ) as (response, body):
+                    response.raise_for_status()
+                    with open(container_file_path, 'wb') as fh:
+                        shutil.copyfileobj(body, fh)
+                container_input_dir = validation_temp_dir
+            except OutboundURLBlocked as exc:
+                _reject_submission(str(exc), validation_error=True)
+                return
+            except requests.exceptions.RequestException as exc:
+                _reject_submission(
+                    f'Failed to download feed for validation: {exc}',
+                    validation_error=True,
+                )
+                return
+        elif not file_field:
+            logger.info(f"No file found for StaticFeedEntry {entry_id}. Skipping validation.")
+            _set_validation_status(
+                StaticFeedEntry.VALIDATION_ERROR,
+                'No file available for validation.',
+            )
+            return
+        else:
+            # file_field.name is relative to MEDIA_ROOT (e.g. '1/2/static/feed.zip')
+            relative_path = file_field.name
+            if relative_path.startswith('uploaded_data/'):
+                relative_path = relative_path[len('uploaded_data/'):]
+            filename = os.path.basename(relative_path)
+            container_file_path = file_field.path
+            container_input_dir = os.path.dirname(container_file_path)
+
+        relative_dir = os.path.relpath(container_input_dir, settings.MEDIA_ROOT)
+        # HOST_PROJECT_PATH is the absolute path to project root on the host machine
+        host_project_path = os.environ.get('HOST_PROJECT_PATH', str(settings.BASE_DIR))
+        host_media_root = os.environ.get('HOST_MEDIA_ROOT', os.path.join(host_project_path, 'uploaded_data'))
+
+        # Host paths for Docker bind mounts
+        host_input_dir = os.path.join(host_media_root, relative_dir)
+        host_file_path = os.path.join(host_input_dir, filename)
+
+        report_dir_name = f"validation_report_{entry.id}_{random.randint(1000, 9999)}"
+        container_output_dir = os.path.join(container_input_dir, report_dir_name)
+        host_output_dir = os.path.join(host_input_dir, report_dir_name)
+
+        if not os.path.exists(container_file_path):
+            _reject_submission(
+                f"File not found in container: {container_file_path}",
+                validation_error=True,
+            )
+            return
+
+        # NOTE: Do not check host_file_path existence here.
+        # This code runs inside the worker container and does not have access
+        # to host filesystem paths like /home/jakub/..., which causes false rejections.
+
+        # Prepare output directory
+        try:
+            # Create the container-visible output dir (project bind mount), which also
+            # materializes the directory on the host via the /app volume.
+            os.makedirs(container_output_dir, exist_ok=True)
+            try:
+                # Group-writable so the validator container (same UID:GID) can write,
+                # but not world-writable.
+                os.chmod(container_output_dir, 0o770)
+            except Exception:
+                pass
+        except OSError as e:
+            logger.error(f"Failed to create validation output dir: {e}")
+            _set_validation_status(StaticFeedEntry.VALIDATION_ERROR, str(e))
+            return
+
+        logger.info(f"Validating {filename}...")
+        logger.info(f"Host Input: {host_input_dir}, Host Output: {host_output_dir}")
+
+        try:
+            client = docker.from_env()
+        except docker.errors.DockerException as e:
+            _reject_submission(
+                f"Cannot connect to Docker (check the docker-socket-proxy service / DOCKER_HOST): {e}",
+                validation_error=True,
+            )
+            return
+
+        try:
+            volumes = {
+                host_input_dir: {'bind': '/input', 'mode': 'ro'},
+                host_output_dir: {'bind': '/output', 'mode': 'rw'},
+            }
+
+            command = ["-i", f"/input/{filename}", "-o", "/output"]
+            validator_uid = os.environ.get('UID', '1000')
+            validator_gid = os.environ.get('GID', '1000')
+
+            # Bound resource usage so a malicious/zip-bomb feed cannot exhaust the host.
+            mem_limit = os.environ.get('GTFS_VALIDATOR_MEM_LIMIT', '2g')
+            pids_limit = int(os.environ.get('GTFS_VALIDATOR_PIDS_LIMIT', '512'))
+            run_kwargs = dict(
+                image="ghcr.io/mobilitydata/gtfs-validator:latest",
+                command=command,
+                volumes=volumes,
+                remove=True,
+                detach=False,
+                user=f"{validator_uid}:{validator_gid}",
+                network_disabled=True,
+                mem_limit=mem_limit,
+                pids_limit=pids_limit,
+                cap_drop=['ALL'],
+                security_opt=['no-new-privileges:true'],
+            )
+            nano_cpus = os.environ.get('GTFS_VALIDATOR_NANO_CPUS')
+            if nano_cpus:
+                run_kwargs['nano_cpus'] = int(nano_cpus)
+
+            container = client.containers.run(**run_kwargs)
+
+            logger.info("Validation container finished.")
+
+        except docker.errors.ContainerError as e:
+            _reject_submission(f"Validator container failed: {e}", validation_error=True)
+            return
+        except Exception as e:
+            _reject_submission(f"Docker execution error: {e}", validation_error=True)
+            return
+
+        # Parse results
+        # The validator writes files into the host_output_dir (bound to /output in the
+        # validator container). Read report.json from the container-visible path that
+        # mirrors the host directory via the /app bind mount.
+        report_file = os.path.join(container_output_dir, 'report.json')
+
+        # Add a small retry loop to handle potential filesystem delays with Docker volumes
+        max_retries = 5
+        retry_delay = 1  # seconds
+        for attempt in range(max_retries):
+            if os.path.exists(report_file):
+                break
+            logger.warning(
+                "report.json not found at %s (attempt %d). Retrying in %ds...",
+                report_file,
+                attempt + 1,
+                retry_delay,
+            )
+            time.sleep(retry_delay)
+        else:
+            _reject_submission(
+                f"report.json not found in output directory after {max_retries} retries: {container_output_dir}",
+                validation_error=True,
+            )
+            return
+
+        try:
+            with open(report_file, 'r', encoding='utf-8') as f:
+                report_data = json.load(f)
+        except json.JSONDecodeError as e:
+            _reject_submission(f"Failed to decode report.json: {e}", validation_error=True)
+            return
+
+        def extract_notice_counts(payload: dict) -> tuple[int, int, dict]:
+            """Parse a GTFS Validator report payload and return (error_count, warning_count, error_code_counts).
+
+            This mirrors the original nested function used inside validate_gtfs_feed_task.
+            """
+            summary = payload.get('summary', {}) if isinstance(payload, dict) else {}
+
+            # Summary-based fallbacks
+            error_fallback = (
+                summary.get('errorCount') or summary.get('error_count') or summary.get('errors') or 0
+            )
+            warning_fallback = (
+                summary.get('warningCount') or summary.get('warning_count') or summary.get('warnings') or 0
+            )
+
+            # Look for notices lists in known fields
+            candidates = []
+            for key in ('notices', 'results', 'noticeResults', 'validationResults'):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    candidates.append(value)
+            notices = candidates[0] if candidates else []
+
+            error_count = 0
+            warning_count = 0
+            error_code_counts = {}
+            if isinstance(notices, list):
+                for notice in notices:
+                    if not isinstance(notice, dict):
+                        continue
+                    severity = str(notice.get('severity', '')).upper()
+                    total = int(notice.get('totalNotices', 0) or 0)
+                    code = str(notice.get('code', '')).strip()
+                    if severity == 'ERROR':
+                        error_count += max(1, total)
+                        if code:
+                            error_code_counts[code] = error_code_counts.get(code, 0) + max(1, total)
+                    elif severity == 'WARNING':
+                        warning_count += max(1, total)
+
+            if error_count == 0 and warning_count == 0:
+                # Fallback to summary counts when notices are missing
+                error_count = int(error_fallback or 0)
+                warning_count = int(warning_fallback or 0)
+
+            return error_count, warning_count, error_code_counts
+
+        error_count, warning_count, error_code_counts = extract_notice_counts(report_data)
+
+        # Create/Update ValidationReport
+        # The FeedValidationReport model is not linked from the report side; StaticFeedEntry
+        # holds a OneToOneField `validation_report`. Update existing report if present,
+        # otherwise create a new FeedValidationReport and attach it to the entry.
+        from django.core.files.base import ContentFile
+
+        report_bytes = json.dumps(report_data, ensure_ascii=False).encode('utf-8')
+        if entry.validation_report_id:
+            val_report = entry.validation_report
+            val_report.error_count = error_count
+            val_report.warning_count = warning_count
+            val_report.report_file.save('report.json', ContentFile(report_bytes))
+            val_report.save()
+        else:
+            val_report = FeedValidationReport.objects.create(
+                error_count=error_count,
+                warning_count=warning_count,
+            )
+            # Link the report to its entry BEFORE saving the file so that
+            # validation_file_path can resolve the submission id (otherwise the file
+            # would land in 'unknown/validation/' and collide across submissions).
+            entry.validation_report = val_report
+            entry.save(update_fields=['validation_report'])
+            val_report.report_file.save('report.json', ContentFile(report_bytes))
+
+        # Update Submission Stage
+        submission = entry.submission
+
+        if error_count > 0:
+            # Build rejection_cause as "code: count" list
+            if error_code_counts:
+                parts = [f"{code}: {count}" for code, count in sorted(error_code_counts.items())]
+                cause = ", ".join(parts)
+            else:
+                cause = f"Validation failed with {error_count} errors."
+            _reject_submission(cause)
+        else:
+            _set_validation_status(StaticFeedEntry.VALIDATION_VALID, None)
+            # Re-fetch submission fresh state in case it changed
+            submission.refresh_from_db()
+            current_stage = submission.current_stage
+            # Prevent advancing if already advanced by something else
+            if current_stage < 3:
+                FeedSubmissionHistory.objects.create(
+                    submission=submission,
+                    event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
+                    stage_before=current_stage,
+                    stage_after=3,
+                    actor=None,
+                )
+                logger.info(f"Submission {submission.id} advanced to Stage 3 (valid GTFS, awaiting admin).")
+    finally:
+        _cleanup_workdirs()
 
 
 @shared_task(name='data_manager.validate_realtime_submission')
 def validate_realtime_submission_task(submission_id: int) -> dict:
     """
-    Weryfikacja realtime (etap 2): link-check, opcjonalnie API walidatora GTFS-RT,
-    oraz pierwsze pobranie cache dla endpointów z hide_original.
+    Weryfikacja realtime (etap 2): link-check kazdego endpointu + walidacja
+    formatu odpowiedzi, oraz pierwsze pobranie cache dla hide_original.
 
     Flow: etap 1 → 2 (start weryfikacji) → 3 po sukcesie; błąd → rejected, etap 1.
-    """
-    import json
-    import os
 
-    import requests
+    Uwaga historyczna: byla tu jeszcze "walidacja semantyczna" przez kontener
+    gtfs-realtime-validator. Rejestrowala feedy w walidatorze i nigdy nie
+    odczytywala wynikow — z zalozenia nie mogla niczego wykryc, a kontener
+    (JVM bez limitu pamieci, ~3,9 GB sterty) chodzil non-stop. Usuniete.
+    Format GTFS-RT jest teraz realnie sprawdzany: protobuf jest parsowany
+    w validate_realtime_feed_content.
+    """
     from django.conf import settings
 
     from data_manager.models import (
@@ -803,9 +829,10 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
         completed_submission_ids,
     )
     from data_manager.scheduler import _build_auth_headers, _fetch_realtime_endpoint_rt
-    from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url, safe_get
+    from data_manager.net_security import OutboundURLBlocked, safe_get
+    from data_manager.validators import InvalidFeedContent, validate_realtime_feed_content
 
-    max_link_bytes = getattr(settings, 'MAX_FEED_FILE_SIZE_BYTES', 200 * 1024 * 1024)
+    max_link_bytes = settings.MAX_REALTIME_FEED_BYTES
 
     try:
         rts = RealtimeSubmission.objects.select_related('static_submission').prefetch_related(
@@ -851,104 +878,29 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
 
     errors: list[str] = []
 
-    if rts.protocol == RealtimeSubmission.PROTOCOL_GTFS_RT:
-        base = getattr(settings, 'GTFS_RT_VALIDATOR_URL', os.environ.get(
-            'GTFS_RT_VALIDATOR_URL', 'http://gtfs-realtime-validator:8080'
-        ))
-        static = rts.static_submission.static_entry
-        static_url = None
-        if static:
-            if static.url and not static.hide_original:
-                static_url = static.url
-            elif static.url and static.cached_file:
-                public = getattr(settings, 'PUBLIC_BASE_URL', '').rstrip('/')
-                if public:
-                    static_url = f"{public}/feed/{rts.static_submission_id}/{static.cached_file.name.split('/')[-1]}"
-        for ep in endpoints:
-            try:
-                resp = safe_get(
-                    ep.url,
-                    headers=_build_auth_headers(ep.auth_type, ep.auth_value),
-                    timeout=15,
-                    max_bytes=max_link_bytes,
-                )
-                if resp.status_code >= 400:
-                    errors.append(f'{ep.endpoint_type}: HTTP {resp.status_code}')
-            except OutboundURLBlocked as exc:
-                errors.append(f'{ep.endpoint_type}: blocked URL ({exc})')
-            except Exception as exc:
-                errors.append(f'{ep.endpoint_type}: {exc}')
-        # Best-effort semantic validation via the gtfs-realtime-validator
-        # container. Its REST contract (verified empirically against the
-        # ghcr.io/mobilitydata image):
-        #   POST /api/gtfs-feed     form-encoded  gtfsUrl=<static feed url>
-        #                           -> JSON with 'feedId'
-        #   POST /api/gtfs-rt-feed  JSON {"gtfsRtUrl": ..., "gtfsFeedModel": {"feedId": N}}
-        # IMPORTANT: validator problems are logged as warnings, NOT appended to
-        # `errors` — an unreachable/misbehaving validator is an ops issue and
-        # must never auto-reject a healthy submission (a wrong endpoint path
-        # used to reject everything with 'validator GTFS: HTTP 404').
-        if static_url:
-            try:
-                assert_safe_outbound_url(static_url)
-                r0 = requests.post(
-                    f'{base.rstrip("/")}/api/gtfs-feed',
-                    data={'gtfsUrl': static_url},
-                    timeout=60,
-                )
-                if r0.status_code >= 400:
-                    logger.warning(
-                        'GTFS-RT validator: registering static feed failed '
-                        '(HTTP %s: %s) — skipping semantic validation for submission %s',
-                        r0.status_code, r0.text[:200], rts.id,
-                    )
-                else:
-                    feed_id = (r0.json() or {}).get('feedId')
-                    for ep in endpoints:
-                        r1 = requests.post(
-                            f'{base.rstrip("/")}/api/gtfs-rt-feed',
-                            json={'gtfsRtUrl': ep.url, 'gtfsFeedModel': {'feedId': feed_id}},
-                            timeout=60,
-                        )
-                        if r1.status_code >= 400:
-                            logger.warning(
-                                'GTFS-RT validator: endpoint %s (%s) not accepted '
-                                '(HTTP %s: %s) — submission %s continues without '
-                                'semantic validation of this endpoint',
-                                ep.endpoint_type, ep.url,
-                                r1.status_code, r1.text[:200], rts.id,
-                            )
-            except Exception as exc:
-                logger.warning(
-                    'GTFS-RT validator unavailable (%s) — submission %s validated '
-                    'by link-checks only', exc, rts.id,
-                )
-        else:
-            logger.info(
-                'GTFS-RT validator skipped for submission %s: no public static '
-                'feed URL (uploaded file, or proxied without PUBLIC_BASE_URL)',
-                rts.id,
+    # Link check every endpoint: reachable, and does the body actually look
+    # like the declared protocol? Capped at MAX_REALTIME_FEED_BYTES — realtime
+    # payloads are small, and a status code never needed a 200 MB budget.
+    for ep in endpoints:
+        try:
+            resp = safe_get(
+                ep.url,
+                headers=_build_auth_headers(ep.auth_type, ep.auth_value),
+                timeout=15,
+                max_bytes=max_link_bytes,
+                total_timeout=settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS,
             )
-    else:
-        for ep in endpoints:
+            if resp.status_code >= 400:
+                errors.append(f'{ep.endpoint_type}: HTTP {resp.status_code}')
+                continue
             try:
-                resp = safe_get(
-                    ep.url,
-                    headers=_build_auth_headers(ep.auth_type, ep.auth_value),
-                    timeout=15,
-                    max_bytes=max_link_bytes,
-                )
-                if resp.status_code >= 400:
-                    errors.append(f'{ep.endpoint_type}: HTTP {resp.status_code}')
-                if rts.protocol == RealtimeSubmission.PROTOCOL_GBFS and ep.endpoint_type == 'gbfs':
-                    try:
-                        json.loads(resp.content.decode('utf-8', errors='strict'))
-                    except Exception:
-                        errors.append('gbfs: odpowiedź nie jest poprawnym JSON')
-            except OutboundURLBlocked as exc:
-                errors.append(f'{ep.endpoint_type}: blocked URL ({exc})')
-            except Exception as exc:
+                validate_realtime_feed_content(rts.protocol, resp.content)
+            except InvalidFeedContent as exc:
                 errors.append(f'{ep.endpoint_type}: {exc}')
+        except OutboundURLBlocked as exc:
+            errors.append(f'{ep.endpoint_type}: blocked URL ({exc})')
+        except Exception as exc:
+            errors.append(f'{ep.endpoint_type}: {exc}')
 
     if not errors:
         now = timezone.now()

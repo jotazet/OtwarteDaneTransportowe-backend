@@ -1,6 +1,9 @@
 from datetime import timedelta
 
 import pytest
+import io
+from contextlib import contextmanager
+
 import requests
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
@@ -106,10 +109,12 @@ def test_static_fetch_errors_apply_pause_sequence_and_success_resets(
     settings.MEDIA_ROOT = tmp_path
     entry = _published_static_entry(org, provider_user)
 
-    monkeypatch.setattr(
-        'data_manager.scheduler.safe_get',
-        lambda *args, **kwargs: (_ for _ in ()).throw(requests.exceptions.Timeout('timeout')),
-    )
+    @contextmanager
+    def _timing_out(*args, **kwargs):
+        raise requests.exceptions.Timeout('timeout')
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr('data_manager.scheduler.safe_download', _timing_out)
 
     first_started = timezone.now()
     _fetch_static_entry(entry)
@@ -140,11 +145,17 @@ def test_static_fetch_errors_apply_pause_sequence_and_success_resets(
     class Response:
         # Minimal ZIP magic: fetched GTFS content must look like a ZIP archive.
         content = b'PK\x03\x04feed-bytes'
+        status_code = 200
 
         def raise_for_status(self):
             return None
 
-    monkeypatch.setattr('data_manager.scheduler.safe_get', lambda *args, **kwargs: Response())
+    @contextmanager
+    def _succeeding(*args, **kwargs):
+        # safe_download yields (response, body_file) and streams the body.
+        yield Response(), io.BytesIO(Response.content)
+
+    monkeypatch.setattr('data_manager.scheduler.safe_download', _succeeding)
     monkeypatch.setattr('data_manager.tasks.validate_gtfs_feed_task.delay', lambda *args, **kwargs: None)
 
     result = _fetch_static_entry(entry)

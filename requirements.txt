@@ -8,6 +8,8 @@ django-filter==25.2
 psycopg2-binary>=2.9.9
 Pillow>=10.0.0
 requests>=2.32.0
+# GTFS-RT protobuf parsing (validates fetched realtime bodies before caching)
+gtfs-realtime-bindings>=1.0.0
 cryptography>=42.0.0
 drf-spectacular[sidecar]==0.29.0
 pytest==9.0.2

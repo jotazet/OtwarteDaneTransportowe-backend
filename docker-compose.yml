@@ -179,12 +179,18 @@ services:
       HOST_PROJECT_PATH: "${HOST_PROJECT_PATH:-${PWD}}"
       HOST_MEDIA_ROOT: "${HOST_MEDIA_ROOT:-${PWD}/uploaded_data}"
 
-  gtfs-realtime-validator:
-    image: ghcr.io/mobilitydata/gtfs-realtime-validator:latest
-    container_name: gtfs-realtime-validator
-    ports:
-      - "127.0.0.1:${GTFS_REALTIME_VALIDATOR_HOST_PORT:-8082}:8080"
-    restart: unless-stopped
+  # NOTE: the gtfs-realtime-validator service was removed deliberately.
+  #
+  # It ran 24/7 on an OpenJDK 11 image with no mem_limit, so the JVM sized its
+  # heap at 25% of HOST RAM (measured: MaxHeapSize = 3.88 GB) — the bulk of this
+  # stack's memory footprint. What it bought was nothing: the integration in
+  # data_manager/tasks.py registered feeds with it and never read a result back,
+  # so no finding could ever reach a submission.
+  #
+  # GTFS-RT bodies are now validated in-process: the protobuf is actually parsed
+  # (validators._validate_gtfs_rt_protobuf) instead of being checked for a '<'.
+  # If semantic validation is wanted later, bring the service back WITH a
+  # mem_limit and a JAVA_TOOL_OPTIONS heap cap, and implement the result polling.
 
 volumes:
   odt_pgdata:

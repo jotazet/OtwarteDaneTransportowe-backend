@@ -49,7 +49,6 @@ definiują następujące usługi:
 | `celery_validator_worker` | Kolejka `feeds` + walidator GTFS (via socket-proxy) | — |
 | `docker-socket-proxy` | Least-privilege dostęp do Docker API hosta | — |
 | `celery_beat` | Harmonogram (django-celery-beat) | — |
-| `gtfs-realtime-validator` | Walidator GTFS-RT | `127.0.0.1:8082` |
 | `migrate` / `init_uploads` | Zadania startowe (jednorazowe) | — |
 
 ```mermaid
@@ -165,7 +164,21 @@ FEED_AUTH_ENCRYPTION_KEY=<wklej-klucz-Fernet>
 # GTFS_VALIDATOR_MEM_LIMIT=2g
 # GTFS_VALIDATOR_PIDS_LIMIT=512
 # GTFS_VALIDATOR_NANO_CPUS=2000000000   # 2 vCPU (1e9 = 1 rdzeń)
-GTFS_REALTIME_VALIDATOR_HOST_PORT=8082
+
+# ───────────────────────── Pamięć workerów ─────────────────────────
+# Recykling procesów potomnych — bez tego jedno duże pobranie feedu trwale
+# podnosi RSS workera (CPython nie oddaje zwolnionych aren do systemu).
+# CELERY_WORKER_MAX_TASKS_PER_CHILD=50
+# CELERY_WORKER_MAX_MEMORY_PER_CHILD=300000   # KiB
+# CELERY_WORKER_PREFETCH_MULTIPLIER=1
+
+# Limity pobierania. Feedy statyczne są streamowane do pliku tymczasowego,
+# więc MAX_FEED_FILE_SIZE_BYTES ogranicza dysk, nie RAM. Payloady realtime są
+# parsowane w całości i mają własny, ciaśniejszy limit.
+# MAX_FEED_FILE_SIZE_BYTES=209715200
+# MAX_REALTIME_FEED_BYTES=33554432
+# FEED_FETCH_TOTAL_TIMEOUT_SECONDS=600
+# REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS=60
 
 # ───────────────────────── Uprawnienia plików ─────────────────────────
 UID=1000

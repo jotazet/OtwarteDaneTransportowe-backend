@@ -56,6 +56,37 @@ ALLOWED_HOSTS = list(dict.fromkeys([*ALLOWED_HOSTS, *_INTERNAL_ALLOWED_HOSTS]))
 # Provide full scheme://host origins, e.g. https://api.example.org
 CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS', default=[])
 
+# This file already assumes a reverse proxy (SECURE_PROXY_SSL_HEADER above), so
+# an empty TRUSTED_PROXY_CIDRS is a misconfiguration, not a default. Without it
+# get_client_ip() ignores X-Forwarded-For and every visitor is seen as the
+# proxy's own address, which silently:
+#   * collapses all visitors into ONE blog-reaction identity (the "10 per day
+#     per IP" limit becomes 10 per day for the entire internet, and the
+#     unique-per-(post, IP) constraint keeps one row for everybody), and
+#   * puts all anonymous traffic in a single AnonRateThrottle bucket.
+# blog.checks.check_trusted_proxy_cidrs already reports this as a Django system
+# check (blog.W001), but a Warning does not stop a deploy and is easy to lose in
+# container logs. This makes it fatal for the settings module that explicitly
+# assumes a proxy; the check still covers other DEBUG=False configurations.
+#
+# Set it to the proxy's address(es), e.g. TRUSTED_PROXY_CIDRS=10.0.0.0/8, or
+# opt out explicitly with ALLOW_UNTRUSTED_PROXY_IPS=True when the app really is
+# exposed directly to clients.
+if not TRUSTED_PROXY_CIDRS and not _env_bool('ALLOW_UNTRUSTED_PROXY_IPS', False):  # noqa: F405
+    raise ImproperlyConfigured(
+        'TRUSTED_PROXY_CIDRS is empty while the app is configured to run behind '
+        'a reverse proxy. Client IPs would all resolve to the proxy, breaking '
+        'per-IP reaction limits and anonymous throttling. Set TRUSTED_PROXY_CIDRS '
+        'to your proxy network(s), or set ALLOW_UNTRUSTED_PROXY_IPS=True if the '
+        'app is served directly to clients.'
+    )
+
+# Modest extra hardening; neither affects the API contract.
+SECURE_REFERRER_POLICY = os.getenv('DJANGO_SECURE_REFERRER_POLICY', 'same-origin')  # noqa: F405
+SECURE_CROSS_ORIGIN_OPENER_POLICY = os.getenv(  # noqa: F405
+    'DJANGO_SECURE_COOP', 'same-origin'
+)
+
 # Container-friendly logging: structured-ish output to stdout/stderr.
 LOGGING = {
     'version': 1,
