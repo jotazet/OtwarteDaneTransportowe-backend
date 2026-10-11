@@ -189,7 +189,9 @@ HOST_MEDIA_ROOT=/opt/odt/uploaded_data
 # ───────────────────────── Wydajność / Celery / gunicorn ─────────────────────────
 GUNICORN_WORKERS=3
 CELERY_DEFAULT_CONCURRENCY=2
-CELERY_FEEDS_CONCURRENCY=2
+# Kolejka feeds to tylko pobrania statyczne i walidacje GTFS — kilka zadań na
+# feed dziennie. Każdy dodatkowy proces to ~90 MB RAM w bezczynności.
+CELERY_FEEDS_CONCURRENCY=1
 
 # ───────────────────────── Limity / throttling / JWT (opcjonalne) ─────────────────────────
 # MAX_FEED_FILE_SIZE_BYTES=209715200      # 200 MB

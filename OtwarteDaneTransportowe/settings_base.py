@@ -252,16 +252,22 @@ CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
 from celery.schedules import crontab  # noqa: E402
 
+# The dispatchers run on 'default', NOT on 'feeds'. They are millisecond-long
+# DB queries that must run on time: refresh_static_feeds only looks back
+# STATIC_DISPATCH_CATCHUP_MINUTES (10), while a single GTFS validation or
+# static download on 'feeds' may hold a worker for up to 10-12 minutes. With
+# the feeds worker at concurrency 1, a dispatcher queued behind such a job
+# would run late and silently skip that day's download.
 CELERY_BEAT_SCHEDULE = {
     'refresh-static-feeds': {
         'task': 'data_manager.refresh_static_feeds',
         'schedule': crontab(),
-        'options': {'queue': 'feeds'},
+        'options': {'queue': 'default'},
     },
     'bootstrap-realtime-tasks': {
         'task': 'data_manager.bootstrap_realtime_tasks',
         'schedule': crontab(minute='*/5'),
-        'options': {'queue': 'feeds'},
+        'options': {'queue': 'default'},
     },
 }
 

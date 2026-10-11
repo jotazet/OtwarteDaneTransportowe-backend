@@ -971,6 +971,14 @@ def test_validate_gtfs_task_uses_feeds_queue():
     assert settings.CELERY_TASK_ROUTES['data_manager.validate_gtfs_feed']['queue'] == 'feeds'
 
 
+def test_beat_dispatchers_do_not_wait_behind_feeds_jobs():
+    # The feeds worker runs one long job at a time (validation/download up to
+    # ~10 min); the static dispatcher only catches up 10 minutes, so it must
+    # never be queued behind those jobs.
+    for name in ('refresh-static-feeds', 'bootstrap-realtime-tasks'):
+        assert settings.CELERY_BEAT_SCHEDULE[name]['options']['queue'] == 'default'
+
+
 def test_patch_feed_submission_static_entry_without_source_returns_400(
     api_client, normal_user, org,
 ):
