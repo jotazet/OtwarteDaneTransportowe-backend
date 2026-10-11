@@ -165,7 +165,7 @@ services:
       celery -A OtwarteDaneTransportowe worker
       --loglevel=info
       --queues=feeds
-      --concurrency=${CELERY_FEEDS_CONCURRENCY:-2}
+      --concurrency=${CELERY_FEEDS_CONCURRENCY:-1}
     depends_on:
       migrate:
         condition: service_completed_successfully
