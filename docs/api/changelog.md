@@ -14,6 +14,10 @@ Not breaking: fields are only added, and the corrected docs describe behaviour t
 
 Every record of `GET /api/data_manager/fetch-errors/`, `/feed-submissions/{id}/fetch-errors/` and `/realtime-submissions/{id}/fetch-errors/` gains **`submission_id`**: the `FeedSubmission` id when `source` is `static`, the `RealtimeSubmission` id when it is `realtime` (the `#<id>` in `feed_name`). Use it to link an error to its feed. See [Fetch errors](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
 
+### 3. Corrected documentation (behaviour unchanged)
+
+- `POST /api/auth/token/refresh/` returns `{access, refresh}`, not only `access`: refresh tokens rotate and the old one is blacklisted, so a client that keeps the old `refresh` gets `401` on its next refresh. See [JWT authentication](README.md#post-apiauthtokenrefresh).
+
 ---
 
 ## 2026-10: empty text fields are `""`, never `null`

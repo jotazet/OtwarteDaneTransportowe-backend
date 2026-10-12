@@ -138,9 +138,12 @@ Refreshes the access token using the refresh token.
 
 ```json
 {
-  "access": "eyJ..."
+  "access": "eyJ...",
+  "refresh": "eyJ..."
 }
 ```
+
+Refresh tokens rotate (`ROTATE_REFRESH_TOKENS`, `BLACKLIST_AFTER_ROTATION`): every successful refresh returns a **new** `refresh` and blacklists the one that was sent. The client must store the new `refresh` and use it next time; sending the old one again returns `401` (`{"detail": "Token is blacklisted", "code": "token_not_valid"}`).
 
 ### `/api-auth/`
 
@@ -167,7 +170,7 @@ page (max 50); fetch errors and `proxy-feeds` 25 per page (max 100).
 |--------|----------|-------------|------|
 | `GET` | `/admin/` | Django staff/admin | Django admin panel |
 | `POST` | `/api/auth/token/` | public | Obtain JWT `access` and `refresh` |
-| `POST` | `/api/auth/token/refresh/` | public | Refresh JWT `access` |
+| `POST` | `/api/auth/token/refresh/` | public | Refresh JWT `access`; returns a new `refresh` as well |
 | `GET` | `/api/schema/` | public when `DEBUG`, otherwise `is_staff` only | OpenAPI schema |
 | `GET` | `/api/schema/swagger-ui/` | public when `DEBUG`, otherwise `is_staff` only | Swagger UI |
 | `GET` | `/api/schema/redoc/` | public when `DEBUG`, otherwise `is_staff` only | ReDoc |
@@ -294,7 +297,7 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 
 ### Token handling
 
-- Keep `access` short-lived and refresh it via `/api/auth/token/refresh/`.
+- Keep `access` short-lived and refresh it via `/api/auth/token/refresh/`. Replace the stored `refresh` with the one from each refresh response; the old one stops working.
 - After a `401`, try a refresh first and only then log the user out.
 - Public endpoints do not need a token.
 
