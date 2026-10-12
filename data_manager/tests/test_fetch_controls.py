@@ -81,7 +81,7 @@ def _published_static_entry(org, provider_user, **entry_kwargs):
     return StaticFeedEntry.objects.create(submission=submission, **defaults)
 
 
-def _published_realtime_endpoint(org, provider_user):
+def _published_realtime_endpoint(org, provider_user, stage=4):
     rts = RealtimeSubmission.objects.create(
         transport_organization=org,
         submitted_by=provider_user,
@@ -89,9 +89,11 @@ def _published_realtime_endpoint(org, provider_user):
     )
     RealtimeSubmissionHistory.objects.create(
         submission=rts,
-        event_type=RealtimeSubmissionHistory.EVENT_COMPLETED,
-        stage_before=3,
-        stage_after=4,
+        event_type=RealtimeSubmissionHistory.EVENT_COMPLETED
+        if stage == 4
+        else RealtimeSubmissionHistory.EVENT_STAGE_ADVANCED,
+        stage_before=stage - 1,
+        stage_after=stage,
         actor=provider_user,
     )
     return RealtimeEndpointRT.objects.create(
@@ -286,24 +288,7 @@ def test_realtime_pause_resume_schedules_endpoint(
 def test_realtime_publish_seeds_fetch_loop_after_commit(
     api_client, org, provider_user, helper_user, monkeypatch, django_capture_on_commit_callbacks
 ):
-    rts = RealtimeSubmission.objects.create(
-        transport_organization=org,
-        submitted_by=provider_user,
-        protocol=RealtimeSubmission.PROTOCOL_GBFS,
-    )
-    RealtimeSubmissionHistory.objects.create(
-        submission=rts,
-        event_type=RealtimeSubmissionHistory.EVENT_STAGE_ADVANCED,
-        stage_before=2,
-        stage_after=3,
-    )
-    RealtimeEndpointRT.objects.create(
-        submission=rts,
-        endpoint_type='gbfs',
-        url='https://example.org/gbfs.json',
-        hide_original=True,
-        interval=30,
-    )
+    endpoint = _published_realtime_endpoint(org, provider_user, stage=3)
     calls = []
     monkeypatch.setattr(
         'data_manager.tasks.fetch_realtime_endpoint_task.apply_async',
@@ -313,7 +298,9 @@ def test_realtime_publish_seeds_fetch_loop_after_commit(
     api_client.force_authenticate(user=helper_user)
     with django_capture_on_commit_callbacks() as callbacks:
         response = api_client.patch(
-            f'/api/data_manager/realtime-submissions/{rts.id}/', {'stage': 4}, format='json'
+            f'/api/data_manager/realtime-submissions/{endpoint.submission_id}/',
+            {'stage': 4},
+            format='json',
         )
 
     assert response.status_code == 200, response.data
@@ -386,38 +373,10 @@ def test_global_fetch_errors_endpoint_filters_paginates_and_scopes(
     assert scoped.data['count'] == 4
 
 
-def test_pause_rejected_for_non_proxied_feeds(api_client, org, provider_user, helper_user):
-    static_entry = _published_static_entry(
-        org,
-        provider_user,
-        hide_original=False,
-        url='https://example.org/direct.zip',
-    )
-    rt_endpoint = _published_realtime_endpoint(org, provider_user)
-    rt_endpoint.hide_original = False
-    rt_endpoint.save(update_fields=['hide_original'])
-
-    api_client.force_authenticate(user=helper_user)
-    static_pause = api_client.post(
-        f'/api/data_manager/static-feed-entries/{static_entry.id}/pause-fetch/',
-    )
-    assert static_pause.status_code == 400
-
-    rt_pause = api_client.post(
-        f'/api/data_manager/realtime-endpoints/{rt_endpoint.id}/pause-fetch/',
-    )
-    assert rt_pause.status_code == 400
-
-    detail = api_client.get(f'/api/data_manager/static-feed-entries/{static_entry.id}/')
-    assert detail.status_code == 200
-    assert detail.data['is_proxy_managed'] is False
-    assert 'fetch_status' not in detail.data
-
-
-def test_resume_rejected_for_non_proxied_feeds(
+def test_pause_and_resume_rejected_for_non_proxied_feeds(
     api_client, org, provider_user, helper_user, monkeypatch, django_capture_on_commit_callbacks
 ):
-    """Same 400 as pause-fetch: a non-proxied feed has no fetch loop to resume."""
+    """A non-proxied feed has no fetch loop to pause or resume."""
     static_entry = _published_static_entry(
         org,
         provider_user,
@@ -442,10 +401,16 @@ def test_resume_rejected_for_non_proxied_feeds(
         with django_capture_on_commit_callbacks(execute=True):
             resumed = api_client.post(f'{path}/resume-fetch/')
 
-        assert resumed.status_code == paused.status_code == 400
+        assert paused.status_code == 400
+        assert resumed.status_code == 400
         assert resumed.data == paused.data
 
     assert calls == []
+
+    detail = api_client.get(f'/api/data_manager/static-feed-entries/{static_entry.id}/')
+    assert detail.status_code == 200
+    assert detail.data['is_proxy_managed'] is False
+    assert 'fetch_status' not in detail.data
 
 
 def test_create_non_proxied_url_triggers_validation_not_proxy_fetch(

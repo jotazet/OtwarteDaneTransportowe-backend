@@ -219,19 +219,16 @@ def test_every_failing_endpoint_gets_its_own_reason(org, provider, published_sta
     [(True, rr.ENDPOINT_HTTP_ERROR), (False, rr.STATIC_SUBMISSION_NOT_PUBLISHED)],
 )
 def test_failed_revalidation_keeps_published_submission(
-    org, provider, caplog, static_published, code
+    request, org, provider, caplog, static_published, code
 ):
     """ADR 0005: a failed validation of a published feed does not unpublish it."""
-    static = FeedSubmission.objects.create(
-        transport_organization=org, submitted_by=provider, data_type='gtfs'
-    )
-    if static_published:
-        FeedSubmissionHistory.objects.create(
-            submission=static,
-            event_type=FeedSubmissionHistory.EVENT_COMPLETED,
-            stage_before=3,
-            stage_after=4,
+    static = (
+        request.getfixturevalue('published_static')
+        if static_published
+        else FeedSubmission.objects.create(
+            transport_organization=org, submitted_by=provider, data_type='gtfs'
         )
+    )
     rts = make_rts(org, provider, 'gtfs_rt', static=static, endpoint_types=['trip_update'])
     RealtimeSubmissionHistory.objects.create(
         submission=rts,
