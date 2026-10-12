@@ -49,6 +49,7 @@ def _queue_gtfs_validation(instance) -> None:
     enqueue_on_commit(validate_gtfs_feed_task, instance.id)
     # Lets FeedSubmissionWriteSerializer._schedule_source_refresh skip a second
     # run for the same entry (e.g. a rejected resubmission with a new file).
+    # Never reset it per save: resume_fetch() saves again before it is read.
     instance._gtfs_validation_queued = True
 
 
