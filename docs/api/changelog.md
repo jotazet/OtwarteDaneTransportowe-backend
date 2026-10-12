@@ -4,7 +4,7 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ## 2026-10-12: catalogue refresh times, fetch error links and contract corrections
 
-Not breaking: fields are only added, and the corrected docs describe behaviour that was already there.
+Not breaking for API clients: fields are only added, the schema access change (3) affects only operator accounts, and the corrected docs (4) describe behaviour that was already there.
 
 ### 1. Refresh times in the public catalogue
 
@@ -14,7 +14,11 @@ Not breaking: fields are only added, and the corrected docs describe behaviour t
 
 Every record of `GET /api/data_manager/fetch-errors/`, `/feed-submissions/{id}/fetch-errors/` and `/realtime-submissions/{id}/fetch-errors/` gains **`submission_id`**: the `FeedSubmission` id when `source` is `static`, the `RealtimeSubmission` id when it is `realtime` (the `#<id>` in `feed_name`). Use it to link an error to its feed. See [Fetch errors](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
 
-### 3. Corrected documentation (behaviour unchanged)
+### 3. API schema for the `Admin` role only
+
+Outside `DEBUG`, `/api/schema/`, `/api/schema/swagger-ui/` and `/api/schema/redoc/` now require the `Admin` group, like user management. They used to require `is_staff`, which grants nothing anywhere else in the API ([ADR 0003](../architecture/decisions/0003-jwt-and-group-based-roles.md)). A staff account or a superuser without the `Admin` group now gets `403`; add the account to the group to keep access. Clients of the public API are not affected.
+
+### 4. Corrected documentation (behaviour unchanged)
 
 - `POST /api/auth/token/refresh/` returns `{access, refresh}`, not only `access`: refresh tokens rotate and the old one is blacklisted, so a client that keeps the old `refresh` gets `401` on its next refresh. See [JWT authentication](README.md#post-apiauthtokenrefresh).
 - Sending `null` for a text field returns DRF's field error, e.g. `{"name": ["This field may not be null."]}`. The 2026-10 entry below and the API overview promised an error code `null` in the body; there is none until the exception handler of [ADR 0006](../architecture/decisions/0006-api-error-codes.md) exists.

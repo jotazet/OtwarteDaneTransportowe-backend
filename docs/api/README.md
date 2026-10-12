@@ -55,7 +55,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 - `DataProvider`
 - `Helper`
 
-`Admin` permissions also apply to Django superusers (`is_superuser=True`); `is_staff` alone grants nothing in the API. User management (`/api/users/`) and editing a feed source at stages 2–4 require membership in the `Admin` group itself — a superuser without the group gets `403` there.
+`Admin` permissions also apply to Django superusers (`is_superuser=True`); `is_staff` alone grants nothing in the API. User management (`/api/users/`), editing a feed source at stages 2–4 and, outside `DEBUG`, the API schema (`/api/schema/...`) require membership in the `Admin` group itself — a superuser without the group gets `403` there.
 
 ### Role meanings
 
@@ -171,9 +171,9 @@ page (max 50); fetch errors and `proxy-feeds` 25 per page (max 100).
 | `GET` | `/admin/` | Django staff/admin | Django admin panel |
 | `POST` | `/api/auth/token/` | public | Obtain JWT `access` and `refresh` |
 | `POST` | `/api/auth/token/refresh/` | public | Refresh JWT `access`; returns a new `refresh` as well |
-| `GET` | `/api/schema/` | public when `DEBUG`, otherwise `is_staff` only | OpenAPI schema |
-| `GET` | `/api/schema/swagger-ui/` | public when `DEBUG`, otherwise `is_staff` only | Swagger UI |
-| `GET` | `/api/schema/redoc/` | public when `DEBUG`, otherwise `is_staff` only | ReDoc |
+| `GET` | `/api/schema/` | public when `DEBUG`, otherwise `Admin` (group) only | OpenAPI schema |
+| `GET` | `/api/schema/swagger-ui/` | public when `DEBUG`, otherwise `Admin` (group) only | Swagger UI |
+| `GET` | `/api/schema/redoc/` | public when `DEBUG`, otherwise `Admin` (group) only | ReDoc |
 | `GET` | `/api-auth/` | public/dev | Browsable API login/logout |
 
 ### Users (`django.contrib.auth.models.User`)
