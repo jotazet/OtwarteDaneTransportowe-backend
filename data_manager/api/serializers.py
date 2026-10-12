@@ -1,4 +1,5 @@
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -109,6 +110,12 @@ def raise_as_drf_validation_error(exc: DjangoValidationError, *, field: str | No
         else {api_settings.NON_FIELD_ERRORS_KEY: list(exc.messages)}
     )
     raise serializers.ValidationError({field: detail} if field else detail)
+
+
+def _url_origin(url) -> tuple[str, str]:
+    """(scheme, host[:port]) of a URL, lowercased; ('', '') when it is not a string."""
+    parts = urlsplit(url) if isinstance(url, str) else None
+    return (parts.scheme.lower(), parts.netloc.lower()) if parts else ('', '')
 
 
 def annotate_fetch_health(qs, error_fk: str):
@@ -603,8 +610,14 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
                     row.setdefault('is_original', ex.is_original)
                     row.setdefault('auth_type', ex.auth_type)
                 # auth_value is write-only, so clients send it only when the user
-                # retypes it: keep the stored secret while auth_type is unchanged.
-                if not row.get('auth_value') and row.get('auth_type') == ex.auth_type:
+                # retypes it: keep the stored secret while auth_type and the URL's
+                # origin are unchanged, so it is never sent to a host it was not
+                # given for.
+                if (
+                    not row.get('auth_value')
+                    and row.get('auth_type') == ex.auth_type
+                    and _url_origin(row.get('url') or ex.url) == _url_origin(ex.url)
+                ):
                     row['auth_value'] = ex.auth_value
                 merged.append(row)
             data = {**data, 'endpoints': merged}

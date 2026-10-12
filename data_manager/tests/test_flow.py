@@ -1573,6 +1573,29 @@ def test_full_edit_keeps_stored_auth_value(
 
 
 @pytest.mark.parametrize(
+    'url', ['https://other.example.net/gbfs.json', 'http://example.org/gbfs.json']
+)
+def test_full_edit_does_not_carry_secret_to_another_origin(
+    api_client, normal_user, org, settings, public_dns, url
+):
+    """A stored secret is never sent to a host it was not given for: moving the
+    endpoint to another origin without retyping the secret leaves it empty."""
+    rts = _realtime_with_secret(settings, org, normal_user, stage=1)
+
+    api_client.force_authenticate(user=normal_user)
+    response = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'endpoints': [{'endpoint_type': 'gbfs', 'url': url, 'auth_type': 'api_key'}]},
+        format='json',
+    )
+
+    assert response.status_code == 200, response.data
+    endpoint = RealtimeEndpointRT.objects.get(submission=rts)
+    assert endpoint.url == url
+    assert not endpoint.auth_value
+
+
+@pytest.mark.parametrize(
     ('auth_value', 'status_code', 'interval'),
     [('', 200, 120), ('new-secret', 400, 60)],
 )
