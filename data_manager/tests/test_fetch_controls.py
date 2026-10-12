@@ -414,6 +414,40 @@ def test_pause_rejected_for_non_proxied_feeds(api_client, org, provider_user, he
     assert 'fetch_status' not in detail.data
 
 
+def test_resume_rejected_for_non_proxied_feeds(
+    api_client, org, provider_user, helper_user, monkeypatch, django_capture_on_commit_callbacks
+):
+    """Same 400 as pause-fetch: a non-proxied feed has no fetch loop to resume."""
+    static_entry = _published_static_entry(
+        org,
+        provider_user,
+        hide_original=False,
+        url='https://example.org/direct.zip',
+    )
+    rt_endpoint = _published_realtime_endpoint(org, provider_user)
+    rt_endpoint.hide_original = False
+    rt_endpoint.save(update_fields=['hide_original'])
+    calls = []
+    monkeypatch.setattr(
+        'data_manager.tasks.fetch_realtime_endpoint_task.apply_async',
+        lambda *args, **kwargs: calls.append(args),
+    )
+
+    api_client.force_authenticate(user=helper_user)
+    for path in (
+        f'/api/data_manager/static-feed-entries/{static_entry.id}',
+        f'/api/data_manager/realtime-endpoints/{rt_endpoint.id}',
+    ):
+        paused = api_client.post(f'{path}/pause-fetch/')
+        with django_capture_on_commit_callbacks(execute=True):
+            resumed = api_client.post(f'{path}/resume-fetch/')
+
+        assert resumed.status_code == paused.status_code == 400
+        assert resumed.data == paused.data
+
+    assert calls == []
+
+
 def test_create_non_proxied_url_triggers_validation_not_proxy_fetch(
     monkeypatch,
     org,

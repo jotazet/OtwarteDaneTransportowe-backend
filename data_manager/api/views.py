@@ -1081,6 +1081,9 @@ class StaticFeedEntryViewSet(viewsets.ReadOnlyModelViewSet):
         if denied:
             return denied
         entry = self.get_object()
+        denied = self._require_proxy_managed(entry)
+        if denied:
+            return denied
         entry.resume_fetch()
         return Response(self.get_serializer(entry).data)
 
@@ -1145,6 +1148,9 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
         if denied:
             return denied
         endpoint = self.get_object()
+        denied = self._require_proxy_managed(endpoint)
+        if denied:
+            return denied
         endpoint.resume_fetch()
         from django.core.cache import cache
 

@@ -256,7 +256,7 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `GET` | `/api/data_manager/static-feed-entries/` | owner or `Helper`/`Admin` | List of static feeds with their fetch status |
 | `GET` | `/api/data_manager/static-feed-entries/{id}/` | owner or `Helper`/`Admin` | Details of a single static feed with its fetch status |
 | `POST` | `/api/data_manager/static-feed-entries/{id}/pause-fetch/` | `Helper`/`Admin` | Manually pause fetching of a static feed |
-| `POST` | `/api/data_manager/static-feed-entries/{id}/resume-fetch/` | `Helper`/`Admin` | Resume fetching of a static feed and cancel the retry block |
+| `POST` | `/api/data_manager/static-feed-entries/{id}/resume-fetch/` | `Helper`/`Admin` | Resume fetching of a static feed and cancel the retry block; proxied feeds only (`400` otherwise, as `pause-fetch`) |
 | `GET` | `/api/data_manager/proxy-feeds/` | logged in | A single, paginated list of proxied feeds (static + realtime): a provider sees their own, helper/admin see all. Pausing/resuming (`pause-fetch`/`resume-fetch`) is `Helper`/`Admin` only |
 | `GET` | `/api/data_manager/fetch-errors/?days=7` | logged in | Global, paginated list of fetch errors: a provider sees their own feeds, helper/admin see all |
 | `GET` | `/api/data_manager/submissions/` | `DataProvider`/`Helper`/`Admin` | Combined list of the logged-in user's own static and realtime submissions (not paginated) |
@@ -271,7 +271,7 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `GET` | `/api/data_manager/realtime-endpoints/` | owner or `Helper`/`Admin` | List of realtime endpoints with their fetch status |
 | `GET` | `/api/data_manager/realtime-endpoints/{id}/` | owner or `Helper`/`Admin` | Details of a single realtime endpoint with its fetch status |
 | `POST` | `/api/data_manager/realtime-endpoints/{id}/pause-fetch/` | `Helper`/`Admin` | Manually pause fetching of a realtime endpoint |
-| `POST` | `/api/data_manager/realtime-endpoints/{id}/resume-fetch/` | `Helper`/`Admin` | Resume fetching of a realtime endpoint and cancel the retry block |
+| `POST` | `/api/data_manager/realtime-endpoints/{id}/resume-fetch/` | `Helper`/`Admin` | Resume fetching of a realtime endpoint and cancel the retry block; proxied endpoints only (`400` otherwise, as `pause-fetch`) |
 | `GET` | `/api/data_manager/feeds/` | public | Public catalog of organizations with published feeds |
 | `GET` | `/api/data_manager/feeds/{id}/` | public | Details of an organization and its published feeds |
 

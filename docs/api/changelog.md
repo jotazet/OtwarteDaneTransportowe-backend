@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10: `resume-fetch` returns `400` for non-proxied feeds
+
+`POST /api/data_manager/static-feed-entries/{id}/resume-fetch/` and `POST /api/data_manager/realtime-endpoints/{id}/resume-fetch/` on a feed without proxying (`is_proxy_managed=false`) used to return `200` and reset fetch fields that such a feed does not use. They now return `400` with the same body as `pause-fetch` (`{"detail": ...}`), as the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds) already documented. Not breaking for clients that offer pause/resume only for proxied feeds (the `proxy-feeds` list), as the ODT frontend does.
+
+---
+
 ## 2026-10: a full realtime edit keeps stored endpoint secrets
 
 Not breaking: the request and response shapes are unchanged.
