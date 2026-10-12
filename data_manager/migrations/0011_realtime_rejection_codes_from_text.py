@@ -125,7 +125,10 @@ def forwards(apps, schema_editor):
 def backwards(apps, schema_editor):
     History = apps.get_model('data_manager', 'RealtimeSubmissionHistory')
     # Only converted rows have both; the text in ``cause`` was never touched.
-    History.objects.filter(cause__isnull=False, reasons__isnull=False).update(reasons=None)
+    # New rows may store an empty cause as '' (not NULL), so exclude it too.
+    History.objects.filter(cause__isnull=False, reasons__isnull=False).exclude(cause='').update(
+        reasons=None
+    )
 
 
 class Migration(migrations.Migration):

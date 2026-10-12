@@ -362,6 +362,14 @@ def test_legacy_migration_converts_rows_and_reverses(org, provider):
         stage_after=1,
         cause='Brak zdefiniowanych endpointów.',
     )
+    coded = RealtimeSubmissionHistory.objects.create(
+        submission=rts,
+        event_type=RealtimeSubmissionHistory.EVENT_REJECTED,
+        stage_before=2,
+        stage_after=1,
+        cause='',
+        reasons=[{'code': rr.NO_ENDPOINTS, 'details': {}}],
+    )
     reviewer = RealtimeSubmissionHistory.objects.create(
         submission=rts,
         event_type=RealtimeSubmissionHistory.EVENT_REJECTED,
@@ -379,5 +387,8 @@ def test_legacy_migration_converts_rows_and_reverses(org, provider):
 
     legacy_migration.backwards(apps, None)
     legacy.refresh_from_db()
+    coded.refresh_from_db()
     assert legacy.reasons is None
+    # Rows written with codes (cause '' once text fields are NOT NULL) keep them.
+    assert coded.reasons == [{'code': rr.NO_ENDPOINTS, 'details': {}}]
     assert legacy.cause == 'Brak zdefiniowanych endpointów.'
