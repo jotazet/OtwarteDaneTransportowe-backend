@@ -81,7 +81,7 @@ def _published_static_entry(org, provider_user, **entry_kwargs):
     return StaticFeedEntry.objects.create(submission=submission, **defaults)
 
 
-def _published_realtime_endpoint(org, provider_user):
+def _published_realtime_endpoint(org, provider_user, stage=4):
     rts = RealtimeSubmission.objects.create(
         transport_organization=org,
         submitted_by=provider_user,
@@ -89,9 +89,11 @@ def _published_realtime_endpoint(org, provider_user):
     )
     RealtimeSubmissionHistory.objects.create(
         submission=rts,
-        event_type=RealtimeSubmissionHistory.EVENT_COMPLETED,
-        stage_before=3,
-        stage_after=4,
+        event_type=RealtimeSubmissionHistory.EVENT_COMPLETED
+        if stage == 4
+        else RealtimeSubmissionHistory.EVENT_STAGE_ADVANCED,
+        stage_before=stage - 1,
+        stage_after=stage,
         actor=provider_user,
     )
     return RealtimeEndpointRT.objects.create(
@@ -238,7 +240,7 @@ def test_fetch_error_api_and_manual_static_pause_resume(
 
 
 def test_realtime_pause_resume_schedules_endpoint(
-    api_client, org, provider_user, helper_user, monkeypatch
+    api_client, org, provider_user, helper_user, monkeypatch, django_capture_on_commit_callbacks
 ):
     endpoint = _published_realtime_endpoint(org, provider_user)
     calls = []
@@ -256,9 +258,16 @@ def test_realtime_pause_resume_schedules_endpoint(
     assert paused.status_code == 200
     assert paused.data['fetch_status'] == FETCH_STATUS_MANUAL_PAUSED
 
-    resumed = api_client.post(f'/api/data_manager/realtime-endpoints/{endpoint.id}/resume-fetch/')
+    with django_capture_on_commit_callbacks() as callbacks:
+        resumed = api_client.post(
+            f'/api/data_manager/realtime-endpoints/{endpoint.id}/resume-fetch/'
+        )
     assert resumed.status_code == 200
     assert resumed.data['fetch_status'] == FETCH_STATUS_ACTIVE
+    # The fetch loop is seeded only after the resume is committed.
+    assert calls == []
+    for callback in callbacks:
+        callback()
     assert len(calls) == 1
 
     FeedFetchError.objects.create(
@@ -274,6 +283,31 @@ def test_realtime_pause_resume_schedules_endpoint(
     assert errors.status_code == 200
     assert errors.data['count'] == 1
     assert errors.data['results'][0]['endpoint_type'] == endpoint.endpoint_type
+
+
+def test_realtime_publish_seeds_fetch_loop_after_commit(
+    api_client, org, provider_user, helper_user, monkeypatch, django_capture_on_commit_callbacks
+):
+    endpoint = _published_realtime_endpoint(org, provider_user, stage=3)
+    calls = []
+    monkeypatch.setattr(
+        'data_manager.tasks.fetch_realtime_endpoint_task.apply_async',
+        lambda *args, **kwargs: calls.append(args),
+    )
+
+    api_client.force_authenticate(user=helper_user)
+    with django_capture_on_commit_callbacks() as callbacks:
+        response = api_client.patch(
+            f'/api/data_manager/realtime-submissions/{endpoint.submission_id}/',
+            {'stage': 4},
+            format='json',
+        )
+
+    assert response.status_code == 200, response.data
+    assert calls == []
+    for callback in callbacks:
+        callback()
+    assert len(calls) == 1
 
 
 def test_global_fetch_errors_endpoint_filters_paginates_and_scopes(
@@ -371,7 +405,10 @@ def test_fetch_errors_link_to_their_submission_without_extra_queries(
     }
 
 
-def test_pause_rejected_for_non_proxied_feeds(api_client, org, provider_user, helper_user):
+def test_pause_and_resume_rejected_for_non_proxied_feeds(
+    api_client, org, provider_user, helper_user, monkeypatch, django_capture_on_commit_callbacks
+):
+    """A non-proxied feed has no fetch loop to pause or resume."""
     static_entry = _published_static_entry(
         org,
         provider_user,
@@ -381,17 +418,26 @@ def test_pause_rejected_for_non_proxied_feeds(api_client, org, provider_user, he
     rt_endpoint = _published_realtime_endpoint(org, provider_user)
     rt_endpoint.hide_original = False
     rt_endpoint.save(update_fields=['hide_original'])
+    calls = []
+    monkeypatch.setattr(
+        'data_manager.tasks.fetch_realtime_endpoint_task.apply_async',
+        lambda *args, **kwargs: calls.append(args),
+    )
 
     api_client.force_authenticate(user=helper_user)
-    static_pause = api_client.post(
-        f'/api/data_manager/static-feed-entries/{static_entry.id}/pause-fetch/',
-    )
-    assert static_pause.status_code == 400
+    for path in (
+        f'/api/data_manager/static-feed-entries/{static_entry.id}',
+        f'/api/data_manager/realtime-endpoints/{rt_endpoint.id}',
+    ):
+        paused = api_client.post(f'{path}/pause-fetch/')
+        with django_capture_on_commit_callbacks(execute=True):
+            resumed = api_client.post(f'{path}/resume-fetch/')
 
-    rt_pause = api_client.post(
-        f'/api/data_manager/realtime-endpoints/{rt_endpoint.id}/pause-fetch/',
-    )
-    assert rt_pause.status_code == 400
+        for response in (paused, resumed):
+            assert response.status_code == 400
+            assert response.data == {'code': 'feeds.not_proxy_managed', 'details': {}}
+
+    assert calls == []
 
     detail = api_client.get(f'/api/data_manager/static-feed-entries/{static_entry.id}/')
     assert detail.status_code == 200

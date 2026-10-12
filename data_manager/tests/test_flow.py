@@ -975,7 +975,9 @@ def test_owner_cannot_change_file_at_stage_2(api_client, normal_user, org, setti
     assert 'feed.zip' in entry.file.name
 
 
-def test_owner_can_change_file_when_rejected(api_client, normal_user, org, settings, tmp_path):
+def test_owner_can_change_file_when_rejected(
+    api_client, normal_user, org, settings, tmp_path, django_capture_on_commit_callbacks
+):
     settings.MEDIA_ROOT = tmp_path
     submission = FeedSubmission.objects.create(
         transport_organization=org,
@@ -998,14 +1000,15 @@ def test_owner_can_change_file_when_rejected(api_client, normal_user, org, setti
     api_client.force_authenticate(user=normal_user)
     gtfs_path = os.path.join(os.path.dirname(__file__), 'GTFS_correct.zip')
     with patch('data_manager.signals.validate_gtfs_feed_task.delay') as delay_mock:
-        ok = api_client.patch(
-            f'/api/data_manager/feed-submissions/{submission.id}/',
-            {'static_entry.file': open(gtfs_path, 'rb')},
-            format='multipart',
-        )
+        with django_capture_on_commit_callbacks(execute=True):
+            ok = api_client.patch(
+                f'/api/data_manager/feed-submissions/{submission.id}/',
+                {'static_entry.file': open(gtfs_path, 'rb')},
+                format='multipart',
+            )
     assert ok.status_code == 200, ok.data
-    delay_mock.assert_called_once()
     entry = StaticFeedEntry.objects.get(submission=submission)
+    delay_mock.assert_called_with(entry.id)
     assert entry.file.name.endswith('.zip')
     assert 'wrong.zip' not in entry.file.name
 
@@ -1430,7 +1433,7 @@ def test_owner_cannot_delete_realtime_submission(api_client, normal_user, admin_
 
 
 def test_admin_endpoint_edit_keeps_published_rt_stage(
-    api_client, admin_role_user, normal_user, org
+    api_client, admin_role_user, normal_user, org, django_capture_on_commit_callbacks
 ):
     """Replacing endpoints of a published RT must not silently unpublish it."""
     rts = RealtimeSubmission.objects.create(
@@ -1456,6 +1459,7 @@ def test_admin_endpoint_edit_keeps_published_rt_stage(
     with (
         patch('data_manager.tasks.validate_realtime_submission_task.delay') as validate_mock,
         patch('data_manager.tasks.schedule_realtime_endpoint_fetches') as schedule_mock,
+        django_capture_on_commit_callbacks(execute=True),
     ):
         response = api_client.patch(
             f'/api/data_manager/realtime-submissions/{rts.id}/',
@@ -1484,6 +1488,150 @@ def test_admin_endpoint_edit_keeps_published_rt_stage(
     )
     validate_mock.assert_called_once_with(rts.id)
     schedule_mock.assert_called_once_with(rts.id)
+
+
+@pytest.fixture
+def public_dns(monkeypatch):
+    """Resolve every host to a public address without a real DNS lookup."""
+    monkeypatch.setattr(
+        'data_manager.net_security.socket.getaddrinfo',
+        lambda host, port, *a, **k: [(2, 1, 6, '', ('93.184.216.34', port or 80))],
+    )
+
+
+def test_realtime_create_queues_validation_after_commit(
+    api_client, normal_user, org, public_dns, django_capture_on_commit_callbacks
+):
+    """The worker must not read the submission before it is committed."""
+    api_client.force_authenticate(user=normal_user)
+    with patch('data_manager.tasks.validate_realtime_submission_task.delay') as validate_mock:
+        with django_capture_on_commit_callbacks() as callbacks:
+            response = api_client.post(
+                '/api/data_manager/realtime-submissions/',
+                {
+                    'transport_organization': org.id,
+                    'protocol': 'gbfs',
+                    'static_submission': None,
+                    'endpoints': [
+                        {'endpoint_type': 'gbfs', 'url': 'https://example.org/gbfs.json'}
+                    ],
+                },
+                format='json',
+            )
+        assert response.status_code == 201, response.data
+        validate_mock.assert_not_called()
+
+        for callback in callbacks:
+            callback()
+
+    validate_mock.assert_called_once_with(response.data['id'])
+
+
+def _realtime_with_secret(settings, org, owner, stage):
+    """A realtime submission whose endpoint has an encrypted secret."""
+    from cryptography.fernet import Fernet
+
+    settings.FEED_AUTH_ENCRYPTION_KEY = Fernet.generate_key().decode()
+    rts = _realtime_at_stage_1(org, owner)
+    if stage > 1:
+        RealtimeSubmissionHistory.objects.create(
+            submission=rts,
+            event_type=RealtimeSubmissionHistory.EVENT_COMPLETED
+            if stage == 4
+            else RealtimeSubmissionHistory.EVENT_STAGE_ADVANCED,
+            stage_before=stage - 1,
+            stage_after=stage,
+        )
+    RealtimeEndpointRT.objects.create(
+        submission=rts,
+        endpoint_type='gbfs',
+        url='https://example.org/gbfs.json',
+        hide_original=True,
+        auth_type='api_key',
+        auth_value='old-secret',
+    )
+    return rts
+
+
+@pytest.mark.parametrize(('editor', 'stage'), [('normal_user', 1), ('admin_role_user', 4)])
+@pytest.mark.parametrize(
+    ('sent', 'expected_value'),
+    [
+        ({'auth_type': 'api_key'}, 'old-secret'),
+        ({'auth_type': 'api_key', 'auth_value': ''}, 'old-secret'),
+        ({'auth_type': 'api_key', 'auth_value': 'new-secret'}, 'new-secret'),
+        ({'auth_type': 'bearer_token'}, None),
+        ({'auth_type': ''}, None),
+    ],
+)
+def test_full_edit_keeps_stored_auth_value(
+    request, api_client, normal_user, org, settings, public_dns, editor, stage, sent, expected_value
+):
+    """The frontend sends auth_value only when the user retypes it; replacing
+    the endpoints (owner at stage 1, Admin at stage 4) must not silently drop
+    the stored secret."""
+    rts = _realtime_with_secret(settings, org, normal_user, stage)
+
+    api_client.force_authenticate(user=request.getfixturevalue(editor))
+    response = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'endpoints': [{'endpoint_type': 'gbfs', 'url': 'https://example.org/v2.json', **sent}]},
+        format='json',
+    )
+
+    assert response.status_code == 200, response.data
+    endpoint = RealtimeEndpointRT.objects.get(submission=rts)
+    assert endpoint.url == 'https://example.org/v2.json'
+    assert endpoint.auth_type == sent['auth_type']
+    assert (endpoint.auth_value or None) == expected_value
+
+
+@pytest.mark.parametrize(
+    'url', ['https://other.example.net/gbfs.json', 'http://example.org/gbfs.json']
+)
+def test_full_edit_does_not_carry_secret_to_another_origin(
+    api_client, normal_user, org, settings, public_dns, url
+):
+    """A stored secret is never sent to a host it was not given for: moving the
+    endpoint to another origin without retyping the secret leaves it empty."""
+    rts = _realtime_with_secret(settings, org, normal_user, stage=1)
+
+    api_client.force_authenticate(user=normal_user)
+    response = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'endpoints': [{'endpoint_type': 'gbfs', 'url': url, 'auth_type': 'api_key'}]},
+        format='json',
+    )
+
+    assert response.status_code == 200, response.data
+    endpoint = RealtimeEndpointRT.objects.get(submission=rts)
+    assert endpoint.url == url
+    assert not endpoint.auth_value
+
+
+@pytest.mark.parametrize(
+    ('auth_value', 'status_code', 'interval'),
+    [('', 200, 120), ('new-secret', 400, 60)],
+)
+def test_restricted_edit_keeps_stored_auth_value(
+    api_client, normal_user, org, settings, public_dns, auth_value, status_code, interval
+):
+    """From stage 2 the secret is locked. An empty auth_value means "not
+    retyped", as on a full edit, so it keeps the secret instead of failing as
+    a change; a new value is still refused."""
+    rts = _realtime_with_secret(settings, org, normal_user, stage=3)
+
+    api_client.force_authenticate(user=normal_user)
+    response = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'endpoints': [{'endpoint_type': 'gbfs', 'interval': 120, 'auth_value': auth_value}]},
+        format='json',
+    )
+
+    assert response.status_code == status_code, response.data
+    endpoint = RealtimeEndpointRT.objects.get(submission=rts)
+    assert endpoint.interval == interval
+    assert endpoint.auth_value == 'old-secret'
 
 
 def test_rejected_resubmission_with_same_url_requeues_validation(
@@ -1845,11 +1993,13 @@ def test_null_string_fields_are_rejected(api_client, normal_user, org):
     assert response.data['static_entry']['license'][0].code == 'null'
 
 
-def test_upload_succeeds_when_broker_is_down(api_client, normal_user, org):
+def test_upload_succeeds_when_broker_is_down(
+    api_client, normal_user, org, django_capture_on_commit_callbacks
+):
     """A broker outage must not turn a successful upload into HTTP 500.
 
-    The post_save signal queues GTFS validation inside the request; when Redis
-    is unreachable .delay() raises, and that used to bubble up as a 500 after
+    The post_save signal queues GTFS validation on commit; when Redis is
+    unreachable .delay() raises, and that used to bubble up as a 500 after
     the submission had already been written."""
     api_client.force_authenticate(user=normal_user)
     gtfs_path = os.path.join(os.path.dirname(__file__), 'GTFS_correct.zip')
@@ -1857,8 +2007,10 @@ def test_upload_succeeds_when_broker_is_down(api_client, normal_user, org):
     def broker_down(*args, **kwargs):
         raise OSError('Error 111 connecting to redis:6379. Connection refused.')
 
-    with patch('data_manager.tasks.validate_gtfs_feed_task.delay', side_effect=broker_down):
-        with open(gtfs_path, 'rb') as fh:
+    with patch(
+        'data_manager.tasks.validate_gtfs_feed_task.delay', side_effect=broker_down
+    ) as delay_mock:
+        with django_capture_on_commit_callbacks(execute=True), open(gtfs_path, 'rb') as fh:
             response = api_client.post(
                 '/api/data_manager/feed-submissions/',
                 {
@@ -1871,9 +2023,41 @@ def test_upload_succeeds_when_broker_is_down(api_client, normal_user, org):
             )
 
     assert response.status_code == 201, response.data
+    delay_mock.assert_called_once()
     submission = FeedSubmission.objects.get(pk=response.data['id'])
     assert submission.static_entry.file  # file stored despite the outage
     assert submission.current_stage == 2
+
+
+@pytest.mark.django_db(transaction=True)
+def test_gtfs_validation_is_queued_after_the_upload_commits(api_client, normal_user, org):
+    """The worker must find the submission at stage 2. Queued earlier (inside
+    the serializer's transaction, before the uploaded history row), it could
+    see an uncommitted row or a stage-1 submission and advance it to stage 3
+    before the uploaded row (stage 2) landed on top."""
+    stages_when_queued = []
+
+    def record_stage(entry_id):
+        submission = StaticFeedEntry.objects.get(pk=entry_id).submission
+        stages_when_queued.append(submission.current_stage)
+
+    api_client.force_authenticate(user=normal_user)
+    gtfs_path = os.path.join(os.path.dirname(__file__), 'GTFS_correct.zip')
+    with patch('data_manager.tasks.validate_gtfs_feed_task.delay', side_effect=record_stage):
+        with open(gtfs_path, 'rb') as fh:
+            response = api_client.post(
+                '/api/data_manager/feed-submissions/',
+                {
+                    'transport_organization': str(org.id),
+                    'data_type': 'gtfs',
+                    'name': 'Queued after commit',
+                    'static_entry.file': fh,
+                },
+                format='multipart',
+            )
+
+    assert response.status_code == 201, response.data
+    assert stages_when_queued == [2]
 
 
 def test_file_upload_with_download_time_returns_400_not_500(api_client, normal_user, org):

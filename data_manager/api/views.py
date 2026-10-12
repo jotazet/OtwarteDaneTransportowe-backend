@@ -267,6 +267,20 @@ def _validate_stage_value(raw):
     return value
 
 
+def _require_proxy_managed(source):
+    """400 with an error code (ADR 0006) when a feed source is not proxied.
+
+    Pause/resume only applies to sources the server fetches and caches
+    (hide_original=true).
+    """
+    if source.is_proxy_managed:
+        return None
+    return Response(
+        {'code': 'feeds.not_proxy_managed', 'details': {}},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def _apply_stage_transition(request, submission, *, history_model, on_publish=None):
     """Shared admin/helper stage transition for static and realtime submissions.
 
@@ -597,6 +611,9 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
             return AdminFeedSubmissionSerializer
         return FeedSubmissionSerializer
 
+    # Atomic with the history row: validation is queued on commit, and must
+    # not start before the uploaded row (stage 2) exists.
+    @transaction.atomic
     def perform_create(self, serializer):
         submission = serializer.save(submitted_by=self.request.user)
         FeedSubmissionHistory.objects.create(
@@ -830,7 +847,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):
-        from data_manager.tasks import enqueue, validate_realtime_submission_task
+        from data_manager.tasks import enqueue_on_commit, validate_realtime_submission_task
 
         serializer = self.get_serializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -857,7 +874,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                 stage_after=1,
                 actor=request.user,
             )
-        enqueue(validate_realtime_submission_task, rts.id)
+            enqueue_on_commit(validate_realtime_submission_task, rts.id)
         out = self._read_serializer(request, rts)
         return Response(out.data, status=status.HTTP_201_CREATED)
 
@@ -871,7 +888,11 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         return serializer_class(submission, context={'request': request})
 
     def update(self, request, *args, **kwargs):
-        from data_manager.tasks import enqueue, validate_realtime_submission_task
+        from data_manager.tasks import (
+            enqueue_on_commit,
+            schedule_realtime_endpoint_fetches,
+            validate_realtime_submission_task,
+        )
 
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
@@ -954,27 +975,27 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                         )
                     # Admin edits keep the current stage — a published feed must
                     # not be silently unpublished by an endpoint tweak. The
-                    # re-validation below rejects (with an audit trail) if the
-                    # new endpoints turn out to be broken.
-        if endpoints_data is not None and not restricted_realtime:
-            enqueue(validate_realtime_submission_task, instance.id)
-            if instance.current_stage == 4:
-                # Endpoints were replaced (old fetch loops died with their
-                # rows); re-seed the self-scheduling loops for the new ones
-                # without waiting for the periodic bootstrap.
-                from data_manager.tasks import schedule_realtime_endpoint_fetches
-
-                schedule_realtime_endpoint_fetches(instance.id)
+                    # re-validation rejects (with an audit trail) a submission
+                    # that is not published yet if the new endpoints are broken.
+                    enqueue_on_commit(validate_realtime_submission_task, instance.id)
+                    if instance.current_stage == 4:
+                        # Endpoints were replaced (old fetch loops died with their
+                        # rows); re-seed the self-scheduling loops for the new ones
+                        # without waiting for the periodic bootstrap.
+                        transaction.on_commit(
+                            lambda: schedule_realtime_endpoint_fetches(instance.id)
+                        )
         if can_confirm_feeds(request.user):
-            from data_manager.tasks import schedule_realtime_endpoint_fetches
-
             _apply_stage_transition(
                 request,
                 instance,
                 history_model=RealtimeSubmissionHistory,
                 # Publish side-effect (drift vs static made explicit): seed the
-                # realtime fetch loops; static feeds rely on the Beat schedule.
-                on_publish=lambda rts: schedule_realtime_endpoint_fetches(rts.id),
+                # realtime fetch loops after commit; static feeds rely on the
+                # Beat schedule.
+                on_publish=lambda rts: transaction.on_commit(
+                    lambda: schedule_realtime_endpoint_fetches(rts.id)
+                ),
             )
         # Re-read: the prefetched history predates the rows written above.
         # get_object() already authorized access, so the unfiltered queryset is fine.
@@ -1030,26 +1051,13 @@ class StaticFeedEntryViewSet(viewsets.ReadOnlyModelViewSet):
             )
         return None
 
-    def _require_proxy_managed(self, entry):
-        if not entry.is_proxy_managed:
-            return Response(
-                {
-                    'detail': (
-                        'Pause/resume applies only to proxy-managed feeds '
-                        '(hide_original=true). Non-proxied feeds are not cached by the server.'
-                    ),
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        return None
-
     @action(detail=True, methods=['post'], url_path='pause-fetch')
     def pause_fetch(self, request, pk=None):
         denied = self._require_operator(request)
         if denied:
             return denied
         entry = self.get_object()
-        denied = self._require_proxy_managed(entry)
+        denied = _require_proxy_managed(entry)
         if denied:
             return denied
         reason = (request.data.get('reason') or '').strip()
@@ -1062,6 +1070,9 @@ class StaticFeedEntryViewSet(viewsets.ReadOnlyModelViewSet):
         if denied:
             return denied
         entry = self.get_object()
+        denied = _require_proxy_managed(entry)
+        if denied:
+            return denied
         entry.resume_fetch()
         return Response(self.get_serializer(entry).data)
 
@@ -1089,26 +1100,13 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
             )
         return None
 
-    def _require_proxy_managed(self, endpoint):
-        if not endpoint.is_proxy_managed:
-            return Response(
-                {
-                    'detail': (
-                        'Pause/resume applies only to proxy-managed endpoints '
-                        '(hide_original=true). Non-proxied endpoints are not cached by the server.'
-                    ),
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        return None
-
     @action(detail=True, methods=['post'], url_path='pause-fetch')
     def pause_fetch(self, request, pk=None):
         denied = self._require_operator(request)
         if denied:
             return denied
         endpoint = self.get_object()
-        denied = self._require_proxy_managed(endpoint)
+        denied = _require_proxy_managed(endpoint)
         if denied:
             return denied
         reason = (request.data.get('reason') or '').strip()
@@ -1126,11 +1124,14 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
         if denied:
             return denied
         endpoint = self.get_object()
+        denied = _require_proxy_managed(endpoint)
+        if denied:
+            return denied
         endpoint.resume_fetch()
         from django.core.cache import cache
 
         from data_manager.tasks import _rt_alive_key, schedule_realtime_endpoint_fetches
 
         cache.delete(_rt_alive_key(endpoint.id))
-        schedule_realtime_endpoint_fetches(endpoint.submission_id)
+        transaction.on_commit(lambda: schedule_realtime_endpoint_fetches(endpoint.submission_id))
         return Response(self.get_serializer(endpoint).data)

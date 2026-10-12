@@ -9,7 +9,7 @@ from .models import (
     RealtimeSubmissionHistory,
     StaticFeedEntry,
 )
-from .tasks import enqueue, validate_gtfs_feed_task
+from .tasks import enqueue_on_commit, validate_gtfs_feed_task
 
 
 @receiver([post_save, post_delete], sender=FeedSubmissionHistory)
@@ -56,8 +56,7 @@ def trigger_gtfs_validation(sender, instance, created, **kwargs):
 
     if created:
         if instance.file or instance.cached_file:
-            # enqueue(): a broker outage must not fail the user's upload.
-            enqueue(validate_gtfs_feed_task, instance.id)
+            enqueue_on_commit(validate_gtfs_feed_task, instance.id)
         return
 
     prev_file = getattr(instance, '_prev_file_name', None)
@@ -67,4 +66,4 @@ def trigger_gtfs_validation(sender, instance, created, **kwargs):
 
     if prev_file != new_file or prev_cached != new_cached:
         if instance.file or instance.cached_file:
-            enqueue(validate_gtfs_feed_task, instance.id)
+            enqueue_on_commit(validate_gtfs_feed_task, instance.id)

@@ -30,6 +30,30 @@ Outside `DEBUG`, `/api/schema/`, `/api/schema/swagger-ui/` and `/api/schema/redo
 
 ---
 
+## 2026-10: `resume-fetch` returns `400` for non-proxied feeds; error code for both
+
+`POST /api/data_manager/static-feed-entries/{id}/resume-fetch/` and `POST /api/data_manager/realtime-endpoints/{id}/resume-fetch/` on a feed without proxying (`is_proxy_managed=false`) used to return `200` and reset fetch fields that such a feed does not use. They now return `400`, as the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds) already documented.
+
+The `400` of `pause-fetch` and `resume-fetch` for a non-proxied feed now carries an error code ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)) instead of English prose: `{"code": "feeds.not_proxy_managed", "details": {}}` (it used to be `{"detail": "Pause/resume applies only to proxy-managed ..."}`). Not breaking for clients that offer pause/resume only for proxied feeds (the `proxy-feeds` list), as the ODT frontend does.
+
+---
+
+## 2026-10: a realtime edit keeps stored endpoint secrets
+
+Not breaking: the request and response shapes are unchanged.
+
+A full edit of a realtime submission (`PUT/PATCH /api/data_manager/realtime-submissions/{id}/` with `endpoints`, by the owner at stage 1 or after a rejection, or by an Admin) replaces the endpoint rows. `auth_value` is write-only, so the frontend sends it only when the user retypes it, and the stored secret used to be lost while `auth_type` stayed set: the server then fetched the source without credentials. Now, when an endpoint is sent with `auth_type` but without `auth_value` (or with `""`), the previous endpoint of the same `endpoint_type` had the same `auth_type`, and the URL keeps its origin (scheme and host), the stored secret is kept. A URL moved to another origin gets no stored secret, so it is never sent to a host it was not given for. The owner's restricted edit (from stage 2) follows the same rule: an endpoint sent with `"auth_value": ""` used to return `400` as a change of credentials and now keeps the stored secret; a different `auth_value` is still refused. See [Feeds API](feeds.md#realtime-feeds-realtimesubmission).
+
+---
+
+## 2026-10: a failed re-validation no longer unpublishes a realtime feed
+
+Not breaking: the response shape is unchanged.
+
+When an Admin replaced the endpoints of a published realtime submission (stage 4) and the background re-validation failed, the submission was rejected back to stage 1 and disappeared from the public catalogue and `/feed/rt/{id}/`. It now stays at stage 4, as static feeds already did: no `rejected` history entry is written, `rejection_reasons` stays `null`, and the failure codes go to the server log only. Submissions at stage 2 or 3 are still rejected with coded `rejection_reasons`. This replaces the note in section 6 of the 2026-07 entry ("only its failure rejects the submission").
+
+---
+
 ## 2026-10: empty text fields are `""`, never `null`
 
 ⚠️ **Breaking for writes.** Text fields have one empty value, `""` (Django convention, ruff `DJ001`). Existing `NULL`s are converted to `""` by migrations `blog.0003`, `cases.0005` and `data_manager.0012`.
