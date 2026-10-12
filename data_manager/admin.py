@@ -116,7 +116,15 @@ class FeedFetchErrorInline(admin.TabularInline):
 class RealtimeSubmissionHistoryInline(admin.TabularInline):
     model = RealtimeSubmissionHistory
     extra = 0
-    fields = ('event_type', 'stage_before', 'stage_after', 'actor', 'cause', 'created_at')
+    fields = (
+        'event_type',
+        'stage_before',
+        'stage_after',
+        'actor',
+        'cause',
+        'reasons',
+        'created_at',
+    )
     readonly_fields = fields
     can_delete = False
 
