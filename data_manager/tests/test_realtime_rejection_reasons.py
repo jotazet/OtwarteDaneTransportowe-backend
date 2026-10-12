@@ -1,6 +1,7 @@
 """Automatic realtime rejections are stored and served as codes (ADR 0006)."""
 
 import importlib
+import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -211,6 +212,47 @@ def test_every_failing_endpoint_gets_its_own_reason(org, provider, published_sta
             'details': {'endpoint_type': 'trip_update', 'status': 500},
         },
     ]
+
+
+@pytest.mark.parametrize(
+    ('static_published', 'code'),
+    [(True, rr.ENDPOINT_HTTP_ERROR), (False, rr.STATIC_SUBMISSION_NOT_PUBLISHED)],
+)
+def test_failed_revalidation_keeps_published_submission(
+    org, provider, caplog, static_published, code
+):
+    """ADR 0005: a failed validation of a published feed does not unpublish it."""
+    static = FeedSubmission.objects.create(
+        transport_organization=org, submitted_by=provider, data_type='gtfs'
+    )
+    if static_published:
+        FeedSubmissionHistory.objects.create(
+            submission=static,
+            event_type=FeedSubmissionHistory.EVENT_COMPLETED,
+            stage_before=3,
+            stage_after=4,
+        )
+    rts = make_rts(org, provider, 'gtfs_rt', static=static, endpoint_types=['trip_update'])
+    RealtimeSubmissionHistory.objects.create(
+        submission=rts,
+        event_type=RealtimeSubmissionHistory.EVENT_COMPLETED,
+        stage_before=3,
+        stage_after=4,
+    )
+
+    with (
+        patch('data_manager.net_security.safe_get', return_value=response(404)),
+        caplog.at_level(logging.WARNING, logger='data_manager.tasks'),
+    ):
+        result = validate_realtime_submission_task(rts.id)
+
+    assert result['status'] == 'failed_published'
+    assert [reason['code'] for reason in result['reasons']] == [code]
+    rts.refresh_from_db()
+    assert rts.current_stage == 4
+    assert not rts.is_rejected
+    assert not rts.history.filter(event_type=RealtimeSubmissionHistory.EVENT_REJECTED).exists()
+    assert code in caplog.text
 
 
 # ---------------------------------------------------------------------------

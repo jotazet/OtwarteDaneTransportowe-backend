@@ -269,7 +269,8 @@ Base endpoint:
 - **Forbidden from stage 2:** **`name`**, the feed **`url`**, **`auth_type`**, **`auth_value`**, **`is_original`**, **`hide_original`**, adding/removing endpoints, changing `transport_organization` / `static_submission` / `protocol`.
 - With restricted editing, a shortened endpoint object can be sent, e.g. `{"endpoint_type": "gbfs", "interval": 120}` — missing fields are filled in from the database; an attempt to change a locked field returns a validation error.
 - Changing only **`interval`** does **not** re-run the link validation task and does not delete endpoint records.
-- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background (a failure rejects it).
+- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background. A failure rejects a submission at stage 2 or 3.
+- **Published feed (stage 4):** a failed re-validation **does not unpublish** it — the submission stays at stage 4, no rejection is recorded and the codes are written to the server log only.
 
 **List query params:**
 
@@ -442,7 +443,7 @@ or:
 
 A realtime submission can be rejected in two ways, and the detail carries one field for each:
 
-- **Automatic validation** (`validate_realtime_submission_task`, stage 2): `rejection_reasons` is a list of `{code, details}` objects, one per problem; `rejection_cause` is `null`. The frontend translates each code ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
+- **Automatic validation** (`validate_realtime_submission_task`, stage 2): `rejection_reasons` is a list of `{code, details}` objects, one per problem; `rejection_cause` is `null`. The frontend translates each code ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). A published submission (stage 4) is never rejected automatically.
 - **A reviewer's rejection** (Helper/Admin `PATCH {"rejection_cause": "..."}`): `rejection_cause` holds their free text; `rejection_reasons` is `null`.
 
 Both are `null` unless the submission is currently rejected. History entries carry the same pair as `cause` and `reasons`.

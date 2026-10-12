@@ -43,7 +43,9 @@ DataProvider
   -> backend saves RealtimeSubmission + RealtimeEndpointRT[]
   -> realtime validation task (stage 1 -> 2, on success 2 -> 3; with hide_original also the first cache fetch)
      errors -> rejection (stage 1) with coded rejection_reasons, one per problem
-     (see "Realtime rejection reasons" in the Feeds API)
+     (see "Realtime rejection reasons" in the Feeds API); a published submission
+     (stage 4, e.g. after an Admin edits its endpoints) stays published and the
+     failure is only logged
   -> from stage 2 the owner may PATCH only the note, license and interval on endpoints (not the name, URL, auth, is_original, hide_original)
   -> Helper/Admin PATCH { "stage": 4 }
   -> the realtime feed appears publicly in the feed catalogue and /feed/rt/{id}/

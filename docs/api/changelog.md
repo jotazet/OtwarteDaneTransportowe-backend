@@ -2,6 +2,14 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10: a failed re-validation no longer unpublishes a realtime feed
+
+Not breaking: the response shape is unchanged.
+
+When an Admin replaced the endpoints of a published realtime submission (stage 4) and the background re-validation failed, the submission was rejected back to stage 1 and disappeared from the public catalogue and `/feed/rt/{id}/`. It now stays at stage 4, as static feeds already did: no `rejected` history entry is written, `rejection_reasons` stays `null`, and the failure codes go to the server log only. Submissions at stage 2 or 3 are still rejected with coded `rejection_reasons`. This replaces the note in section 6 of the 2026-07 entry ("only its failure rejects the submission").
+
+---
+
 ## 2026-10: empty text fields are `""`, never `null`
 
 ⚠️ **Breaking for writes.** Text fields have one empty value, `""` (Django convention, ruff `DJ001`). Existing `NULL`s are converted to `""` by migrations `blog.0003`, `cases.0005` and `data_manager.0012`.
