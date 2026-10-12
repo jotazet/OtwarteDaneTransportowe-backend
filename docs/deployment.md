@@ -160,6 +160,8 @@ FEED_AUTH_ENCRYPTION_KEY=<wklej-klucz-Fernet>
 # ───────────────────────── GTFS validator ─────────────────────────
 # The Docker API goes through the docker-socket-proxy service (DOCKER_HOST in compose) —
 # no host configuration (formerly DOCKER_GID) is needed.
+# Validator image; defaults to a pinned release (see section 8 before bumping):
+# GTFS_VALIDATOR_IMAGE=ghcr.io/mobilitydata/gtfs-validator:8.0.1
 # Resource limits of the validator container:
 # GTFS_VALIDATOR_MEM_LIMIT=2g
 # GTFS_VALIDATOR_PIDS_LIMIT=512
@@ -289,6 +291,18 @@ The `celery_validator_worker` service runs the GTFS validator as a container thr
 mounts `/var/run/docker.sock` (read-only); the worker connects via
 `DOCKER_HOST=tcp://docker-socket-proxy:2375`, and only the
 `CONTAINERS`/`IMAGES` (+`POST`) endpoints are allowed. Nothing needs to be configured on the host.
+
+Both images are pinned: the proxy in `docker-compose.yml`, the validator through
+`GTFS_VALIDATOR_IMAGE` (default in `OtwarteDaneTransportowe/settings_base.py`). A new
+validator release can add, remove or reclassify notices, so the same feed may pass
+before and fail after. To upgrade, read the
+[release notes](https://github.com/MobilityData/gtfs-validator/releases), run a few
+real feeds through the new tag, then bump the default in code (or set the variable
+in `.env` and recreate the worker with `./scripts/deploy.sh up -d celery_validator_worker`;
+a plain `restart` does not re-read `.env`). Pull the new image on the host first
+(`docker pull <image>`): otherwise the first validation pulls it inside the task, and on a
+slow link it can hit the task's time limit and reject the submission. Published feeds are
+not unpublished by a failed revalidation.
 
 > ⚠️ **Security (honestly):** the proxy cuts off exec/volumes/networks/secrets,
 > but the `containers create` API still accepts bind mounts and the `privileged` flag,

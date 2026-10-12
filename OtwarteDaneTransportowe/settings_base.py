@@ -227,6 +227,13 @@ MAX_REALTIME_FEED_BYTES = int(os.getenv('MAX_REALTIME_FEED_BYTES', str(32 * 1024
 # time limit and get killed before the failure bookkeeping runs.
 FEED_FETCH_TOTAL_TIMEOUT_SECONDS = int(os.getenv('FEED_FETCH_TOTAL_TIMEOUT_SECONDS', '600'))
 REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS = int(os.getenv('REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS', '60'))
+# MobilityData GTFS validator image run by validate_gtfs_feed_task. Pinned so
+# validation results only change when this tag is bumped deliberately.
+# `or`, not a getenv default: an empty GTFS_VALIDATOR_IMAGE= in .env must not
+# make every validation fail.
+GTFS_VALIDATOR_IMAGE = (
+    os.getenv('GTFS_VALIDATOR_IMAGE') or 'ghcr.io/mobilitydata/gtfs-validator:8.0.1'
+)
 # Hard cap (bytes) for blog post images.
 MAX_IMAGE_FILE_SIZE_BYTES = int(os.getenv('MAX_IMAGE_FILE_SIZE_BYTES', str(10 * 1024 * 1024)))
 
