@@ -862,9 +862,12 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
         completed_submission_ids,
     )
     from data_manager.net_security import OutboundURLBlocked, safe_get
-    from data_manager.rejection_reasons import rejection_reason
     from data_manager.scheduler import _build_auth_headers, _fetch_realtime_endpoint_rt
-    from data_manager.validators import InvalidFeedContent, validate_realtime_feed_content
+    from data_manager.validators import (
+        EmptyFeedContent,
+        InvalidFeedContent,
+        validate_realtime_feed_content,
+    )
 
     max_link_bytes = settings.MAX_REALTIME_FEED_BYTES
 
@@ -901,15 +904,15 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
 
     if rts.protocol in (RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI):
         if not rts.static_submission_id:
-            _reject([rejection_reason(rr.STATIC_SUBMISSION_MISSING)])
+            _reject([rr.rejection_reason(rr.STATIC_SUBMISSION_MISSING)])
             return {'status': 'rejected'}
         if rts.static_submission_id not in completed_submission_ids():
-            _reject([rejection_reason(rr.STATIC_SUBMISSION_NOT_PUBLISHED)])
+            _reject([rr.rejection_reason(rr.STATIC_SUBMISSION_NOT_PUBLISHED)])
             return {'status': 'rejected'}
 
     endpoints = list(rts.endpoints.all())
     if not endpoints:
-        _reject([rejection_reason(rr.NO_ENDPOINTS)])
+        _reject([rr.rejection_reason(rr.NO_ENDPOINTS)])
         return {'status': 'rejected'}
 
     reasons: list[dict] = []
@@ -917,8 +920,16 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     # Link check every endpoint: reachable, and does the body actually look
     # like the declared protocol? Capped at MAX_REALTIME_FEED_BYTES — realtime
     # payloads are small, and a status code never needed a 200 MB budget.
+    # Most specific first: ConnectTimeout is both a Timeout and a ConnectionError.
+    exception_codes = (
+        (EmptyFeedContent, rr.ENDPOINT_CONTENT_EMPTY),
+        (InvalidFeedContent, rr.ENDPOINT_CONTENT_INVALID),
+        (OutboundURLBlocked, rr.ENDPOINT_URL_BLOCKED),
+        (requests.exceptions.Timeout, rr.ENDPOINT_TIMEOUT),
+        (requests.exceptions.ConnectionError, rr.ENDPOINT_UNREACHABLE),
+    )
+
     for ep in endpoints:
-        details = {'endpoint_type': ep.endpoint_type}
         try:
             resp = safe_get(
                 ep.url,
@@ -929,23 +940,19 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
             )
             if resp.status_code >= 400:
                 reasons.append(
-                    rejection_reason(rr.ENDPOINT_HTTP_ERROR, **details, status=resp.status_code)
+                    rr.rejection_reason(
+                        rr.ENDPOINT_HTTP_ERROR,
+                        endpoint_type=ep.endpoint_type,
+                        status=resp.status_code,
+                    )
                 )
-            elif not resp.content:
-                reasons.append(rejection_reason(rr.ENDPOINT_CONTENT_EMPTY, **details))
             else:
                 validate_realtime_feed_content(rts.protocol, resp.content)
         except Exception as exc:
-            if isinstance(exc, InvalidFeedContent):
-                code, details['protocol'] = rr.ENDPOINT_CONTENT_INVALID, rts.protocol
-            elif isinstance(exc, OutboundURLBlocked):
-                code = rr.ENDPOINT_URL_BLOCKED
-            elif isinstance(exc, requests.exceptions.Timeout):
-                code = rr.ENDPOINT_TIMEOUT
-            elif isinstance(exc, requests.exceptions.ConnectionError):
-                code = rr.ENDPOINT_UNREACHABLE
-            else:
-                code = rr.ENDPOINT_FETCH_FAILED
+            code = next(
+                (c for exc_type, c in exception_codes if isinstance(exc, exc_type)),
+                rr.ENDPOINT_FETCH_FAILED,
+            )
             # The code is what the user sees; the exception text is for the team.
             logger.warning(
                 'Realtime validation of submission %s, endpoint_rt=%s: %s (%s)',
@@ -954,7 +961,8 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                 code,
                 exc,
             )
-            reasons.append(rejection_reason(code, **details))
+            extra = {'protocol': rts.protocol} if code == rr.ENDPOINT_CONTENT_INVALID else {}
+            reasons.append(rr.rejection_reason(code, endpoint_type=ep.endpoint_type, **extra))
 
     if not reasons:
         now = timezone.now()
@@ -965,7 +973,7 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
             ep.refresh_from_db(fields=['cached_file', 'cached_at'])
             if not ep.cached_file:
                 reasons.append(
-                    rejection_reason(rr.ENDPOINT_CACHE_FAILED, endpoint_type=ep.endpoint_type)
+                    rr.rejection_reason(rr.ENDPOINT_CACHE_FAILED, endpoint_type=ep.endpoint_type)
                 )
 
     if reasons:

@@ -100,31 +100,29 @@ def assert_rejected_with(rts, reasons):
 # ---------------------------------------------------------------------------
 
 
-def test_gtfs_rt_without_static_submission_is_rejected_with_code(org, provider):
-    rts = make_rts(org, provider, 'gtfs_rt', endpoint_types=['trip_update'])
-
-    validate_realtime_submission_task(rts.id)
-
-    assert_rejected_with(rts, [{'code': rr.STATIC_SUBMISSION_MISSING, 'details': {}}])
-
-
-def test_siri_with_unpublished_static_submission_is_rejected_with_code(org, provider):
-    static = FeedSubmission.objects.create(
-        transport_organization=org, submitted_by=provider, data_type='netex'
+@pytest.mark.parametrize(
+    ('protocol', 'static_data_type', 'endpoint_types', 'code'),
+    [
+        ('gtfs_rt', None, ['trip_update'], rr.STATIC_SUBMISSION_MISSING),
+        ('siri', 'netex', ['et'], rr.STATIC_SUBMISSION_NOT_PUBLISHED),
+        ('gbfs', None, [], rr.NO_ENDPOINTS),
+    ],
+)
+def test_submission_level_problem_is_rejected_with_code(
+    org, provider, protocol, static_data_type, endpoint_types, code
+):
+    static = (
+        FeedSubmission.objects.create(
+            transport_organization=org, submitted_by=provider, data_type=static_data_type
+        )
+        if static_data_type
+        else None
     )
-    rts = make_rts(org, provider, 'siri', static=static, endpoint_types=['et'])
+    rts = make_rts(org, provider, protocol, static=static, endpoint_types=endpoint_types)
 
     validate_realtime_submission_task(rts.id)
 
-    assert_rejected_with(rts, [{'code': rr.STATIC_SUBMISSION_NOT_PUBLISHED, 'details': {}}])
-
-
-def test_submission_without_endpoints_is_rejected_with_code(org, provider):
-    rts = make_rts(org, provider, 'gbfs')
-
-    validate_realtime_submission_task(rts.id)
-
-    assert_rejected_with(rts, [{'code': rr.NO_ENDPOINTS, 'details': {}}])
+    assert_rejected_with(rts, [{'code': code, 'details': {}}])
 
 
 @pytest.mark.parametrize(
@@ -240,13 +238,13 @@ def test_reviewer_rejection_keeps_free_text_and_has_no_reasons(org, provider):
     client = APIClient()
     client.force_authenticate(user=admin)
 
-    response = client.patch(
+    patched = client.patch(
         f'/api/data_manager/realtime-submissions/{rts.id}/',
         {'rejection_cause': 'Wrong licence.'},
         format='json',
     )
 
-    assert response.status_code == 200, response.data
+    assert patched.status_code == 200, patched.data
     detail = client.get(f'/api/data_manager/realtime-submissions/{rts.id}/').data
     assert detail['rejection_cause'] == 'Wrong licence.'
     assert detail['rejection_reasons'] is None

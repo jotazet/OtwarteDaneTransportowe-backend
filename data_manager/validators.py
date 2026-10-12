@@ -21,6 +21,10 @@ class InvalidFeedContent(Exception):
     """
 
 
+class EmptyFeedContent(InvalidFeedContent):
+    """The fetched body is empty."""
+
+
 # Standard ZIP local-file-header magics (regular, empty archive, spanned).
 _ZIP_MAGICS = (b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08')
 
@@ -54,7 +58,7 @@ def validate_static_feed_content(data_type: str, content: bytes) -> None:
     archive just to look at its first four bytes.
     """
     if not content:
-        raise InvalidFeedContent('Fetched content is empty.')
+        raise EmptyFeedContent('Fetched content is empty.')
     if _looks_like_html(content):
         raise InvalidFeedContent('Fetched content looks like an HTML page, not a feed.')
     if data_type == 'gtfs' and not looks_like_zip(content):
@@ -103,7 +107,7 @@ def validate_realtime_feed_content(protocol: str, content: bytes) -> None:
     page is rejected); every GBFS file is a JSON document.
     """
     if not content:
-        raise InvalidFeedContent('Fetched content is empty.')
+        raise EmptyFeedContent('Fetched content is empty.')
     if protocol == 'gbfs':
         try:
             json.loads(content)

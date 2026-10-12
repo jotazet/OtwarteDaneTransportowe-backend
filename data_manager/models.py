@@ -827,18 +827,22 @@ class RealtimeSubmission(models.Model):
         return latest is not None and latest.event_type == RealtimeSubmissionHistory.EVENT_REJECTED
 
     @property
-    def rejection_cause(self):
+    def _latest_rejection(self):
+        """The latest history entry if it is a rejection, else None."""
         latest = self._latest_history_entry
         if latest is None or latest.event_type != RealtimeSubmissionHistory.EVENT_REJECTED:
             return None
-        return latest.cause
+        return latest
+
+    @property
+    def rejection_cause(self):
+        rejection = self._latest_rejection
+        return rejection.cause if rejection else None
 
     @property
     def rejection_reasons(self):
-        latest = self._latest_history_entry
-        if latest is None or latest.event_type != RealtimeSubmissionHistory.EVENT_REJECTED:
-            return None
-        return latest.reasons
+        rejection = self._latest_rejection
+        return rejection.reasons if rejection else None
 
     @property
     def published_at(self):
