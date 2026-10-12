@@ -18,6 +18,7 @@ Every record of `GET /api/data_manager/fetch-errors/`, `/feed-submissions/{id}/f
 
 - `POST /api/auth/token/refresh/` returns `{access, refresh}`, not only `access`: refresh tokens rotate and the old one is blacklisted, so a client that keeps the old `refresh` gets `401` on its next refresh. See [JWT authentication](README.md#post-apiauthtokenrefresh).
 - Sending `null` for a text field returns DRF's field error, e.g. `{"name": ["This field may not be null."]}`. The 2026-10 entry below and the API overview promised an error code `null` in the body; there is none until the exception handler of [ADR 0006](../architecture/decisions/0006-api-error-codes.md) exists.
+- Two existing routes are now documented: `PUT /api/users/{id}/` (same fields as `PATCH`) and `GET /internal-media/blog/{path}` (public blog images, the URL in a post's `image`).
 
 ---
 

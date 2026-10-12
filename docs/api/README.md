@@ -185,6 +185,7 @@ Requires the Django group **`Admin`** (`has_admin_role`) — `is_staff` / `is_su
 | `GET` | `/api/users/` | `Admin` (group) | List of all users |
 | `POST` | `/api/users/` | `Admin` (group) | Create an account; the server generates the password — returned in `generated_password` |
 | `GET` | `/api/users/{id}/` | `Admin` (group) | User details |
+| `PUT` | `/api/users/{id}/` | `Admin` (group) | Same fields and rules as `PATCH`; none is required, and with a JSON body omitted fields keep their values |
 | `PATCH` | `/api/users/{id}/` | `Admin` (group) | Edit `email`, `first_name`, `last_name`, `is_active`, `roles` |
 | `DELETE` | `/api/users/{id}/` | `Admin` (group) | Permanent deletion (you cannot delete yourself or the last `Admin`) |
 | `POST` | `/api/users/{id}/reset-password/` | `Admin` (group) | New random password in `generated_password` |
@@ -192,7 +193,7 @@ Requires the Django group **`Admin`** (`has_admin_role`) — `is_staff` / `is_su
 | `POST` | `/api/users/me/change-email/` | logged in | `current_password`, `new_email` |
 | `POST` | `/api/users/me/change-password/` | logged in | `current_password`, `new_password` |
 
-Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PATCH` fully replaces the list of groups).
+Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PUT`/`PATCH` fully replace the list of groups).
 
 For `POST /api/users/` the body does **not** contain a password — example `201` response:
 
@@ -223,6 +224,7 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `DELETE` | `/api/blog/posts/{id}/` | own: `Blogger`; any: `Editor`/`Admin` | Delete a post |
 | `POST` | `/api/blog/reactions/{post_id}/` | public | Add/change/remove a reaction per IP |
 | `GET` | `/api/blog/reactions/mine/?post_ids=1,2,3` | public | The caller's own reactions, resolved from their IP; read it from the browser, not during SSR |
+| `GET` | `/internal-media/blog/{path}` | public | Blog post images; a post's `image` field is the URL of this route |
 
 ### Cases
 
