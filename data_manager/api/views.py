@@ -597,6 +597,9 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
             return AdminFeedSubmissionSerializer
         return FeedSubmissionSerializer
 
+    # Atomic with the history row: validation is queued on commit, and must
+    # not start before the uploaded row (stage 2) exists.
+    @transaction.atomic
     def perform_create(self, serializer):
         submission = serializer.save(submitted_by=self.request.user)
         FeedSubmissionHistory.objects.create(

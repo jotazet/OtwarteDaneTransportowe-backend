@@ -961,7 +961,9 @@ def test_owner_cannot_change_file_at_stage_2(api_client, normal_user, org, setti
     assert 'feed.zip' in entry.file.name
 
 
-def test_owner_can_change_file_when_rejected(api_client, normal_user, org, settings, tmp_path):
+def test_owner_can_change_file_when_rejected(
+    api_client, normal_user, org, settings, tmp_path, django_capture_on_commit_callbacks
+):
     settings.MEDIA_ROOT = tmp_path
     submission = FeedSubmission.objects.create(
         transport_organization=org,
@@ -984,14 +986,15 @@ def test_owner_can_change_file_when_rejected(api_client, normal_user, org, setti
     api_client.force_authenticate(user=normal_user)
     gtfs_path = os.path.join(os.path.dirname(__file__), 'GTFS_correct.zip')
     with patch('data_manager.signals.validate_gtfs_feed_task.delay') as delay_mock:
-        ok = api_client.patch(
-            f'/api/data_manager/feed-submissions/{submission.id}/',
-            {'static_entry.file': open(gtfs_path, 'rb')},
-            format='multipart',
-        )
+        with django_capture_on_commit_callbacks(execute=True):
+            ok = api_client.patch(
+                f'/api/data_manager/feed-submissions/{submission.id}/',
+                {'static_entry.file': open(gtfs_path, 'rb')},
+                format='multipart',
+            )
     assert ok.status_code == 200, ok.data
-    delay_mock.assert_called_once()
     entry = StaticFeedEntry.objects.get(submission=submission)
+    delay_mock.assert_called_with(entry.id)
     assert entry.file.name.endswith('.zip')
     assert 'wrong.zip' not in entry.file.name
 
@@ -1920,11 +1923,13 @@ def test_null_string_fields_are_rejected(api_client, normal_user, org):
     assert response.data['static_entry']['license'][0].code == 'null'
 
 
-def test_upload_succeeds_when_broker_is_down(api_client, normal_user, org):
+def test_upload_succeeds_when_broker_is_down(
+    api_client, normal_user, org, django_capture_on_commit_callbacks
+):
     """A broker outage must not turn a successful upload into HTTP 500.
 
-    The post_save signal queues GTFS validation inside the request; when Redis
-    is unreachable .delay() raises, and that used to bubble up as a 500 after
+    The post_save signal queues GTFS validation on commit; when Redis is
+    unreachable .delay() raises, and that used to bubble up as a 500 after
     the submission had already been written."""
     api_client.force_authenticate(user=normal_user)
     gtfs_path = os.path.join(os.path.dirname(__file__), 'GTFS_correct.zip')
@@ -1932,8 +1937,10 @@ def test_upload_succeeds_when_broker_is_down(api_client, normal_user, org):
     def broker_down(*args, **kwargs):
         raise OSError('Error 111 connecting to redis:6379. Connection refused.')
 
-    with patch('data_manager.tasks.validate_gtfs_feed_task.delay', side_effect=broker_down):
-        with open(gtfs_path, 'rb') as fh:
+    with patch(
+        'data_manager.tasks.validate_gtfs_feed_task.delay', side_effect=broker_down
+    ) as delay_mock:
+        with django_capture_on_commit_callbacks(execute=True), open(gtfs_path, 'rb') as fh:
             response = api_client.post(
                 '/api/data_manager/feed-submissions/',
                 {
@@ -1946,9 +1953,41 @@ def test_upload_succeeds_when_broker_is_down(api_client, normal_user, org):
             )
 
     assert response.status_code == 201, response.data
+    delay_mock.assert_called_once()
     submission = FeedSubmission.objects.get(pk=response.data['id'])
     assert submission.static_entry.file  # file stored despite the outage
     assert submission.current_stage == 2
+
+
+@pytest.mark.django_db(transaction=True)
+def test_gtfs_validation_is_queued_after_the_upload_commits(api_client, normal_user, org):
+    """The worker must find the submission at stage 2. Queued earlier (inside
+    the serializer's transaction, before the uploaded history row), it could
+    see an uncommitted row or a stage-1 submission and advance it to stage 3
+    before the uploaded row (stage 2) landed on top."""
+    stages_when_queued = []
+
+    def record_stage(entry_id):
+        submission = StaticFeedEntry.objects.get(pk=entry_id).submission
+        stages_when_queued.append(submission.current_stage)
+
+    api_client.force_authenticate(user=normal_user)
+    gtfs_path = os.path.join(os.path.dirname(__file__), 'GTFS_correct.zip')
+    with patch('data_manager.tasks.validate_gtfs_feed_task.delay', side_effect=record_stage):
+        with open(gtfs_path, 'rb') as fh:
+            response = api_client.post(
+                '/api/data_manager/feed-submissions/',
+                {
+                    'transport_organization': str(org.id),
+                    'data_type': 'gtfs',
+                    'name': 'Queued after commit',
+                    'static_entry.file': fh,
+                },
+                format='multipart',
+            )
+
+    assert response.status_code == 201, response.data
+    assert stages_when_queued == [2]
 
 
 def test_file_upload_with_download_time_returns_400_not_500(api_client, normal_user, org):

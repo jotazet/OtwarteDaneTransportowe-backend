@@ -1,4 +1,5 @@
 from django.core.cache import cache
+from django.db import transaction
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
@@ -26,6 +27,13 @@ def invalidate_completed_realtime_cache(sender, **kwargs):
 
 def _file_field_name(field) -> str | None:
     return getattr(field, 'name', None) or None
+
+
+def _queue_validation_on_commit(entry_id: int) -> None:
+    # After commit, so the worker never reads an uncommitted entry (saves run
+    # inside the submission's transaction); enqueue(), so a broker outage
+    # does not fail the user's upload.
+    transaction.on_commit(lambda: enqueue(validate_gtfs_feed_task, entry_id))
 
 
 @receiver(pre_save, sender=StaticFeedEntry)
@@ -56,8 +64,7 @@ def trigger_gtfs_validation(sender, instance, created, **kwargs):
 
     if created:
         if instance.file or instance.cached_file:
-            # enqueue(): a broker outage must not fail the user's upload.
-            enqueue(validate_gtfs_feed_task, instance.id)
+            _queue_validation_on_commit(instance.id)
         return
 
     prev_file = getattr(instance, '_prev_file_name', None)
@@ -67,4 +74,4 @@ def trigger_gtfs_validation(sender, instance, created, **kwargs):
 
     if prev_file != new_file or prev_cached != new_cached:
         if instance.file or instance.cached_file:
-            enqueue(validate_gtfs_feed_task, instance.id)
+            _queue_validation_on_commit(instance.id)
