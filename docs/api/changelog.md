@@ -2,6 +2,20 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10: confirm/reject PATCH responses show the new state
+
+Not breaking: the response shape is unchanged.
+
+`PUT/PATCH /api/data_manager/feed-submissions/{id}/` and
+`/api/data_manager/realtime-submissions/{id}/` with `stage` or `rejection_cause`
+used to return the submission as it was **before** the transition:
+`current_stage`, `current_stage_label`, `is_rejected`, `rejection_cause` and
+`published_at` were stale, although the transition was saved. The response now
+reflects the new state, the same as a following GET. Clients that re-fetch after the PATCH (as the
+ODT frontend does) see no difference.
+
+---
+
 ## 2026-07: paginated lists, canonical realtime file routes and other breaking changes
 
 Applies to the backend deployment of July 2026 (hardening + DRF unification).
