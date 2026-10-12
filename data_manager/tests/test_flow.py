@@ -1734,6 +1734,50 @@ def test_empty_auth_type_means_no_auth_and_stays_public(
     assert entry.hide_original is False
 
 
+def test_empty_auth_type_on_update_keeps_entry_public(
+    api_client, normal_user, admin_user, org, django_capture_on_commit_callbacks
+):
+    """The update path saves with update_fields, so it needs its own check."""
+    api_client.force_authenticate(user=normal_user)
+    with patch('data_manager.tasks.validate_gtfs_feed_task.delay'):
+        response = api_client.post(
+            '/api/data_manager/feed-submissions/',
+            {
+                'transport_organization': org.id,
+                'data_type': 'gtfs',
+                'name': 'No-auth feed',
+                'static_entry': {
+                    'url': 'https://example.org/gtfs.zip',
+                    'download_time_1': '03:00:00',
+                },
+            },
+            format='json',
+        )
+    assert response.status_code == 201, response.data
+    submission_id = response.data['id']
+    # A rejection reopens the source for the owner.
+    api_client.force_authenticate(user=admin_user)
+    api_client.patch(
+        f'/api/data_manager/feed-submissions/{submission_id}/',
+        {'rejection_cause': 'fix the source'},
+        format='json',
+    )
+
+    api_client.force_authenticate(user=normal_user)
+    with patch('data_manager.tasks.validate_gtfs_feed_task.delay'):
+        with django_capture_on_commit_callbacks(execute=True):
+            response = api_client.patch(
+                f'/api/data_manager/feed-submissions/{submission_id}/',
+                {'static_entry': {'url': 'https://example.org/gtfs.zip', 'auth_type': ''}},
+                format='json',
+            )
+    assert response.status_code == 200, response.data
+
+    entry = StaticFeedEntry.objects.get(submission_id=submission_id)
+    assert entry.auth_type == ''
+    assert entry.hide_original is False
+
+
 def test_upload_succeeds_when_broker_is_down(api_client, normal_user, org):
     """A broker outage must not turn a successful upload into HTTP 500.
 

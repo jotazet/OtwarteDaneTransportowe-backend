@@ -4,7 +4,7 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ## 2026-10: an empty `auth_type` no longer forces `hide_original`
 
-In `static_entry`, `"auth_type": ""` used to set `hide_original=true` as if a credential had been given, while `null` did not. Both now mean "no authorization" and keep the `hide_original` the client sent. Realtime endpoints already behaved this way. Not breaking: clients may send `""` for "no authorization" from now on, which the next change (empty text fields become `""`) requires.
+In `static_entry`, `"auth_type": ""` used to set `hide_original=true` as if a credential had been given, while `null` did not. Both now mean "no authorization" and keep the `hide_original` the client sent. Realtime endpoints already behaved this way. Not breaking: clients may send `""` for "no authorization" from now on.
 
 ---
 
