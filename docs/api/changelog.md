@@ -17,6 +17,7 @@ Every record of `GET /api/data_manager/fetch-errors/`, `/feed-submissions/{id}/f
 ### 3. Corrected documentation (behaviour unchanged)
 
 - `POST /api/auth/token/refresh/` returns `{access, refresh}`, not only `access`: refresh tokens rotate and the old one is blacklisted, so a client that keeps the old `refresh` gets `401` on its next refresh. See [JWT authentication](README.md#post-apiauthtokenrefresh).
+- Sending `null` for a text field returns DRF's field error, e.g. `{"name": ["This field may not be null."]}`. The 2026-10 entry below and the API overview promised an error code `null` in the body; there is none until the exception handler of [ADR 0006](../architecture/decisions/0006-api-error-codes.md) exists.
 
 ---
 
@@ -42,7 +43,7 @@ Affected fields:
 | Realtime `endpoints[]` | `auth_type` |
 
 - **Responses:** these fields return `""` where they used to return `null`. Truthiness checks (`if (x)`, `x || fallback`) keep working; `x ?? fallback` and `x === null` do not. This also applies to the public catalogue (`license`, organization contacts), so external consumers see the change.
-- **Requests:** sending `null` for any of these fields returns `400` with the error code `null`. Send `""` or omit the field. To remove a blog reaction, send `{"reaction": ""}`.
+- **Requests:** sending `null` for any of these fields returns `400` with DRF's field error, e.g. `{"name": ["This field may not be null."]}` (no error code in the body). Send `""` or omit the field. To remove a blog reaction, send `{"reaction": ""}`.
 - **`auth_type`:** "no authorization" is `""` (was `null`), see `docs/api/models.md`.
 - **Unchanged:** computed and non-text fields keep `null` for "none": `rejection_cause`, `published_at`, `your_reaction`, `download_time_2`, `file`, `download_url`, `feed_url`, and the nullable fields of `proxy-feeds`.
 
