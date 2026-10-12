@@ -88,7 +88,7 @@ Base endpoint:
 - **Full editing** — only when the submission is **rejected** (`is_rejected=true`, usually `current_stage=1`) or when the history contains only stage **1** (a rare case with no transition to stage 2). In that case all fields can be changed, including `name`, the source (`url` / file), `is_original`, `hide_original`, `auth_type`, `auth_value`.
 - **Editing from stage 2 to 4** — when there is **no** rejection and `current_stage` is **2, 3 or 4**, the owner (`DataProvider`) may change only:
   - on the submission: **`note`** (the **`name` field is locked**);
-  - in `static_entry`: only **`license`**, **`download_time_1`**, **`download_time_2`** (including setting `download_time_2` to `null`).
+  - in `static_entry`: only **`license`**, **`download_time_1`**, **`download_time_2`** (UTC; including setting `download_time_2` to `null`).
 - **Forbidden from stage 2 to 4 for the owner** (an attempt to change them via `PATCH` returns `400` with a validation error): **`name`**, **`transport_organization`**, **`data_type`**, link / file (`url`, `file`), **`is_original`**, **`hide_original`**, **`auth_type`**, **`auth_value`** (password / secret). **Only a user in the Django `Admin` group** may change the URL/file at stages 2–4 (`is_superuser` / `is_staff` alone without that group is **not** enough).
 - **Published feed (stage 4):** re-running GTFS validation **does not move** the stage back to rejection — the error is logged and the `FeedSubmission` stays at stage 4.
 - **Helper** does not edit submission content at any stage: a `PUT`/`PATCH` from a Helper with any field other than `stage` and `rejection_cause` returns `403` (`{"detail": "Helper may only confirm or reject submissions ..."}`) and nothing is saved. **Admin** (the `Admin` group) may change the URL/file at stages 2–4; other fields according to role.
@@ -186,6 +186,7 @@ Base endpoint:
 
 In `static_entry`:
 
+- `download_time_1` and `download_time_2` are daily fetch times in **UTC** (`HH:MM:SS`), not Polish local time. `download_time_1` is required for a URL source and must be empty for an uploaded file; `download_time_2` is optional. ODT fetches on this schedule only when the source is proxied (`is_proxy_managed`).
 - The fetch health fields, from `fetch_status` to `fetch_error_count_7d`, are present only when `is_proxy_managed` is `true` (a URL with `hide_original=true`); for an uploaded file or a non-proxied URL they are left out. They are described in the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
 - `validation_status` is `pending`, `valid`, `invalid` or `error`; `validation_message` is a short English status or error text from validation (empty when valid).
 

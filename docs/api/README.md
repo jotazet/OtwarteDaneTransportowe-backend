@@ -313,7 +313,7 @@ Recommended UI logic:
 - `DataProvider`/`Admin` - show the feed submission forms.
 - `Helper`/`Admin` - show the queue of feeds awaiting confirmation and the case/organization panel.
 
-In edit forms for `DataProvider`, **from stage 2 onwards** (static and realtime, without a rejection): lock the **name**, the feed source (URL/file or endpoint URL), **is_original**, **hide_original**, **auth_type** and **auth_value**. Static: `note`, `license` and fetch times are allowed. Realtime: `note`, `license`, `interval` are allowed. After a **rejection**, restore the full edit form.
+In edit forms for `DataProvider`, **from stage 2 onwards** (static and realtime, without a rejection): lock the **name**, the feed source (URL/file or endpoint URL), **is_original**, **hide_original**, **auth_type** and **auth_value**. Static: `note`, `license` and fetch times (`download_time_1/2`, UTC) are allowed. Realtime: `note`, `license`, `interval` are allowed. After a **rejection**, restore the full edit form.
 
 ### HTTP status codes
 
