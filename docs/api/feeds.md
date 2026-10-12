@@ -207,7 +207,7 @@ Base endpoint:
 }
 ```
 
-If `auth_type` is non-empty (not `null` or `""`), the backend automatically sets `hide_original=True`.
+If `auth_type` is non-empty (anything but `""`), the backend automatically sets `hide_original=True`. `null` is rejected with `400` (see [Empty text fields](README.md#empty-text-fields)).
 
 For a URL source, `hide_original=true` **does not require** authorization to be set — the server can download a public URL and serve a copy without disclosing the original link.
 
@@ -387,7 +387,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
 - Two endpoints of the same `endpoint_type` cannot be added to one submission.
 - The endpoint type must match the protocol.
 - `auth_value` is write-only.
-- If `auth_type` is non-empty (not `null` or `""`), the backend automatically sets `hide_original=True`.
+- If `auth_type` is non-empty (anything but `""`), the backend automatically sets `hide_original=True`; `null` is rejected with `400`.
 - `hide_original=true` **does not require** authorization — the endpoint can be fetched by the server from a public URL without `auth_type` / `auth_value`.
 
 **Realtime detail:**

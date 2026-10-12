@@ -18,6 +18,7 @@ Every record of `GET /api/data_manager/fetch-errors/`, `/feed-submissions/{id}/f
 
 - `POST /api/auth/token/refresh/` returns `{access, refresh}`, not only `access`: refresh tokens rotate and the old one is blacklisted, so a client that keeps the old `refresh` gets `401` on its next refresh. See [JWT authentication](README.md#post-apiauthtokenrefresh).
 - Sending `null` for a text field returns DRF's field error, e.g. `{"name": ["This field may not be null."]}`. The 2026-10 entry below and the API overview promised an error code `null` in the body; there is none until the exception handler of [ADR 0006](../architecture/decisions/0006-api-error-codes.md) exists.
+- Realtime `PATCH` in restricted mode with an `endpoint_type` the submission does not have returns `{"endpoints": ["Unknown endpoint type '...'."]}` (or a field error, see the corrected table in the 2026-07 entry below), not the body documented there before.
 - Two existing routes are now documented: `PUT /api/users/{id}/` (same fields as `PATCH`) and `GET /internal-media/blog/{path}` (public blog images, the URL in a post's `image`).
 
 ---
@@ -252,7 +253,7 @@ after a write.
 |---|---|---|
 | Submission `PATCH` with a non-numeric `stage` | **400** (was 500) | `{"stage": ["Stage must be an integer."]}` |
 | `PATCH` with `stage` outside 1–4 | **400** (was 500) | `{"stage": ["Stage must be between 1 and 4."]}` |
-| Realtime `PATCH` with an unknown `endpoint_type` (restricted mode — only `interval` can change) | **400** (was 500) | `{"endpoints": ["Unknown endpoint_type '...' ..."]}` |
+| Realtime `PATCH` with an unknown `endpoint_type` (restricted mode — only `interval` can change) | **400** (was 500) | `{"endpoints": ["Unknown endpoint type '...'."]}`; a value that is not an endpoint type at all: `{"endpoints": [{"endpoint_type": ["\"...\" is not a valid choice."]}]}`; a different number of endpoints: `{"endpoints": ["Cannot add or remove endpoints after validation."]}` |
 | Upload of a GTFS file that is not a ZIP | **400** | `{"static_entry": {"file": ["Uploaded GTFS file is not a ZIP archive."]}}` |
 | Deactivating (`is_active:false`) the last active Admin | **400** | `["Cannot remove the Admin role from, or deactivate, the last admin user."]` |
 
