@@ -263,13 +263,14 @@ Base endpoint:
 **Editing restrictions for the owner (realtime feed):**
 
 - **Full editing** — at stage **1** or after a **rejection** (`is_rejected`): the owner may change, among others, **`name`**, endpoint URLs, authorization (`auth_type`, `auth_value`), `is_original`, `hide_original`, and replace the entire `endpoints` list; the backend may re-run realtime validation after such a change.
+- **Stored secrets** (any edit, owner or Admin): `auth_value` is never returned, so it may be omitted (or sent as `""`) when the user does not retype it. If the endpoint of the same `endpoint_type` had the same `auth_type` before the edit and its URL keeps the same origin (scheme and host), its stored `auth_value` is kept; after a move to another origin the secret must be sent again. On a full edit, to replace the secret, send the new `auth_value`; when changing `auth_type`, send the new `auth_value` too; to remove authorization, send `"auth_type": ""`.
 - **Editing from stage 2 upwards** — when there is **no** rejection and `current_stage >= 2`, `DataProvider` may change only:
   - on the submission: **`note`**, **`license`** (the **`name` field is locked**);
   - in each **existing** endpoint: only **`interval`**.
 - **Forbidden from stage 2:** **`name`**, the feed **`url`**, **`auth_type`**, **`auth_value`**, **`is_original`**, **`hide_original`**, adding/removing endpoints, changing `transport_organization` / `static_submission` / `protocol`.
 - With restricted editing, a shortened endpoint object can be sent, e.g. `{"endpoint_type": "gbfs", "interval": 120}` — missing fields are filled in from the database; an attempt to change a locked field returns a validation error.
 - Changing only **`interval`** does **not** re-run the link validation task and does not delete endpoint records.
-- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background (a failure rejects it).
+- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background. A failure rejects a submission at stage 2 or 3, but **does not unpublish** one at stage 4: no rejection is recorded and the codes go to the server log only.
 
 **List query params:**
 
@@ -442,7 +443,7 @@ or:
 
 A realtime submission can be rejected in two ways, and the detail carries one field for each:
 
-- **Automatic validation** (`validate_realtime_submission_task`, stage 2): `rejection_reasons` is a list of `{code, details}` objects, one per problem; `rejection_cause` is `null`. The frontend translates each code ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
+- **Automatic validation** (`validate_realtime_submission_task`, stage 2): `rejection_reasons` is a list of `{code, details}` objects, one per problem; `rejection_cause` is `null`. The frontend translates each code ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). A published submission (stage 4) is never rejected automatically.
 - **A reviewer's rejection** (Helper/Admin `PATCH {"rejection_cause": "..."}`): `rejection_cause` holds their free text; `rejection_reasons` is `null`.
 
 Both are `null` unless the submission is currently rejected. History entries carry the same pair as `cause` and `reasons`.

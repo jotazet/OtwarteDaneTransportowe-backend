@@ -34,6 +34,7 @@ import time
 from celery import shared_task
 from celery.utils.log import get_task_logger
 from django.core.cache import cache
+from django.db import transaction
 from django.utils import timezone
 
 logger = get_task_logger(__name__)
@@ -82,6 +83,12 @@ def enqueue(task, *args, **kwargs) -> bool:
         return False
 
 
+def enqueue_on_commit(task, *args, **kwargs) -> None:
+    """enqueue() once the current transaction commits, so the worker never reads
+    uncommitted rows (runs at once outside a transaction)."""
+    transaction.on_commit(lambda: enqueue(task, *args, **kwargs))
+
+
 def _rt_alive_key(endpoint_id: int) -> str:
     return f'rt-endpoint-alive:{endpoint_id}'
 
@@ -93,7 +100,8 @@ def _seconds_until(dt) -> int:
 def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
     """
     Queue an immediate fetch for hide_original endpoints of a published submission.
-    Returns the number of newly scheduled loops.
+    Returns the number of newly scheduled loops. Request code calls it from
+    transaction.on_commit, so the worker sees the committed endpoints.
     """
     from data_manager.models import (
         FETCH_STATUS_ACTIVE,
@@ -114,7 +122,12 @@ def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
         reserve_ttl = interval + RT_ALIVE_TTL_BUFFER_SECONDS
         if not cache.add(_rt_alive_key(endpoint_id), '1', timeout=reserve_ttl):
             continue
-        fetch_realtime_endpoint_task.apply_async(args=[endpoint_id], countdown=0)
+        # Called from requests: a broker outage must not fail the write, nor hold
+        # it up once per endpoint. Release the reservation and stop; the periodic
+        # bootstrap seeds this loop and the remaining (never reserved) ones.
+        if not enqueue(fetch_realtime_endpoint_task, endpoint_id):
+            cache.delete(_rt_alive_key(endpoint_id))
+            break
         scheduled += 1
     return scheduled
 
@@ -843,7 +856,8 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
 
     Flow: stage 1 -> 2 (verification starts) -> 3 on success; on failure the
     submission is rejected back to stage 1 with coded reasons
-    (data_manager/rejection_reasons.py) that the frontend translates.
+    (data_manager/rejection_reasons.py) that the frontend translates. A
+    published submission (stage 4) is never rejected: the failure is logged.
 
     Historical note: this used to run "semantic validation" in a
     gtfs-realtime-validator container. It registered feeds with the validator
@@ -880,15 +894,28 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     except RealtimeSubmission.DoesNotExist:
         return {'status': 'not_found', 'id': submission_id}
 
-    def _reject(reasons: list[dict]) -> None:
+    def _reject(reasons: list[dict]) -> dict:
+        stage = rts.current_stage
+        if stage >= 4:
+            # A failed revalidation of a published feed must not unpublish it
+            # (ADR 0005), same as the static path: report it and keep the stage.
+            logger.warning(
+                'Realtime validation failed for published submission %s; not reverting '
+                'stage (was %s): %s',
+                submission_id,
+                stage,
+                ', '.join(reason['code'] for reason in reasons),
+            )
+            return {'status': 'failed_published', 'reasons': reasons}
         RealtimeSubmissionHistory.objects.create(
             submission=rts,
             event_type=RealtimeSubmissionHistory.EVENT_REJECTED,
-            stage_before=rts.current_stage,
+            stage_before=stage,
             stage_after=1,
             reasons=reasons,
             actor=None,
         )
+        return {'status': 'rejected', 'reasons': reasons}
 
     def _advance(stage_before: int, stage_after: int) -> None:
         RealtimeSubmissionHistory.objects.create(
@@ -904,16 +931,13 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
 
     if rts.protocol in (RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI):
         if not rts.static_submission_id:
-            _reject([rr.rejection_reason(rr.STATIC_SUBMISSION_MISSING)])
-            return {'status': 'rejected'}
+            return _reject([rr.rejection_reason(rr.STATIC_SUBMISSION_MISSING)])
         if rts.static_submission_id not in completed_submission_ids():
-            _reject([rr.rejection_reason(rr.STATIC_SUBMISSION_NOT_PUBLISHED)])
-            return {'status': 'rejected'}
+            return _reject([rr.rejection_reason(rr.STATIC_SUBMISSION_NOT_PUBLISHED)])
 
     endpoints = list(rts.endpoints.all())
     if not endpoints:
-        _reject([rr.rejection_reason(rr.NO_ENDPOINTS)])
-        return {'status': 'rejected'}
+        return _reject([rr.rejection_reason(rr.NO_ENDPOINTS)])
 
     reasons: list[dict] = []
 
@@ -982,8 +1006,7 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                 )
 
     if reasons:
-        _reject(reasons)
-        return {'status': 'rejected', 'reasons': reasons}
+        return _reject(reasons)
 
     cur = RealtimeSubmission.objects.get(pk=submission_id).current_stage
     if cur == 2:

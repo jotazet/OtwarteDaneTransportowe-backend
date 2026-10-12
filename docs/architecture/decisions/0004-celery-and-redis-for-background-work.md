@@ -13,7 +13,7 @@ ODT downloads proxied static feeds on a daily schedule, polls realtime endpoints
 - **Beat** with `django-celery-beat`'s database scheduler: `refresh_static_feeds` every minute and `bootstrap_realtime_tasks` every 5 minutes, both on the `default` queue.
 - **Queues:** `default` for dispatching and realtime fetching; `feeds` for `fetch_static_entry` and `validate_gtfs_feed`, served by a dedicated validator worker.
 - Realtime fetching is a self-rescheduling task per endpoint, guarded by a Redis lock and a liveness marker.
-- **Requests never fail because the broker is down:** every enqueue during a request goes through `data_manager.tasks.enqueue()`, which logs and returns `False` instead of raising, and is called from `transaction.on_commit` so a worker never sees uncommitted rows. Lost jobs are recovered by the periodic dispatchers and the `retry_gtfs_validation` / `retry_realtime_validation` commands.
+- **Requests never fail because the broker is down:** every enqueue during a request goes through `data_manager.tasks.enqueue()`, which logs and returns `False` instead of raising, and is called from `transaction.on_commit` so a worker never sees uncommitted rows (`enqueue_on_commit()` does both). Lost jobs are recovered by the periodic dispatchers and the `retry_gtfs_validation` / `retry_realtime_validation` commands.
 - A failing source backs off (5 min, 1 h, 6 h) and is then auto-paused; people can pause and resume fetching by hand.
 
 ## Consequences
