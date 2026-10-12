@@ -261,7 +261,7 @@ def _validate_stage_value(raw):
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        raise ValidationError({'stage': 'Stage must be an integer.'})
+        raise ValidationError({'stage': 'Stage must be an integer.'}) from None
     if value < 1 or value > 4:
         raise ValidationError({'stage': 'Stage must be between 1 and 4.'})
     return value
@@ -618,12 +618,12 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         return Response(output.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
-        return self._update_with_history(request, partial=False, *args, **kwargs)
+        return self._update_with_history(request, *args, partial=False, **kwargs)
 
     def partial_update(self, request, *args, **kwargs):
-        return self._update_with_history(request, partial=True, *args, **kwargs)
+        return self._update_with_history(request, *args, partial=True, **kwargs)
 
-    def _update_with_history(self, request, partial: bool, *args, **kwargs):
+    def _update_with_history(self, request, *args, partial: bool, **kwargs):
         instance = self.get_object()
 
         if not can_confirm_feeds(request.user):
@@ -920,7 +920,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                                         'are allowed after stage 1.'
                                     ),
                                 }
-                            )
+                            ) from None
                         if obj.interval != ep['interval']:
                             obj.interval = ep['interval']
                             try:

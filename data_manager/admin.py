@@ -38,13 +38,15 @@ class _CredentialInlineForm(forms.ModelForm):
 class StaticFeedEntryInlineForm(_CredentialInlineForm):
     class Meta:
         model = StaticFeedEntry
-        fields = '__all__'
+        # The admin inline's own `fields` decides what is shown and saved.
+        fields = '__all__'  # noqa: DJ007
 
 
 class RealtimeEndpointRTInlineForm(_CredentialInlineForm):
     class Meta:
         model = RealtimeEndpointRT
-        fields = '__all__'
+        # The admin inline's own `fields` decides what is shown and saved.
+        fields = '__all__'  # noqa: DJ007
 
 
 class StaticFeedEntryInline(admin.StackedInline):

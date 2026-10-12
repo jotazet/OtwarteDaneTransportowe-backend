@@ -1010,7 +1010,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                 except DjangoValidationError as exc:
                     raise serializers.ValidationError(
                         {'static_entry': {'file': list(exc.messages)}}
-                    )
+                    ) from exc
 
         if self.instance is None:
             if not static_entry.get('url') and not static_entry.get('file'):

@@ -230,6 +230,10 @@ class FeedSubmission(models.Model):
     # Computed properties – derived from FeedSubmissionHistory
     # ------------------------------------------------------------------
 
+    def __str__(self):
+        label = self.name or f"org_id={self.transport_organization_id}"
+        return f"FeedSubmission(id={self.id}, {self.data_type}, {label})"
+
     def _prefetched_history(self):
         """Prefetched history rows (newest first, via the history model's
         Meta.ordering) or None when 'history' was not prefetched.
@@ -300,10 +304,6 @@ class FeedSubmission(models.Model):
 
     # NOTE: realtime is handled via separate RealtimeSubmission flow
     # (see data_manager.models.RealtimeSubmission).
-
-    def __str__(self):
-        label = self.name or f"org_id={self.transport_organization_id}"
-        return f"FeedSubmission(id={self.id}, {self.data_type}, {label})"
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +491,10 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
             ),
         ]
 
+    def __str__(self):
+        source = self.url or getattr(self.file, 'name', '')
+        return f"StaticFeedEntry(id={self.id}, submission={self.submission_id}, source='{source}')"
+
     def clean(self):
         super().clean()
         has_url = bool(self.url)
@@ -543,10 +547,6 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
                 raise ValidationError(
                     'Server-downloaded static file fields cannot be used for a manual file upload.'
                 )
-
-    def __str__(self):
-        source = self.url or getattr(self.file, 'name', '')
-        return f"StaticFeedEntry(id={self.id}, submission={self.submission_id}, source='{source}')"
 
     @property
     def validation_source_file(self):
@@ -638,6 +638,14 @@ class FeedFetchError(models.Model):
         verbose_name = 'Feed Fetch Error'
         verbose_name_plural = 'Feed Fetch Errors'
 
+    def __str__(self):
+        source = (
+            f'static_entry={self.static_entry_id}'
+            if self.static_entry_id
+            else f'endpoint_rt={self.endpoint_rt_id}'
+        )
+        return f"FeedFetchError(id={self.id}, {source}, {self.error_type}, {self.occurred_at})"
+
     def clean(self):
         super().clean()
         has_static = bool(self.static_entry_id)
@@ -650,14 +658,6 @@ class FeedFetchError(models.Model):
             raise ValidationError(
                 'A FeedFetchError must be linked to either a StaticFeedEntry or a RealtimeEndpointRT.'
             )
-
-    def __str__(self):
-        source = (
-            f'static_entry={self.static_entry_id}'
-            if self.static_entry_id
-            else f'endpoint_rt={self.endpoint_rt_id}'
-        )
-        return f"FeedFetchError(id={self.id}, {source}, {self.error_type}, {self.occurred_at})"
 
 
 # ---------------------------------------------------------------------------
@@ -726,6 +726,9 @@ class RealtimeSubmission(models.Model):
                 name='unique_realtime_protocol_per_static_submission',
             )
         ]
+
+    def __str__(self):
+        return f"RealtimeSubmission(id={self.id}, protocol={self.protocol}, org={self.transport_organization_id})"
 
     def allowed_endpoint_types(self) -> set:
         if self.protocol == self.PROTOCOL_GTFS_RT:
@@ -846,9 +849,6 @@ class RealtimeSubmission(models.Model):
             )
         return completed.created_at if completed else None
 
-    def __str__(self):
-        return f"RealtimeSubmission(id={self.id}, protocol={self.protocol}, org={self.transport_organization_id})"
-
 
 class RealtimeSubmissionHistory(models.Model):
     EVENT_UPLOADED = 'uploaded'
@@ -961,6 +961,9 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
             ),
         ]
 
+    def __str__(self):
+        return f"RealtimeEndpointRT(id={self.id}, type={self.endpoint_type}, submission={self.submission_id})"
+
     def clean(self):
         super().clean()
         if self.auth_type:
@@ -977,9 +980,6 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
     def is_proxy_managed(self) -> bool:
         """True when the server periodically caches and serves this endpoint URL."""
         return self.hide_original
-
-    def __str__(self):
-        return f"RealtimeEndpointRT(id={self.id}, type={self.endpoint_type}, submission={self.submission_id})"
 
 
 # ---------------------------------------------------------------------------

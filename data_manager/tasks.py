@@ -605,7 +605,6 @@ def validate_gtfs_feed_task(self, entry_id: int):
 
         # Host paths for Docker bind mounts
         host_input_dir = os.path.join(host_media_root, relative_dir)
-        host_file_path = os.path.join(host_input_dir, filename)
 
         report_dir_name = f"validation_report_{entry.id}_{random.randint(1000, 9999)}"
         container_output_dir = os.path.join(container_input_dir, report_dir_name)
@@ -680,7 +679,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             if nano_cpus:
                 run_kwargs['nano_cpus'] = int(nano_cpus)
 
-            container = client.containers.run(**run_kwargs)
+            client.containers.run(**run_kwargs)
 
             logger.info("Validation container finished.")
 

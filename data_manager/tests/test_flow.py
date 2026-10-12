@@ -200,7 +200,6 @@ def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
     # 1. User uploads INVALID GTFS
     api_client.force_authenticate(user=normal_user)
 
-    gtfs_correct = os.path.join(os.path.dirname(__file__), 'GTFS_correct.zip')
     gtfs_wrong = os.path.join(os.path.dirname(__file__), 'GTFS_wrong.zip')
 
     upload_url = '/api/data_manager/feed-submissions/'
