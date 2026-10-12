@@ -263,6 +263,7 @@ Base endpoint:
 **Editing restrictions for the owner (realtime feed):**
 
 - **Full editing** — at stage **1** or after a **rejection** (`is_rejected`): the owner may change, among others, **`name`**, endpoint URLs, authorization (`auth_type`, `auth_value`), `is_original`, `hide_original`, and replace the entire `endpoints` list; the backend may re-run realtime validation after such a change.
+- **Stored secrets on a full edit** (owner or Admin): `auth_value` is never returned, so it may be omitted (or sent as `""`) when the user does not retype it. If the endpoint of the same `endpoint_type` had the same `auth_type` before the edit, its stored `auth_value` is kept. To replace the secret, send the new `auth_value`; when changing `auth_type`, send the new `auth_value` too; to remove authorization, send `"auth_type": ""`.
 - **Editing from stage 2 upwards** — when there is **no** rejection and `current_stage >= 2`, `DataProvider` may change only:
   - on the submission: **`note`**, **`license`** (the **`name` field is locked**);
   - in each **existing** endpoint: only **`interval`**.

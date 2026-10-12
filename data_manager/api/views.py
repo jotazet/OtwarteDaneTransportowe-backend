@@ -932,10 +932,20 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                                 raise_as_drf_validation_error(exc, field='endpoints')
                             obj.save(update_fields=['interval'])
                 else:
+                    # Clients send auth_value only when the user retypes it, so
+                    # keep the stored secret of an endpoint whose auth_type is
+                    # unchanged instead of dropping it with the old rows.
+                    old_auth = {
+                        e.endpoint_type: (e.auth_type, e.auth_value)
+                        for e in instance.endpoints.all()
+                    }
                     instance.endpoints.all().delete()
                     for ep in endpoints_data:
                         if ep.get('auth_type'):
                             ep['hide_original'] = True
+                            old_type, old_value = old_auth.get(ep['endpoint_type'], ('', None))
+                            if not ep.get('auth_value') and old_type == ep['auth_type']:
+                                ep['auth_value'] = old_value
                         o = RealtimeEndpointRT(submission=instance, **ep)
                         try:
                             o.full_clean()

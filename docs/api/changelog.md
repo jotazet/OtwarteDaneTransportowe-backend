@@ -2,6 +2,14 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10: a full realtime edit keeps stored endpoint secrets
+
+Not breaking: the request and response shapes are unchanged.
+
+A full edit of a realtime submission (`PUT/PATCH /api/data_manager/realtime-submissions/{id}/` with `endpoints`, by the owner at stage 1 or after a rejection, or by an Admin) replaces the endpoint rows. `auth_value` is write-only, so the frontend sends it only when the user retypes it, and the stored secret used to be lost while `auth_type` stayed set: the server then fetched the source without credentials. Now, when an endpoint is sent with `auth_type` but without `auth_value` (or with `""`), and the previous endpoint of the same `endpoint_type` had the same `auth_type`, the stored secret is kept. See [Feeds API](feeds.md#realtime-feeds-realtimesubmission).
+
+---
+
 ## 2026-10: a failed re-validation no longer unpublishes a realtime feed
 
 Not breaking: the response shape is unchanged.

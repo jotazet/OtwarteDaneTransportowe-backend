@@ -1472,6 +1472,95 @@ def test_admin_endpoint_edit_keeps_published_rt_stage(
     schedule_mock.assert_called_once_with(rts.id)
 
 
+def _realtime_with_secret(settings, org, owner, stage_after):
+    """A realtime submission whose endpoint has an encrypted secret."""
+    from cryptography.fernet import Fernet
+
+    settings.FEED_AUTH_ENCRYPTION_KEY = Fernet.generate_key().decode()
+    rts = RealtimeSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=owner,
+        protocol=RealtimeSubmission.PROTOCOL_GBFS,
+    )
+    RealtimeSubmissionHistory.objects.create(
+        submission=rts,
+        event_type=RealtimeSubmissionHistory.EVENT_COMPLETED
+        if stage_after == 4
+        else RealtimeSubmissionHistory.EVENT_UPLOADED,
+        stage_before=stage_after - 1,
+        stage_after=stage_after,
+        actor=owner,
+    )
+    RealtimeEndpointRT.objects.create(
+        submission=rts,
+        endpoint_type='gbfs',
+        url='https://example.org/gbfs.json',
+        hide_original=True,
+        auth_type='api_key',
+        auth_value='old-secret',
+    )
+    return rts
+
+
+@pytest.mark.parametrize(
+    ('sent', 'expected_value'),
+    [
+        ({'auth_type': 'api_key'}, 'old-secret'),
+        ({'auth_type': 'api_key', 'auth_value': ''}, 'old-secret'),
+        ({'auth_type': 'api_key', 'auth_value': 'new-secret'}, 'new-secret'),
+        ({'auth_type': 'bearer_token'}, None),
+        ({'auth_type': ''}, None),
+    ],
+)
+def test_owner_full_edit_keeps_stored_auth_value(
+    api_client, normal_user, org, settings, sent, expected_value
+):
+    """The frontend sends auth_value only when the user retypes it; replacing
+    the endpoints must not silently drop the stored secret."""
+    rts = _realtime_with_secret(settings, org, normal_user, stage_after=1)
+
+    api_client.force_authenticate(user=normal_user)
+    response = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'endpoints': [{'endpoint_type': 'gbfs', 'url': 'https://example.org/v2.json', **sent}]},
+        format='json',
+    )
+
+    assert response.status_code == 200, response.data
+    endpoint = RealtimeEndpointRT.objects.get(submission=rts)
+    assert endpoint.url == 'https://example.org/v2.json'
+    assert endpoint.auth_type == sent['auth_type']
+    assert (endpoint.auth_value or None) == expected_value
+
+
+def test_admin_endpoint_edit_keeps_stored_auth_value(
+    api_client, admin_role_user, normal_user, org, settings
+):
+    rts = _realtime_with_secret(settings, org, normal_user, stage_after=4)
+
+    api_client.force_authenticate(user=admin_role_user)
+    with (
+        patch('data_manager.tasks.validate_realtime_submission_task.delay'),
+        patch('data_manager.tasks.schedule_realtime_endpoint_fetches'),
+    ):
+        response = api_client.patch(
+            f'/api/data_manager/realtime-submissions/{rts.id}/',
+            {
+                'endpoints': [
+                    {
+                        'endpoint_type': 'gbfs',
+                        'url': 'https://example.org/v2.json',
+                        'auth_type': 'api_key',
+                    }
+                ]
+            },
+            format='json',
+        )
+
+    assert response.status_code == 200, response.data
+    assert RealtimeEndpointRT.objects.get(submission=rts).auth_value == 'old-secret'
+
+
 def test_rejected_resubmission_with_same_url_requeues_validation(
     api_client,
     normal_user,
