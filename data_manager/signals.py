@@ -45,6 +45,13 @@ def capture_static_entry_file_state(sender, instance, **kwargs):
     instance._prev_cached_file_name = _file_field_name(old.cached_file)
 
 
+def _queue_gtfs_validation(instance) -> None:
+    enqueue_on_commit(validate_gtfs_feed_task, instance.id)
+    # Lets FeedSubmissionWriteSerializer._schedule_source_refresh skip a second
+    # run for the same entry (e.g. a rejected resubmission with a new file).
+    instance._gtfs_validation_queued = True
+
+
 @receiver(post_save, sender=StaticFeedEntry)
 def trigger_gtfs_validation(sender, instance, created, **kwargs):
     """Queue GTFS validation when file or cached_file is set or changed."""
@@ -56,7 +63,7 @@ def trigger_gtfs_validation(sender, instance, created, **kwargs):
 
     if created:
         if instance.file or instance.cached_file:
-            enqueue_on_commit(validate_gtfs_feed_task, instance.id)
+            _queue_gtfs_validation(instance)
         return
 
     prev_file = getattr(instance, '_prev_file_name', None)
@@ -66,4 +73,4 @@ def trigger_gtfs_validation(sender, instance, created, **kwargs):
 
     if prev_file != new_file or prev_cached != new_cached:
         if instance.file or instance.cached_file:
-            enqueue_on_commit(validate_gtfs_feed_task, instance.id)
+            _queue_gtfs_validation(instance)
