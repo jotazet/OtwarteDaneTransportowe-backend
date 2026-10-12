@@ -53,6 +53,13 @@ services:
     environment:
       DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
 
+  celery_planner_worker:
+    build:
+      args:
+        INSTALL_DEV: "false"
+    environment:
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
+
   migrate:
     build:
       args:

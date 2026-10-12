@@ -27,6 +27,7 @@ logs/
 *.logs
 
 uploaded_data/
+planner_data/
 staticfiles/
 media/
 

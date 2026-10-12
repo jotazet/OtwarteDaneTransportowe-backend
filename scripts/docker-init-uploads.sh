@@ -1,5 +1,7 @@
 #!/bin/sh
 # Run as root (default Alpine). Fixes bind-mounted uploaded_data for app UID:GID.
 set -eu
-mkdir -p /app/uploaded_data
+mkdir -p /app/uploaded_data /app/planner_data
+# Journey planner graphs are large: only the top directory, not recursively.
+chown "${TARGET_UID:-1000}:${TARGET_GID:-1000}" /app/planner_data
 exec chown -R "${TARGET_UID:-1000}:${TARGET_GID:-1000}" /app/uploaded_data
