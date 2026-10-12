@@ -46,7 +46,9 @@ def provider_user():
 
 @pytest.fixture
 def helper_user():
-    user = get_user_model().objects.create_user('helper-fetch', 'helper-fetch@example.com', 'password')
+    user = get_user_model().objects.create_user(
+        'helper-fetch', 'helper-fetch@example.com', 'password'
+    )
     group, _ = Group.objects.get_or_create(name='Helper')
     user.groups.add(group)
     return user
@@ -104,7 +106,11 @@ def _published_realtime_endpoint(org, provider_user):
 
 
 def test_static_fetch_errors_apply_pause_sequence_and_success_resets(
-    settings, tmp_path, monkeypatch, org, provider_user,
+    settings,
+    tmp_path,
+    monkeypatch,
+    org,
+    provider_user,
 ):
     settings.MEDIA_ROOT = tmp_path
     entry = _published_static_entry(org, provider_user)
@@ -156,7 +162,9 @@ def test_static_fetch_errors_apply_pause_sequence_and_success_resets(
         yield Response(), io.BytesIO(Response.content)
 
     monkeypatch.setattr('data_manager.scheduler.safe_download', _succeeding)
-    monkeypatch.setattr('data_manager.tasks.validate_gtfs_feed_task.delay', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        'data_manager.tasks.validate_gtfs_feed_task.delay', lambda *args, **kwargs: None
+    )
 
     result = _fetch_static_entry(entry)
     entry.refresh_from_db()
@@ -177,14 +185,18 @@ def test_static_dispatch_skips_paused_and_future_delayed_entries(monkeypatch, or
     future.save(update_fields=['fetch_status', 'next_fetch_after'])
 
     calls = []
-    monkeypatch.setattr(tasks.fetch_static_entry_task, 'delay', lambda entry_id: calls.append(entry_id))
+    monkeypatch.setattr(
+        tasks.fetch_static_entry_task, 'delay', lambda entry_id: calls.append(entry_id)
+    )
 
     result = tasks.refresh_static_feeds_task()
     assert result['dispatched'] == 1
     assert calls == [due.id]
 
 
-def test_fetch_error_api_and_manual_static_pause_resume(api_client, org, provider_user, helper_user):
+def test_fetch_error_api_and_manual_static_pause_resume(
+    api_client, org, provider_user, helper_user
+):
     entry = _published_static_entry(org, provider_user)
     FeedFetchError.objects.create(
         static_entry=entry,
@@ -194,7 +206,9 @@ def test_fetch_error_api_and_manual_static_pause_resume(api_client, org, provide
     )
 
     api_client.force_authenticate(user=provider_user)
-    errors = api_client.get(f'/api/data_manager/feed-submissions/{entry.submission_id}/fetch-errors/?days=7')
+    errors = api_client.get(
+        f'/api/data_manager/feed-submissions/{entry.submission_id}/fetch-errors/?days=7'
+    )
     assert errors.status_code == 200
     assert errors.data['count'] == 1
     row = errors.data['results'][0]
@@ -225,7 +239,9 @@ def test_fetch_error_api_and_manual_static_pause_resume(api_client, org, provide
     assert resumed.data['fetch_failure_count'] == 0
 
 
-def test_realtime_pause_resume_schedules_endpoint(api_client, org, provider_user, helper_user, monkeypatch):
+def test_realtime_pause_resume_schedules_endpoint(
+    api_client, org, provider_user, helper_user, monkeypatch
+):
     endpoint = _published_realtime_endpoint(org, provider_user)
     calls = []
     monkeypatch.setattr(
@@ -263,7 +279,10 @@ def test_realtime_pause_resume_schedules_endpoint(api_client, org, provider_user
 
 
 def test_global_fetch_errors_endpoint_filters_paginates_and_scopes(
-    api_client, org, provider_user, helper_user,
+    api_client,
+    org,
+    provider_user,
+    helper_user,
 ):
     static_entry = _published_static_entry(org, provider_user)
     rt_endpoint = _published_realtime_endpoint(org, provider_user)
@@ -324,7 +343,10 @@ def test_global_fetch_errors_endpoint_filters_paginates_and_scopes(
 
 def test_pause_rejected_for_non_proxied_feeds(api_client, org, provider_user, helper_user):
     static_entry = _published_static_entry(
-        org, provider_user, hide_original=False, url='https://example.org/direct.zip',
+        org,
+        provider_user,
+        hide_original=False,
+        url='https://example.org/direct.zip',
     )
     rt_endpoint = _published_realtime_endpoint(org, provider_user)
     rt_endpoint.hide_original = False
@@ -348,7 +370,9 @@ def test_pause_rejected_for_non_proxied_feeds(api_client, org, provider_user, he
 
 
 def test_create_non_proxied_url_triggers_validation_not_proxy_fetch(
-    monkeypatch, org, provider_user,
+    monkeypatch,
+    org,
+    provider_user,
 ):
     fetch_calls = []
     validate_calls = []
@@ -378,9 +402,11 @@ def test_create_non_proxied_url_triggers_validation_not_proxy_fetch(
     if entry.url:
         if entry.is_proxy_managed:
             from data_manager.tasks import fetch_static_entry_task
+
             fetch_static_entry_task.delay(entry.id)
         elif entry.submission.data_type == 'gtfs':
             from data_manager.tasks import validate_gtfs_feed_task
+
             validate_gtfs_feed_task.delay(entry.id)
 
     assert fetch_calls == []
@@ -418,7 +444,9 @@ def test_proxy_feeds_list_combines_static_and_realtime(api_client, org, provider
     assert rt_row['endpoint_type'] == 'gbfs'
 
     # Non-proxy feeds are excluded.
-    _published_static_entry(org, provider_user, hide_original=False, url='https://example.org/direct.zip')
+    _published_static_entry(
+        org, provider_user, hide_original=False, url='https://example.org/direct.zip'
+    )
     non_proxy_rt = _published_realtime_endpoint(org, provider_user)
     non_proxy_rt.hide_original = False
     non_proxy_rt.save(update_fields=['hide_original'])

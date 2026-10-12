@@ -33,4 +33,3 @@ class RolesInTokenObtainPairView(TokenObtainPairView):
 
 class ThrottledTokenRefreshView(TokenRefreshView):
     throttle_scope = 'login'
-

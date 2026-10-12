@@ -93,9 +93,7 @@ def _validate_gtfs_rt_protobuf(content: bytes) -> None:
             f'Fetched content is not a valid GTFS-RT protobuf feed ({exc}).'
         ) from exc
     if not message.header.gtfs_realtime_version:
-        raise InvalidFeedContent(
-            'GTFS-RT feed is missing header.gtfs_realtime_version.'
-        )
+        raise InvalidFeedContent('GTFS-RT feed is missing header.gtfs_realtime_version.')
 
 
 def validate_realtime_feed_content(protocol: str, content: bytes) -> None:
@@ -117,7 +115,9 @@ def validate_realtime_feed_content(protocol: str, content: bytes) -> None:
         _validate_gtfs_rt_protobuf(content)
     elif protocol == 'siri':
         if _looks_like_html(content):
-            raise InvalidFeedContent('Fetched content looks like an HTML page, not a SIRI document.')
+            raise InvalidFeedContent(
+                'Fetched content looks like an HTML page, not a SIRI document.'
+            )
 
 
 def validate_realtime_feed_stream(protocol: str, fh) -> None:

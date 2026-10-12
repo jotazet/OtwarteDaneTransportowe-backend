@@ -9,6 +9,7 @@ Wywoływane wyłącznie przez Celery tasks (data_manager/tasks.py):
 
 Nie wywoływać bezpośrednio — logika harmonogramu należy do tasków.
 """
+
 import logging
 import os
 from urllib.parse import urlparse
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 # Helper: autoryzacja
 # ---------------------------------------------------------------------------
 
+
 def _build_auth_headers(auth_type: str, auth_value: str | None) -> dict:
     """Buduje nagłówki HTTP na podstawie wybranego typu autentykacji."""
     if auth_type == 'api_key' and auth_value:
@@ -48,6 +50,7 @@ def _build_auth_headers(auth_type: str, auth_value: str | None) -> dict:
         return {'Authorization': f'Bearer {auth_value}'}
     if auth_type == 'basic_auth' and auth_value:
         import base64
+
         encoded = base64.b64encode(auth_value.encode()).decode()
         return {'Authorization': f'Basic {encoded}'}
     return {}
@@ -56,6 +59,7 @@ def _build_auth_headers(auth_type: str, auth_value: str | None) -> dict:
 # ---------------------------------------------------------------------------
 # Helper: zatwierdzone submission IDs
 # ---------------------------------------------------------------------------
+
 
 def _completed_submission_ids() -> list[int]:
     """Zwraca PKs wszystkich FeedSubmission na etapie 4 (completed)."""
@@ -71,6 +75,7 @@ def _completed_realtime_submission_ids() -> list[int]:
 # Pobieranie — feed statyczny
 # ---------------------------------------------------------------------------
 
+
 def _delete_stale_cache_file(field_file, old_name: str | None) -> None:
     """Remove the previous cache file when a fetch stored it under a new name.
 
@@ -85,8 +90,8 @@ def _delete_stale_cache_file(field_file, old_name: str | None) -> None:
 # whether a retry is warranted. Exceptions are still swallowed here so direct
 # callers (management commands) stay resilient.
 FETCH_OK = 'ok'
-FETCH_TRANSIENT = 'transient'   # timeout / connection / 5xx -> worth retrying
-FETCH_PERMANENT = 'permanent'   # blocked URL / 4xx / invalid -> do not retry
+FETCH_TRANSIENT = 'transient'  # timeout / connection / 5xx -> worth retrying
+FETCH_PERMANENT = 'permanent'  # blocked URL / 4xx / invalid -> do not retry
 
 
 def _fetch_static_entry(entry: StaticFeedEntry) -> str:
@@ -172,6 +177,7 @@ def _log_static_error(entry, error_type, exc, http_code=None) -> None:
 # ---------------------------------------------------------------------------
 # Pobieranie — endpoint realtime (RealtimeEndpointRT)
 # ---------------------------------------------------------------------------
+
 
 def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
     """Pobiera plik z URL i zapisuje jako cached_file. Błędy trafiają do FeedFetchError."""

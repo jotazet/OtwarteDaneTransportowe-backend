@@ -1,4 +1,5 @@
 """Role resolution: the ``Admin`` group (or superuser) is the only source of truth."""
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group

@@ -72,7 +72,9 @@ class UserViewSet(viewsets.ModelViewSet):
         if (roles is not None or is_active is not None) and would_remove_last_admin(
             instance, new_roles=roles, new_is_active=is_active
         ):
-            raise ValidationError('Cannot remove the Admin role from, or deactivate, the last admin user.')
+            raise ValidationError(
+                'Cannot remove the Admin role from, or deactivate, the last admin user.'
+            )
         serializer.save()
 
     @action(detail=True, methods=['post'], url_path='reset-password')

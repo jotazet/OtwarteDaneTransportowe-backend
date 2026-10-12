@@ -5,6 +5,7 @@ Usage:
     python manage.py retry_gtfs_validation
     python manage.py retry_gtfs_validation --submission-id 64
 """
+
 from django.core.management.base import BaseCommand
 
 from data_manager.models import FeedSubmission, StaticFeedEntry

@@ -43,7 +43,9 @@ def admin_group_user_count(exclude_user_id=None) -> int:
     return qs.count()
 
 
-def would_remove_last_admin(user, new_roles: list[str] | None, new_is_active: bool | None = None) -> bool:
+def would_remove_last_admin(
+    user, new_roles: list[str] | None, new_is_active: bool | None = None
+) -> bool:
     """True if the change (role removal, deletion or deactivation) would leave zero active admins.
 
     ``new_roles is None`` means roles are unchanged; ``new_is_active is False``

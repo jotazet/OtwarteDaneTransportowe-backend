@@ -11,6 +11,7 @@ Uwaga: feedy realtime są obsługiwane wyłącznie przez Celery (self-scheduling
 Użycie:
     python manage.py refresh_feeds   # odświeża feedy statyczne zaplanowane na teraz
 """
+
 from django.core.management.base import BaseCommand
 
 from data_manager.scheduler import _fetch_static_entry, _completed_submission_ids
@@ -26,9 +27,8 @@ class Command(BaseCommand):
         now = timezone.now()
         now_time = timezone.now().time().replace(second=0, microsecond=0)
         completed_ids = _completed_submission_ids()
-        scheduled_due = (
-            Q(fetch_status=FETCH_STATUS_ACTIVE)
-            & (Q(download_time_1=now_time) | Q(download_time_2=now_time))
+        scheduled_due = Q(fetch_status=FETCH_STATUS_ACTIVE) & (
+            Q(download_time_1=now_time) | Q(download_time_2=now_time)
         )
         retry_due = Q(fetch_status=FETCH_STATUS_DELAYED, next_fetch_after__lte=now)
 
@@ -36,9 +36,7 @@ class Command(BaseCommand):
             hide_original=True,
             url__isnull=False,
             submission_id__in=completed_ids,
-        ).filter(
-            scheduled_due | retry_due
-        )
+        ).filter(scheduled_due | retry_due)
 
         count = 0
         for entry in entries:

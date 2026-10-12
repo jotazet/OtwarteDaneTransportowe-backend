@@ -13,6 +13,7 @@ Usage:
     python manage.py retry_realtime_validation --submission-id 12
     python manage.py retry_realtime_validation --older-than-minutes 30
 """
+
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand

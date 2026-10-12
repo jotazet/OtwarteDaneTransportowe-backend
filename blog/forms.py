@@ -29,4 +29,3 @@ class PostAdminForm(forms.ModelForm):
             if request is not None and getattr(request, 'user', None) is not None:
                 username = getattr(request.user, 'username', None) or str(request.user)
             self.fields['current_author'].initial = username or '-'
-

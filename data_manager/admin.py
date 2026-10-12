@@ -54,10 +54,17 @@ class StaticFeedEntryInline(admin.StackedInline):
     extra = 0
     max_num = None
     fields = (
-        'url', 'file', 'is_original', 'hide_original',
-        'auth_type', 'auth_value',
-        'download_time_1', 'download_time_2',
-        'license', 'cached_at', 'uploaded_at',
+        'url',
+        'file',
+        'is_original',
+        'hide_original',
+        'auth_type',
+        'auth_value',
+        'download_time_1',
+        'download_time_2',
+        'license',
+        'cached_at',
+        'uploaded_at',
     )
     readonly_fields = ('cached_at', 'uploaded_at')
 
@@ -68,8 +75,14 @@ class RealtimeEndpointRTInline(admin.TabularInline):
     fk_name = 'submission'
     extra = 0
     fields = (
-        'endpoint_type', 'url', 'is_original', 'hide_original',
-        'auth_type', 'auth_value', 'interval', 'cached_at',
+        'endpoint_type',
+        'url',
+        'is_original',
+        'hide_original',
+        'auth_type',
+        'auth_value',
+        'interval',
+        'cached_at',
     )
     readonly_fields = ('cached_at',)
 
@@ -119,10 +132,26 @@ class RealtimeSubmissionAdmin(admin.ModelAdmin):
 
 @admin.register(FeedSubmissionHistory)
 class FeedSubmissionHistoryAdmin(admin.ModelAdmin):
-    list_display = ('id', 'submission', 'event_type', 'stage_before', 'stage_after', 'actor', 'created_at')
+    list_display = (
+        'id',
+        'submission',
+        'event_type',
+        'stage_before',
+        'stage_after',
+        'actor',
+        'created_at',
+    )
     list_filter = ('event_type',)
     search_fields = ('submission__name', 'cause')
-    readonly_fields = ('submission', 'event_type', 'stage_before', 'stage_after', 'actor', 'cause', 'created_at')
+    readonly_fields = (
+        'submission',
+        'event_type',
+        'stage_before',
+        'stage_after',
+        'actor',
+        'cause',
+        'created_at',
+    )
 
     def has_add_permission(self, request):
         return False
@@ -136,12 +165,24 @@ class FeedSubmissionHistoryAdmin(admin.ModelAdmin):
 
 @admin.register(FeedFetchError)
 class FeedFetchErrorAdmin(admin.ModelAdmin):
-    list_display = ('id', 'get_source', 'error_type', 'http_status_code', 'url_attempted', 'occurred_at')
+    list_display = (
+        'id',
+        'get_source',
+        'error_type',
+        'http_status_code',
+        'url_attempted',
+        'occurred_at',
+    )
     list_filter = ('error_type', 'occurred_at')
     search_fields = ('url_attempted', 'message')
     readonly_fields = (
-        'static_entry', 'endpoint_rt', 'error_type', 'http_status_code',
-        'message', 'url_attempted', 'occurred_at',
+        'static_entry',
+        'endpoint_rt',
+        'error_type',
+        'http_status_code',
+        'message',
+        'url_attempted',
+        'occurred_at',
     )
 
     @admin.display(description='Source')
@@ -163,8 +204,13 @@ class FeedFetchErrorAdmin(admin.ModelAdmin):
 @admin.register(FeedSubmission)
 class FeedSubmissionAdmin(admin.ModelAdmin):
     list_display = (
-        'id', 'transport_organization', 'data_type',
-        'name', 'get_current_stage', 'get_is_rejected', 'created_at',
+        'id',
+        'transport_organization',
+        'data_type',
+        'name',
+        'get_current_stage',
+        'get_is_rejected',
+        'created_at',
     )
     list_filter = ('data_type', 'created_at')
     search_fields = (
@@ -173,8 +219,12 @@ class FeedSubmissionAdmin(admin.ModelAdmin):
         'transport_organization__transport_organization',
     )
     readonly_fields = (
-        'created_at', 'updated_at',
-        'get_current_stage', 'get_current_stage_label', 'get_is_rejected', 'get_rejection_cause',
+        'created_at',
+        'updated_at',
+        'get_current_stage',
+        'get_current_stage_label',
+        'get_is_rejected',
+        'get_rejection_cause',
     )
     date_hierarchy = 'created_at'
     inlines = [
@@ -184,22 +234,36 @@ class FeedSubmissionAdmin(admin.ModelAdmin):
     actions = ['advance_to_next_stage']
 
     fieldsets = (
-        ('Submission Info', {
-            'fields': (
-                'transport_organization', 'submitted_by',
-                'data_type', 'name', 'note',
-            )
-        }),
-        ('Current Status (computed from history)', {
-            'fields': (
-                'get_current_stage', 'get_current_stage_label',
-                'get_is_rejected', 'get_rejection_cause',
-            )
-        }),
-        ('Timestamps', {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',),
-        }),
+        (
+            'Submission Info',
+            {
+                'fields': (
+                    'transport_organization',
+                    'submitted_by',
+                    'data_type',
+                    'name',
+                    'note',
+                )
+            },
+        ),
+        (
+            'Current Status (computed from history)',
+            {
+                'fields': (
+                    'get_current_stage',
+                    'get_current_stage_label',
+                    'get_is_rejected',
+                    'get_rejection_cause',
+                )
+            },
+        ),
+        (
+            'Timestamps',
+            {
+                'fields': ('created_at', 'updated_at'),
+                'classes': ('collapse',),
+            },
+        ),
     )
 
     @admin.display(description='Stage')

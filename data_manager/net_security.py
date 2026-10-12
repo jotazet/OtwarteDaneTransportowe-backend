@@ -150,6 +150,7 @@ def _may_forward_auth(origin: tuple[str, str, int], target: tuple[str, str, int]
 # DNS pinning
 # ---------------------------------------------------------------------------
 
+
 @contextmanager
 def _pinned_dns(hostname: str, allowed_ips: set[str]):
     """
@@ -240,9 +241,7 @@ def _ca_bundle_with_aia_intermediates(hostname: str, port: int) -> str | None:
         # by the caller.
         leaf_pem = ssl.get_server_certificate((hostname, port), timeout=10)
         leaf = x509.load_pem_x509_certificate(leaf_pem.encode())
-        aia = leaf.extensions.get_extension_for_class(
-            x509.AuthorityInformationAccess
-        ).value
+        aia = leaf.extensions.get_extension_for_class(x509.AuthorityInformationAccess).value
         issuer_urls = [
             desc.access_location.value
             for desc in aia
@@ -271,9 +270,7 @@ def _ca_bundle_with_aia_intermediates(hostname: str, port: int) -> str | None:
                 cert = x509.load_der_x509_certificate(fetched.content)
             except ValueError:
                 cert = x509.load_pem_x509_certificate(fetched.content)
-            intermediate_pems.append(
-                cert.public_bytes(serialization.Encoding.PEM).decode()
-            )
+            intermediate_pems.append(cert.public_bytes(serialization.Encoding.PEM).decode())
         except Exception:
             continue
 
@@ -295,6 +292,7 @@ def _ca_bundle_with_aia_intermediates(hostname: str, port: int) -> str | None:
 # Hardened GET
 # ---------------------------------------------------------------------------
 
+
 class _Deadline:
     """Total wall-clock budget for a fetch.
 
@@ -309,9 +307,7 @@ class _Deadline:
 
     def check(self) -> None:
         if self._expires_at is not None and time.monotonic() > self._expires_at:
-            raise requests.exceptions.Timeout(
-                'Total download time budget exceeded.'
-            )
+            raise requests.exceptions.Timeout('Total download time budget exceeded.')
 
 
 def _drain_to_spool(response, *, max_bytes: int, chunk_size: int, deadline: _Deadline):
@@ -322,9 +318,7 @@ def _drain_to_spool(response, *, max_bytes: int, chunk_size: int, deadline: _Dea
     """
     import tempfile
 
-    spool = tempfile.SpooledTemporaryFile(
-        max_size=SPOOL_MAX_MEMORY_BYTES, mode='w+b'
-    )
+    spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES, mode='w+b')
     try:
         total = 0
         for chunk in response.iter_content(chunk_size=chunk_size):
@@ -333,9 +327,7 @@ def _drain_to_spool(response, *, max_bytes: int, chunk_size: int, deadline: _Dea
             deadline.check()
             total += len(chunk)
             if total > max_bytes:
-                raise OutboundURLBlocked(
-                    f"Response body exceeds the {max_bytes} byte limit."
-                )
+                raise OutboundURLBlocked(f"Response body exceeds the {max_bytes} byte limit.")
             spool.write(chunk)
         spool.seek(0)
         return spool

@@ -36,4 +36,3 @@ class TransportOrganizationViewSet(viewsets.ModelViewSet):
         if self.action == 'retrieve':
             return TransportOrganizationDetailSerializer
         return TransportOrganizationSerializer
-

@@ -10,13 +10,15 @@ INSECURE_SECRET_KEY_PLACEHOLDER = 'django-insecure-dev-placeholder'
 
 # Values that must never be accepted as a production SECRET_KEY. Covers the dev
 # placeholder plus the usual "forgot to replace the example value" suspects.
-WEAK_SECRET_KEYS = frozenset({
-    INSECURE_SECRET_KEY_PLACEHOLDER,
-    'change-me',
-    'changeme',
-    'secret',
-    '',
-})
+WEAK_SECRET_KEYS = frozenset(
+    {
+        INSECURE_SECRET_KEY_PLACEHOLDER,
+        'change-me',
+        'changeme',
+        'secret',
+        '',
+    }
+)
 
 
 def validate_production_secret_key(key: str | None) -> None:
@@ -32,6 +34,7 @@ def validate_production_secret_key(key: str | None) -> None:
             '(at least 32 characters, not an example/placeholder value). '
             'Generate one with: python3 -c "import secrets; print(secrets.token_urlsafe(64))"'
         )
+
 
 # Path to the project root on the HOST machine.
 HOST_PROJECT_PATH = os.environ.get('HOST_PROJECT_PATH', str(BASE_DIR))
@@ -69,7 +72,6 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'django.contrib.postgres',
-
     # Third-party
     'rest_framework',
     'rest_framework_simplejwt',
@@ -79,7 +81,6 @@ INSTALLED_APPS = [
     'drf_spectacular_sidecar',
     'django_celery_beat',
     'corsheaders',
-
     # Local apps
     'blog.apps.BlogConfig',
     'cases.apps.CasesConfig',

@@ -14,6 +14,7 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+
 from pathlib import Path
 
 from django.conf import settings
@@ -31,11 +32,14 @@ from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairView, Thrott
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-
     path('feed/', PublicFeedDownloadView.as_view(), name='feed-download-base'),
     path('feed/<int:pk>/', PublicFeedDownloadView.as_view(), name='feed-download-info'),
-    path('feed/<int:pk>/<str:filename>', PublicFeedDownloadView.as_view(), name='feed-download-file'),
-    path('feed/rt/<int:pk>/', RealtimePublicFeedDownloadView.as_view(), name='feed-rt-download-info'),
+    path(
+        'feed/<int:pk>/<str:filename>', PublicFeedDownloadView.as_view(), name='feed-download-file'
+    ),
+    path(
+        'feed/rt/<int:pk>/', RealtimePublicFeedDownloadView.as_view(), name='feed-rt-download-info'
+    ),
     # Canonical download route: endpoint_type is unique per submission (see
     # RealtimeEndpointRT.Meta), unlike cache filenames which can collide.
     path(
@@ -44,13 +48,15 @@ urlpatterns = [
         name='feed-rt-download-endpoint',
     ),
     # Legacy filename route (no trailing slash), kept for old consumers.
-    path('feed/rt/<int:pk>/<str:filename>', RealtimePublicFeedDownloadView.as_view(), name='feed-rt-download-file'),
-
+    path(
+        'feed/rt/<int:pk>/<str:filename>',
+        RealtimePublicFeedDownloadView.as_view(),
+        name='feed-rt-download-file',
+    ),
     path('api/cases/', include('cases.api.urls')),
     path('api/blog/', include('blog.api.urls')),
     path('api/data_manager/', include('data_manager.api.urls')),
     path('api/users/', include('accounts.api.urls')),
-
     path('api/auth/token/', RolesInTokenObtainPairView.as_view(), name='token-obtain-pair'),
     path('api/auth/token/refresh/', ThrottledTokenRefreshView.as_view(), name='token-refresh'),
 ]
@@ -59,7 +65,11 @@ urlpatterns = [
 # admins in production to avoid disclosing the full API surface.
 _schema_permissions = [AllowAny] if settings.DEBUG else [IsAdminUser]
 urlpatterns += [
-    path('api/schema/', SpectacularAPIView.as_view(permission_classes=_schema_permissions), name='schema'),
+    path(
+        'api/schema/',
+        SpectacularAPIView.as_view(permission_classes=_schema_permissions),
+        name='schema',
+    ),
     path(
         'api/schema/swagger-ui/',
         SpectacularSwaggerView.as_view(url_name='schema', permission_classes=_schema_permissions),

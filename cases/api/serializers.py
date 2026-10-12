@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from cases.models import CaseStatus, DataProvider, TransportOrganization
 
+
 class DataProviderSerializer(serializers.ModelSerializer):
     class Meta:
         model = DataProvider
@@ -95,4 +96,3 @@ class TransportOrganizationDetailSerializer(TransportOrganizationSerializer):
             }
             for s in statuses
         ]
-

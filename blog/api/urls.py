@@ -11,5 +11,9 @@ urlpatterns = [
     # Must be declared before the <int:post_id> route (it never matches 'mine',
     # but keeping them adjacent makes the precedence obvious).
     path('reactions/mine/', MyReactionsView.as_view(), name='my-reactions'),
-    path('reactions/<int:post_id>/', ReactionViewSet.as_view({'post': 'create'}), name='post-reactions'),
+    path(
+        'reactions/<int:post_id>/',
+        ReactionViewSet.as_view({'post': 'create'}),
+        name='post-reactions',
+    ),
 ]

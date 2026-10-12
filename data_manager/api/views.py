@@ -11,6 +11,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
 # DRF's ValidationError renders as HTTP 400; Django's would bubble up as 500.
 from rest_framework.exceptions import ValidationError
 from django.db.models import CharField, F, OuterRef, Q, Subquery, Prefetch, Value
@@ -128,6 +129,7 @@ class ProxyManagedFeedListView(APIView):
     Single paginated list of all proxy-managed feeds (static + realtime)
     that can be paused or resumed by operators.
     """
+
     permission_classes = [IsAuthenticated]
     # NOTE: plain APIView ignores pagination_class — pagination is done
     # manually in get() below.
@@ -155,19 +157,24 @@ class ProxyManagedFeedListView(APIView):
         ).order_by('sort_region', 'sort_org', 'sort_feed', 'id')
 
     def get(self, request):
-        static_qs = self._ordered(annotate_fetch_health(
-            StaticFeedEntry.objects
-            .filter(hide_original=True, url__isnull=False)
-            .exclude(url='')
-            .select_related('submission', 'submission__transport_organization', 'submission__submitted_by'),
-            'static_entry',
-        ))
-        rt_qs = self._ordered(annotate_fetch_health(
-            RealtimeEndpointRT.objects
-            .filter(hide_original=True)
-            .select_related('submission', 'submission__transport_organization', 'submission__submitted_by'),
-            'endpoint_rt',
-        ))
+        static_qs = self._ordered(
+            annotate_fetch_health(
+                StaticFeedEntry.objects.filter(hide_original=True, url__isnull=False)
+                .exclude(url='')
+                .select_related(
+                    'submission', 'submission__transport_organization', 'submission__submitted_by'
+                ),
+                'static_entry',
+            )
+        )
+        rt_qs = self._ordered(
+            annotate_fetch_health(
+                RealtimeEndpointRT.objects.filter(hide_original=True).select_related(
+                    'submission', 'submission__transport_organization', 'submission__submitted_by'
+                ),
+                'endpoint_rt',
+            )
+        )
         if not can_confirm_feeds(request.user):
             static_qs = static_qs.filter(submission__submitted_by=request.user)
             rt_qs = rt_qs.filter(submission__submitted_by=request.user)
@@ -186,8 +193,7 @@ class ProxyManagedFeedListView(APIView):
         # select_related and a fetch-health subquery per row — then sorting and
         # throwing away all but one page was unbounded work on every request.
         items = [
-            ProxyManagedFeedListSerializer.from_static_entry(entry)
-            for entry in static_qs[:cutoff]
+            ProxyManagedFeedListSerializer.from_static_entry(entry) for entry in static_qs[:cutoff]
         ]
         items.extend(
             ProxyManagedFeedListSerializer.from_realtime_endpoint(endpoint)
@@ -206,15 +212,19 @@ class ProxyManagedFeedListView(APIView):
         # Counting is a COUNT(*) per source; no rows are built for it.
         total = static_qs.count() + rt_qs.count()
         offset = (page_number - 1) * page_size
-        window = items[offset:offset + page_size]
+        window = items[offset : offset + page_size]
 
         serializer = ProxyManagedFeedListSerializer(window, many=True)
-        return Response(OrderedDict([
-            ('count', total),
-            ('next', _page_url(request, page_number + 1) if cutoff < total else None),
-            ('previous', _page_url(request, page_number - 1) if page_number > 1 else None),
-            ('results', serializer.data),
-        ]))
+        return Response(
+            OrderedDict(
+                [
+                    ('count', total),
+                    ('next', _page_url(request, page_number + 1) if cutoff < total else None),
+                    ('previous', _page_url(request, page_number - 1) if page_number > 1 else None),
+                    ('results', serializer.data),
+                ]
+            )
+        )
 
 
 class FetchErrorListView(generics.ListAPIView):
@@ -225,19 +235,16 @@ class FetchErrorListView(generics.ListAPIView):
     for feeds they submitted. Supports query params: days (default 7, max 365),
     error_type, source (static|realtime), endpoint_type, page, page_size.
     """
+
     permission_classes = [IsAuthenticated]
     serializer_class = FeedFetchErrorSerializer
     pagination_class = FetchErrorPagination
 
     def get_queryset(self):
         request = self.request
-        qs = (
-            FeedFetchError.objects
-            .filter(occurred_at__gte=_days_since(request))
-            .select_related(
-                'static_entry__submission__transport_organization',
-                'endpoint_rt__submission__transport_organization',
-            )
+        qs = FeedFetchError.objects.filter(occurred_at__gte=_days_since(request)).select_related(
+            'static_entry__submission__transport_organization',
+            'endpoint_rt__submission__transport_organization',
         )
         if not can_confirm_feeds(request.user):
             qs = qs.filter(
@@ -314,7 +321,7 @@ def _request_changes_static_source(request) -> bool:
     prefix = 'static_entry.'
     for key in request.data:
         if key.startswith(prefix):
-            field = key[len(prefix):].split('.')[0]
+            field = key[len(prefix) :].split('.')[0]
             if field in STATIC_ENTRY_SOURCE_FIELDS:
                 return True
     return False
@@ -325,6 +332,7 @@ class PublicFeedDownloadView(APIView):
     Statyczny feed opublikowany: GET /feed/<feed_submission_id>/
     Pliki RT (proxy): GET /feed/rt/<realtime_submission_id>/ — patrz RealtimePublicFeedDownloadView.
     """
+
     permission_classes = [AllowAny]
     throttle_scope = 'feed_download'
 
@@ -374,12 +382,15 @@ class RealtimePublicFeedDownloadView(APIView):
     znika z katalogu organizacji (rt_embed filtruje po rodzicu), ale pozostaje
     pobieralny tutaj i dalej odświeżany — decyzja produktowa, nie przeoczenie.
     """
+
     permission_classes = [AllowAny]
     throttle_scope = 'feed_download'
 
     def get(self, request, pk=None, endpoint_type=None, filename=None):
         if pk is None:
-            return Response({"detail": "Specify a realtime feed ID."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Specify a realtime feed ID."}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         if pk not in completed_realtime_submission_ids():
             raise Http404("Realtime feed not found or not published.")
@@ -402,17 +413,14 @@ class RealtimePublicFeedDownloadView(APIView):
 
         if not filename:
             base = request.build_absolute_uri(f'/feed/rt/{rts.id}/')
-            return Response({
-                'dynamic': {
-                    t: f"{base}{t}/"
-                    for t in dynamic_files
-                }
-            })
+            return Response({'dynamic': {t: f"{base}{t}/" for t in dynamic_files}})
 
         # Legacy filename matching, kept for backward compatibility.
         for payload in dynamic_files.values():
             if payload['filename'] == filename:
-                return FileResponse(payload['file'].open('rb'), as_attachment=True, filename=filename)
+                return FileResponse(
+                    payload['file'].open('rb'), as_attachment=True, filename=filename
+                )
 
         raise Http404("File not found.")
 
@@ -421,15 +429,17 @@ class RealtimePublicFeedDownloadView(APIView):
 # OrganizationViewSet – public feeds
 # ---------------------------------------------------------------------------
 
+
 class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [AllowAny]
 
     def get_queryset(self):
         approved_ids = completed_submission_ids()
-        latest_history = FeedSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by('-created_at', '-id')
+        latest_history = FeedSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by(
+            '-created_at', '-id'
+        )
         feeds_qs = (
-            FeedSubmission.objects
-            .filter(pk__in=approved_ids)
+            FeedSubmission.objects.filter(pk__in=approved_ids)
             .annotate(latest_event=Subquery(latest_history.values('event_type')[:1]))
             .exclude(latest_event=FeedSubmissionHistory.EVENT_REJECTED)
             .select_related('transport_organization', 'submitted_by', 'static_entry')
@@ -439,21 +449,19 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
         )
         published_rt = completed_realtime_submission_ids()
         gbfs_qs = (
-            RealtimeSubmission.objects
-            .filter(pk__in=published_rt, protocol=RealtimeSubmission.PROTOCOL_GBFS)
+            RealtimeSubmission.objects.filter(
+                pk__in=published_rt, protocol=RealtimeSubmission.PROTOCOL_GBFS
+            )
             .select_related('transport_organization')
             .prefetch_related('endpoints', 'history')
             .order_by('id')
         )
-        org_qs = (
-            TransportOrganization.objects
-            .prefetch_related(
-                'data_providers', 'case_status',
-                Prefetch('feed_submissions', queryset=feeds_qs, to_attr='feeds'),
-                Prefetch('realtime_submissions', queryset=gbfs_qs, to_attr='published_gbfs_feeds'),
-            )
-            .order_by('region', 'transport_organization')
-        )
+        org_qs = TransportOrganization.objects.prefetch_related(
+            'data_providers',
+            'case_status',
+            Prefetch('feed_submissions', queryset=feeds_qs, to_attr='feeds'),
+            Prefetch('realtime_submissions', queryset=gbfs_qs, to_attr='published_gbfs_feeds'),
+        ).order_by('region', 'transport_organization')
         return org_qs
 
     def _rt_embed_for(self, organizations) -> dict:
@@ -471,15 +479,12 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
         }
         if not static_ids:
             return {}
-        rts = (
-            RealtimeSubmission.objects.filter(
-                pk__in=set(completed_realtime_submission_ids()),
-                # org.feeds is already restricted to published submissions.
-                static_submission_id__in=static_ids,
-                protocol__in=[RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI],
-            )
-            .prefetch_related('endpoints', 'history')
-        )
+        rts = RealtimeSubmission.objects.filter(
+            pk__in=set(completed_realtime_submission_ids()),
+            # org.feeds is already restricted to published submissions.
+            static_submission_id__in=static_ids,
+            protocol__in=[RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI],
+        ).prefetch_related('endpoints', 'history')
         return {r.static_submission_id: r for r in rts}
 
     def get_serializer_context(self):
@@ -522,8 +527,7 @@ class UserSubmissionsView(APIView):
             )
 
         static_qs = (
-            FeedSubmission.objects
-            .filter(submitted_by=user)
+            FeedSubmission.objects.filter(submitted_by=user)
             .select_related('transport_organization', 'submitted_by', 'static_entry')
             .prefetch_related(
                 'history',
@@ -533,8 +537,7 @@ class UserSubmissionsView(APIView):
             .order_by('-created_at')
         )
         realtime_qs = (
-            RealtimeSubmission.objects
-            .filter(submitted_by=user)
+            RealtimeSubmission.objects.filter(submitted_by=user)
             .select_related('transport_organization', 'submitted_by', 'static_submission')
             .prefetch_related('endpoints', 'history')
             .order_by('-created_at')
@@ -548,8 +551,12 @@ class UserSubmissionsView(APIView):
         return Response(
             {
                 'user': user.id,
-                'static': UserFeedSubmissionListSerializer(static_qs, many=True, context={'request': request}).data,
-                'realtime': UserRealtimeSubmissionSerializer(realtime_qs, many=True, context={'request': request}).data,
+                'static': UserFeedSubmissionListSerializer(
+                    static_qs, many=True, context={'request': request}
+                ).data,
+                'realtime': UserRealtimeSubmissionSerializer(
+                    realtime_qs, many=True, context={'request': request}
+                ).data,
             }
         )
 
@@ -558,14 +565,17 @@ class UserSubmissionsView(APIView):
 # FeedSubmissionViewSet
 # ---------------------------------------------------------------------------
 
+
 class FeedSubmissionViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsFeedParticipant]
-    queryset = FeedSubmission.objects.all().select_related(
-        'transport_organization', 'submitted_by', 'static_entry'
-    ).prefetch_related(
-        'history',
-        'realtime_submissions__endpoints',
-        'realtime_submissions__history',
+    queryset = (
+        FeedSubmission.objects.all()
+        .select_related('transport_organization', 'submitted_by', 'static_entry')
+        .prefetch_related(
+            'history',
+            'realtime_submissions__endpoints',
+            'realtime_submissions__history',
+        )
     )
 
     def get_queryset(self):
@@ -648,7 +658,9 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         # For resubmissions the view schedules the source refresh itself (below),
         # so the serializer must not double-enqueue on a url change.
         context['defer_source_refresh'] = is_owner_resubmission
-        serializer = self.get_serializer(instance, data=request.data, partial=partial, context=context)
+        serializer = self.get_serializer(
+            instance, data=request.data, partial=partial, context=context
+        )
         serializer.is_valid(raise_exception=True)
 
         with transaction.atomic():
@@ -674,9 +686,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
                     FeedSubmissionWriteSerializer._schedule_source_refresh(entry)
 
             if can_confirm_feeds(request.user):
-                _apply_stage_transition(
-                    request, submission, history_model=FeedSubmissionHistory
-                )
+                _apply_stage_transition(request, submission, history_model=FeedSubmissionHistory)
 
         output = self._read_serializer(request, submission)
         return Response(output.data)
@@ -750,11 +760,18 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
 # RealtimeSubmissionViewSet
 # ---------------------------------------------------------------------------
 
+
 class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsFeedParticipant]
-    queryset = RealtimeSubmission.objects.all().select_related(
-        'transport_organization', 'submitted_by', 'static_submission',
-    ).prefetch_related('endpoints', 'history')
+    queryset = (
+        RealtimeSubmission.objects.all()
+        .select_related(
+            'transport_organization',
+            'submitted_by',
+            'static_submission',
+        )
+        .prefetch_related('endpoints', 'history')
+    )
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -782,8 +799,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
 
         data_types = [data_type] if data_type else ['gtfs', 'netex', 'other']
         qs = (
-            FeedSubmission.objects
-            .filter(
+            FeedSubmission.objects.filter(
                 pk__in=completed_submission_ids(),
                 transport_organization_id=transport_org,
                 data_type__in=data_types,
@@ -878,9 +894,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        restricted_realtime = not can_edit_realtime_submission_content(
-            request.user, instance
-        )
+        restricted_realtime = not can_edit_realtime_submission_content(request.user, instance)
         ctx = self.get_serializer_context()
         ctx['restricted_realtime_edit'] = restricted_realtime
         serializer = self.get_serializer(instance, data=request.data, partial=partial, context=ctx)
@@ -900,13 +914,15 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                         try:
                             obj = instance.endpoints.get(endpoint_type=ep['endpoint_type'])
                         except RealtimeEndpointRT.DoesNotExist:
-                            raise ValidationError({
-                                'endpoints': (
-                                    f"Unknown endpoint_type '{ep['endpoint_type']}' for this "
-                                    'submission; only interval changes to existing endpoints '
-                                    'are allowed after stage 1.'
-                                ),
-                            })
+                            raise ValidationError(
+                                {
+                                    'endpoints': (
+                                        f"Unknown endpoint_type '{ep['endpoint_type']}' for this "
+                                        'submission; only interval changes to existing endpoints '
+                                        'are allowed after stage 1.'
+                                    ),
+                                }
+                            )
                         if obj.interval != ep['interval']:
                             obj.interval = ep['interval']
                             try:
@@ -991,7 +1007,9 @@ class StaticFeedEntryViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = StaticFeedEntrySerializer
     queryset = StaticFeedEntry.objects.select_related(
-        'submission', 'submission__submitted_by', 'submission__transport_organization',
+        'submission',
+        'submission__submitted_by',
+        'submission__transport_organization',
     )
 
     def get_queryset(self):
@@ -1048,7 +1066,9 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = RealtimeEndpointRTSerializer
     queryset = RealtimeEndpointRT.objects.select_related(
-        'submission', 'submission__submitted_by', 'submission__transport_organization',
+        'submission',
+        'submission__submitted_by',
+        'submission__transport_organization',
     )
 
     def get_queryset(self):

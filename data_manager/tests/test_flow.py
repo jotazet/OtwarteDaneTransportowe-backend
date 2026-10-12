@@ -56,10 +56,12 @@ def fake_download(body: bytes, status_code: int = 200):
 def api_client():
     return APIClient()
 
+
 @pytest.fixture
 def admin_user():
     user = get_user_model()
     return user.objects.create_superuser('admin', 'admin@example.com', 'password')
+
 
 @pytest.fixture
 def normal_user():
@@ -77,10 +79,13 @@ def helper_user():
     user.groups.add(group)
     return user
 
+
 @pytest.fixture
 def org(normal_user, settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
-    return TransportOrganization.objects.create(region="Test Region", transport_organization="Test Org")
+    return TransportOrganization.objects.create(
+        region="Test Region", transport_organization="Test Org"
+    )
 
 
 def _mock_docker_from_env(error_count: int):
@@ -94,11 +99,13 @@ def _mock_docker_from_env(error_count: int):
             os.makedirs(output_host_dir, exist_ok=True)
             notices = []
             if error_count:
-                notices.append({
-                    'severity': 'ERROR',
-                    'totalNotices': error_count,
-                    'code': 'test_validation_error',
-                })
+                notices.append(
+                    {
+                        'severity': 'ERROR',
+                        'totalNotices': error_count,
+                        'code': 'test_validation_error',
+                    }
+                )
             payload = {
                 'summary': {'errorCount': error_count},
                 'notices': notices,
@@ -144,12 +151,18 @@ def test_gtfs_upload_flow_correct(api_client, admin_user, normal_user, org):
         with patch('docker.from_env', _mock_docker_from_env(0)):
             validate_gtfs_feed_task.delay(static_entry.id)
         static_entry.refresh_from_db()
-        assert hasattr(static_entry, 'validation_report'), f"Validation report was not created for {static_entry.id}"
-        assert static_entry.validation_report.error_count == 0, f"Expected no errors in the valid GTFS feed, but got {static_entry.validation_report.error_count}"
+        assert hasattr(static_entry, 'validation_report'), (
+            f"Validation report was not created for {static_entry.id}"
+        )
+        assert static_entry.validation_report.error_count == 0, (
+            f"Expected no errors in the valid GTFS feed, but got {static_entry.validation_report.error_count}"
+        )
         assert static_entry.validation_status == StaticFeedEntry.VALIDATION_VALID
 
     submission.refresh_from_db()
-    assert submission.current_stage == 3, f"Expected stage 3 (valid), got {submission.current_stage}"
+    assert submission.current_stage == 3, (
+        f"Expected stage 3 (valid), got {submission.current_stage}"
+    )
 
     # 3. Admin accepts the feed (publish)
     api_client.force_authenticate(user=admin_user)
@@ -170,12 +183,16 @@ def test_gtfs_upload_flow_correct(api_client, admin_user, normal_user, org):
     results = response.data if isinstance(response.data, list) else response.data.get('results', [])
     org_row = next((row for row in results if row['id'] == org.id), None)
     assert org_row is not None, "Organization not found in /feeds/ endpoint after reaching stage 4"
-    assert 'gtfs' in org_row['static_types'], "Published GTFS feed not reflected in organization static_types"
+    assert 'gtfs' in org_row['static_types'], (
+        "Published GTFS feed not reflected in organization static_types"
+    )
 
     response = api_client.get(f'{feeds_url}{org.id}/')
     assert response.status_code == 200
     nested_feed_ids = [f['id'] for f in response.data['feeds']]
-    assert submission_id in nested_feed_ids, "Feed not found in organization detail after reaching stage 4"
+    assert submission_id in nested_feed_ids, (
+        "Feed not found in organization detail after reaching stage 4"
+    )
 
 
 def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
@@ -210,14 +227,22 @@ def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
         with patch('docker.from_env', _mock_docker_from_env(3)):
             validate_gtfs_feed_task.delay(static_entry.id)
         static_entry.refresh_from_db()
-        assert hasattr(static_entry, 'validation_report'), f"Validation report was not created for {static_entry.id}"
-        assert static_entry.validation_report.error_count > 0, "Expected errors to be found in the invalid GTFS feed"
+        assert hasattr(static_entry, 'validation_report'), (
+            f"Validation report was not created for {static_entry.id}"
+        )
+        assert static_entry.validation_report.error_count > 0, (
+            "Expected errors to be found in the invalid GTFS feed"
+        )
         assert static_entry.validation_status == StaticFeedEntry.VALIDATION_INVALID
 
     submission.refresh_from_db()
-    assert submission.current_stage == 1, f"Expected stage 1 (rejected), got {submission.current_stage}"
+    assert submission.current_stage == 1, (
+        f"Expected stage 1 (rejected), got {submission.current_stage}"
+    )
 
-    rejected = FeedSubmissionHistory.objects.filter(submission=submission, event_type=FeedSubmissionHistory.EVENT_REJECTED).first()
+    rejected = FeedSubmissionHistory.objects.filter(
+        submission=submission, event_type=FeedSubmissionHistory.EVENT_REJECTED
+    ).first()
     assert rejected is not None
     assert rejected.cause != ""
 
@@ -274,12 +299,16 @@ def test_data_provider_cannot_confirm_feed(api_client, normal_user, org):
     )
 
     api_client.force_authenticate(user=normal_user)
-    response = api_client.patch(f'/api/data_manager/feed-submissions/{submission.id}/', {'stage': 4})
+    response = api_client.patch(
+        f'/api/data_manager/feed-submissions/{submission.id}/', {'stage': 4}
+    )
     assert response.status_code == 403
 
 
 def test_patch_feed_submission_keeps_url_when_json_sends_empty_url_and_null_file(
-    api_client, normal_user, org,
+    api_client,
+    normal_user,
+    org,
 ):
     submission = FeedSubmission.objects.create(
         transport_organization=org,
@@ -313,7 +342,11 @@ def test_patch_feed_submission_keeps_url_when_json_sends_empty_url_and_null_file
 
 
 def test_patch_feed_submission_keeps_file_when_json_sends_empty_url_and_null_file(
-    api_client, normal_user, org, settings, tmp_path,
+    api_client,
+    normal_user,
+    org,
+    settings,
+    tmp_path,
 ):
     settings.MEDIA_ROOT = tmp_path
     submission = FeedSubmission.objects.create(
@@ -501,13 +534,15 @@ def test_owner_realtime_restricted_after_stage_2(api_client, normal_user, org):
     bad = api_client.patch(
         f'/api/data_manager/realtime-submissions/{rts.id}/',
         {
-            'endpoints': [{
-                'endpoint_type': 'gbfs',
-                'url': 'https://example.com/other.json',
-                'interval': 60,
-                'hide_original': False,
-                'is_original': True,
-            }],
+            'endpoints': [
+                {
+                    'endpoint_type': 'gbfs',
+                    'url': 'https://example.com/other.json',
+                    'interval': 60,
+                    'hide_original': False,
+                    'is_original': True,
+                }
+            ],
         },
         format='json',
     )
@@ -570,13 +605,15 @@ def test_owner_realtime_restricted_cannot_change_hide_or_original(api_client, no
     response = api_client.patch(
         f'/api/data_manager/realtime-submissions/{rts.id}/',
         {
-            'endpoints': [{
-                'endpoint_type': 'gbfs',
-                'url': 'https://example.com/gbfs.json',
-                'interval': 60,
-                'hide_original': True,
-                'is_original': False,
-            }],
+            'endpoints': [
+                {
+                    'endpoint_type': 'gbfs',
+                    'url': 'https://example.com/gbfs.json',
+                    'interval': 60,
+                    'hide_original': True,
+                    'is_original': False,
+                }
+            ],
         },
         format='json',
     )
@@ -612,13 +649,15 @@ def test_owner_realtime_full_edit_at_stage_1(api_client, normal_user, org):
     response = api_client.patch(
         f'/api/data_manager/realtime-submissions/{rts.id}/',
         {
-            'endpoints': [{
-                'endpoint_type': 'gbfs',
-                'url': 'https://example.com/b.json',
-                'interval': 90,
-                'hide_original': False,
-                'is_original': False,
-            }],
+            'endpoints': [
+                {
+                    'endpoint_type': 'gbfs',
+                    'url': 'https://example.com/b.json',
+                    'interval': 90,
+                    'hide_original': False,
+                    'is_original': False,
+                }
+            ],
         },
         format='json',
     )
@@ -729,11 +768,13 @@ def test_helper_cannot_change_realtime_url_at_stage_2(api_client, helper_user, n
     response = api_client.patch(
         f'/api/data_manager/realtime-submissions/{rts.id}/',
         {
-            'endpoints': [{
-                'endpoint_type': 'gbfs',
-                'url': 'https://example.com/b.json',
-                'interval': 60,
-            }],
+            'endpoints': [
+                {
+                    'endpoint_type': 'gbfs',
+                    'url': 'https://example.com/b.json',
+                    'interval': 60,
+                }
+            ],
         },
         format='json',
     )
@@ -779,7 +820,10 @@ def test_admin_role_can_change_url_at_stage_3(api_client, admin_role_user, norma
 
 
 def test_superuser_without_admin_role_cannot_change_url_at_stage_3(
-    api_client, admin_user, normal_user, org,
+    api_client,
+    admin_user,
+    normal_user,
+    org,
 ):
     submission = FeedSubmission.objects.create(
         transport_organization=org,
@@ -980,7 +1024,9 @@ def test_beat_dispatchers_do_not_wait_behind_feeds_jobs():
 
 
 def test_patch_feed_submission_static_entry_without_source_returns_400(
-    api_client, normal_user, org,
+    api_client,
+    normal_user,
+    org,
 ):
     submission = FeedSubmission.objects.create(
         transport_organization=org,
@@ -1020,7 +1066,9 @@ def test_helper_can_confirm_feed_but_cannot_create_feed(api_client, helper_user,
     )
     assert create_response.status_code == 403
 
-    confirm_response = api_client.patch(f'/api/data_manager/feed-submissions/{submission.id}/', {'stage': 4})
+    confirm_response = api_client.patch(
+        f'/api/data_manager/feed-submissions/{submission.id}/', {'stage': 4}
+    )
     assert confirm_response.status_code == 200, confirm_response.data
     submission.refresh_from_db()
     assert submission.current_stage == 4
@@ -1073,7 +1121,9 @@ def test_user_submissions_endpoint_combines_static_and_realtime(api_client, norm
 
 
 def test_realtime_submission_static_feed_must_match_organization(normal_user, org):
-    other_org = TransportOrganization.objects.create(region="Other Region", transport_organization="Other Org")
+    other_org = TransportOrganization.objects.create(
+        region="Other Region", transport_organization="Other Org"
+    )
     static_submission = FeedSubmission.objects.create(
         transport_organization=org,
         submitted_by=normal_user,
@@ -1103,7 +1153,9 @@ def test_realtime_submission_static_feed_must_match_organization(normal_user, or
 
 
 @override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
-def test_realtime_validation_advances_to_stage_3_and_caches_proxy(org, normal_user, settings, tmp_path):
+def test_realtime_validation_advances_to_stage_3_and_caches_proxy(
+    org, normal_user, settings, tmp_path
+):
     from unittest.mock import MagicMock
 
     from data_manager.tasks import validate_realtime_submission_task
@@ -1283,6 +1335,7 @@ def test_realtime_protocol_must_match_static_feed_type(normal_user, org):
 # history-ordering tiebreak
 # ---------------------------------------------------------------------------
 
+
 def test_owner_cannot_delete_submission_after_upload(api_client, normal_user, admin_user, org):
     """Policy: uploaded submissions belong to the audit trail — only Admin deletes."""
     api_client.force_authenticate(user=normal_user)
@@ -1316,8 +1369,11 @@ def test_owner_cannot_delete_realtime_submission(api_client, normal_user, admin_
         protocol=RealtimeSubmission.PROTOCOL_GBFS,
     )
     RealtimeSubmissionHistory.objects.create(
-        submission=rts, event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
-        stage_before=0, stage_after=1, actor=normal_user,
+        submission=rts,
+        event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+        stage_before=0,
+        stage_after=1,
+        actor=normal_user,
     )
 
     api_client.force_authenticate(user=normal_user)
@@ -1329,7 +1385,9 @@ def test_owner_cannot_delete_realtime_submission(api_client, normal_user, admin_
     assert response.status_code == 204
 
 
-def test_admin_endpoint_edit_keeps_published_rt_stage(api_client, admin_role_user, normal_user, org):
+def test_admin_endpoint_edit_keeps_published_rt_stage(
+    api_client, admin_role_user, normal_user, org
+):
     """Replacing endpoints of a published RT must not silently unpublish it."""
     rts = RealtimeSubmission.objects.create(
         transport_organization=org,
@@ -1337,22 +1395,33 @@ def test_admin_endpoint_edit_keeps_published_rt_stage(api_client, admin_role_use
         protocol=RealtimeSubmission.PROTOCOL_GBFS,
     )
     RealtimeSubmissionHistory.objects.create(
-        submission=rts, event_type=RealtimeSubmissionHistory.EVENT_COMPLETED,
-        stage_before=3, stage_after=4, actor=admin_role_user,
+        submission=rts,
+        event_type=RealtimeSubmissionHistory.EVENT_COMPLETED,
+        stage_before=3,
+        stage_after=4,
+        actor=admin_role_user,
     )
     RealtimeEndpointRT.objects.create(
-        submission=rts, endpoint_type='gbfs',
-        url='https://example.org/gbfs.json', interval=30,
+        submission=rts,
+        endpoint_type='gbfs',
+        url='https://example.org/gbfs.json',
+        interval=30,
     )
 
     api_client.force_authenticate(user=admin_role_user)
-    with patch('data_manager.tasks.validate_realtime_submission_task.delay') as validate_mock, \
-         patch('data_manager.tasks.schedule_realtime_endpoint_fetches') as schedule_mock:
+    with (
+        patch('data_manager.tasks.validate_realtime_submission_task.delay') as validate_mock,
+        patch('data_manager.tasks.schedule_realtime_endpoint_fetches') as schedule_mock,
+    ):
         response = api_client.patch(
             f'/api/data_manager/realtime-submissions/{rts.id}/',
             {
                 'endpoints': [
-                    {'endpoint_type': 'gbfs', 'url': 'https://example.org/v2/gbfs.json', 'interval': 15},
+                    {
+                        'endpoint_type': 'gbfs',
+                        'url': 'https://example.org/v2/gbfs.json',
+                        'interval': 15,
+                    },
                 ],
             },
             format='json',
@@ -1361,15 +1430,24 @@ def test_admin_endpoint_edit_keeps_published_rt_stage(api_client, admin_role_use
 
     rts.refresh_from_db()
     assert rts.current_stage == 4, 'admin endpoint edit must not unpublish a live feed'
-    assert not rts.history.filter(
-        event_type=RealtimeSubmissionHistory.EVENT_UPLOADED, stage_after=1,
-    ).exclude(stage_before=0).exists()
+    assert (
+        not rts.history.filter(
+            event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+            stage_after=1,
+        )
+        .exclude(stage_before=0)
+        .exists()
+    )
     validate_mock.assert_called_once_with(rts.id)
     schedule_mock.assert_called_once_with(rts.id)
 
 
 def test_rejected_resubmission_with_same_url_requeues_validation(
-    api_client, normal_user, admin_user, org, django_capture_on_commit_callbacks,
+    api_client,
+    normal_user,
+    admin_user,
+    org,
+    django_capture_on_commit_callbacks,
 ):
     """A resubmission must restart verification even when the url is unchanged."""
     api_client.force_authenticate(user=normal_user)
@@ -1417,28 +1495,40 @@ def test_rejected_resubmission_with_same_url_requeues_validation(
 def test_latest_history_tie_resolves_by_id(normal_user, org):
     """Two rows sharing created_at must resolve to the later (higher-id) one."""
     submission = FeedSubmission.objects.create(
-        transport_organization=org, submitted_by=normal_user,
-        data_type='gtfs', name='Tie',
+        transport_organization=org,
+        submitted_by=normal_user,
+        data_type='gtfs',
+        name='Tie',
     )
     first = FeedSubmissionHistory.objects.create(
-        submission=submission, event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
-        stage_before=1, stage_after=2, actor=normal_user,
+        submission=submission,
+        event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
+        stage_before=1,
+        stage_after=2,
+        actor=normal_user,
     )
     second = FeedSubmissionHistory.objects.create(
-        submission=submission, event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
-        stage_before=2, stage_after=3, actor=normal_user,
+        submission=submission,
+        event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
+        stage_before=2,
+        stage_after=3,
+        actor=normal_user,
     )
     # Force an exact created_at tie (auto_now_add microseconds normally differ).
-    FeedSubmissionHistory.objects.filter(
-        pk__in=[first.pk, second.pk]
-    ).update(created_at=first.created_at)
+    FeedSubmissionHistory.objects.filter(pk__in=[first.pk, second.pk]).update(
+        created_at=first.created_at
+    )
 
     submission = FeedSubmission.objects.get(pk=submission.pk)
     assert submission.current_stage == 3
 
 
 def test_healthy_gtfs_rt_submission_advances_to_stage_3(
-    monkeypatch, normal_user, org, settings, tmp_path,
+    monkeypatch,
+    normal_user,
+    org,
+    settings,
+    tmp_path,
 ):
     """A GTFS-RT submission whose endpoints answer with a valid protobuf feed
     reaches stage 3.
@@ -1454,12 +1544,17 @@ def test_healthy_gtfs_rt_submission_advances_to_stage_3(
 
     settings.MEDIA_ROOT = tmp_path
     static_submission = FeedSubmission.objects.create(
-        transport_organization=org, submitted_by=normal_user,
-        data_type='gtfs', name='Static for RT',
+        transport_organization=org,
+        submitted_by=normal_user,
+        data_type='gtfs',
+        name='Static for RT',
     )
     FeedSubmissionHistory.objects.create(
-        submission=static_submission, event_type=FeedSubmissionHistory.EVENT_COMPLETED,
-        stage_before=3, stage_after=4, actor=normal_user,
+        submission=static_submission,
+        event_type=FeedSubmissionHistory.EVENT_COMPLETED,
+        stage_before=3,
+        stage_after=4,
+        actor=normal_user,
     )
     StaticFeedEntry.objects.create(
         submission=static_submission,
@@ -1467,26 +1562,36 @@ def test_healthy_gtfs_rt_submission_advances_to_stage_3(
         download_time_1=time(3, 0),
     )
     rts = RealtimeSubmission.objects.create(
-        transport_organization=org, submitted_by=normal_user,
+        transport_organization=org,
+        submitted_by=normal_user,
         protocol=RealtimeSubmission.PROTOCOL_GTFS_RT,
         static_submission=static_submission,
     )
     RealtimeSubmissionHistory.objects.create(
-        submission=rts, event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
-        stage_before=0, stage_after=1, actor=normal_user,
+        submission=rts,
+        event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+        stage_before=0,
+        stage_after=1,
+        actor=normal_user,
     )
     RealtimeEndpointRT.objects.create(
-        submission=rts, endpoint_type='trip_update',
-        url='https://example.org/rt/feed', interval=30,
+        submission=rts,
+        endpoint_type='trip_update',
+        url='https://example.org/rt/feed',
+        interval=30,
     )
 
     class _LinkOk:
         status_code = 200
         content = gtfs_rt_feed_bytes()
 
-    monkeypatch.setattr('data_manager.tasks.validate_realtime_submission_task.delay', lambda *a, **k: None)
-    monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo',
-                        lambda host, port, *a, **k: [(2, 1, 6, '', ('93.184.216.34', port or 80))])
+    monkeypatch.setattr(
+        'data_manager.tasks.validate_realtime_submission_task.delay', lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        'data_manager.net_security.socket.getaddrinfo',
+        lambda host, port, *a, **k: [(2, 1, 6, '', ('93.184.216.34', port or 80))],
+    )
     with patch('data_manager.net_security.safe_get', return_value=_LinkOk()):
         result = validate_realtime_submission_task(rts.id)
 
@@ -1497,7 +1602,11 @@ def test_healthy_gtfs_rt_submission_advances_to_stage_3(
 
 
 def test_gtfs_rt_submission_serving_garbage_is_rejected(
-    monkeypatch, normal_user, org, settings, tmp_path,
+    monkeypatch,
+    normal_user,
+    org,
+    settings,
+    tmp_path,
 ):
     """An endpoint that answers 200 with non-protobuf bytes must not be published.
 
@@ -1508,12 +1617,17 @@ def test_gtfs_rt_submission_serving_garbage_is_rejected(
 
     settings.MEDIA_ROOT = tmp_path
     static_submission = FeedSubmission.objects.create(
-        transport_organization=org, submitted_by=normal_user,
-        data_type='gtfs', name='Static for RT',
+        transport_organization=org,
+        submitted_by=normal_user,
+        data_type='gtfs',
+        name='Static for RT',
     )
     FeedSubmissionHistory.objects.create(
-        submission=static_submission, event_type=FeedSubmissionHistory.EVENT_COMPLETED,
-        stage_before=3, stage_after=4, actor=normal_user,
+        submission=static_submission,
+        event_type=FeedSubmissionHistory.EVENT_COMPLETED,
+        stage_before=3,
+        stage_after=4,
+        actor=normal_user,
     )
     StaticFeedEntry.objects.create(
         submission=static_submission,
@@ -1521,25 +1635,33 @@ def test_gtfs_rt_submission_serving_garbage_is_rejected(
         download_time_1=time(3, 0),
     )
     rts = RealtimeSubmission.objects.create(
-        transport_organization=org, submitted_by=normal_user,
+        transport_organization=org,
+        submitted_by=normal_user,
         protocol=RealtimeSubmission.PROTOCOL_GTFS_RT,
         static_submission=static_submission,
     )
     RealtimeSubmissionHistory.objects.create(
-        submission=rts, event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
-        stage_before=0, stage_after=1, actor=normal_user,
+        submission=rts,
+        event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+        stage_before=0,
+        stage_after=1,
+        actor=normal_user,
     )
     RealtimeEndpointRT.objects.create(
-        submission=rts, endpoint_type='trip_update',
-        url='https://example.org/rt/feed', interval=30,
+        submission=rts,
+        endpoint_type='trip_update',
+        url='https://example.org/rt/feed',
+        interval=30,
     )
 
     class _Garbage:
         status_code = 200
         content = b'\x00\x01\x02 definitely not a feed'
 
-    monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo',
-                        lambda host, port, *a, **k: [(2, 1, 6, '', ('93.184.216.34', port or 80))])
+    monkeypatch.setattr(
+        'data_manager.net_security.socket.getaddrinfo',
+        lambda host, port, *a, **k: [(2, 1, 6, '', ('93.184.216.34', port or 80))],
+    )
     with patch('data_manager.net_security.safe_get', return_value=_Garbage()):
         result = validate_realtime_submission_task(rts.id)
 
@@ -1547,8 +1669,12 @@ def test_gtfs_rt_submission_serving_garbage_is_rejected(
     assert result['status'] == 'rejected', result
     assert rts.is_rejected
 
+
 def test_static_url_with_public_credentials_is_accepted_and_stays_public(
-    api_client, normal_user, org, django_capture_on_commit_callbacks,
+    api_client,
+    normal_user,
+    org,
+    django_capture_on_commit_callbacks,
 ):
     """Product decision: user:pass@ URLs are allowed and treated as
     intentionally-public credentials — no forced proxying, URL shown as-is.
@@ -1574,8 +1700,8 @@ def test_static_url_with_public_credentials_is_accepted_and_stays_public(
     assert response.status_code == 201, response.data
 
     entry = StaticFeedEntry.objects.get(submission_id=response.data['id'])
-    assert entry.url == url_with_creds          # stored verbatim
-    assert entry.hide_original is False         # NOT forced into proxy mode
+    assert entry.url == url_with_creds  # stored verbatim
+    assert entry.hide_original is False  # NOT forced into proxy mode
     assert entry.auth_type is None
     validate_mock.assert_called_once_with(entry.id)  # validation still queued
 

@@ -8,6 +8,7 @@ That is gone; the ``Admin`` group (or superuser) is the single source of truth.
 Run this BEFORE deploying to see who is affected, and ``--grant-admin`` to give
 those accounts the Admin group explicitly if that was the intent all along.
 """
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.management.base import BaseCommand
@@ -29,16 +30,17 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         affected = (
-            User.objects
-            .filter(is_staff=True, is_superuser=False)
+            User.objects.filter(is_staff=True, is_superuser=False)
             .exclude(groups__name=ROLE_ADMIN)
             .order_by('username')
         )
 
         if not affected.exists():
-            self.stdout.write(self.style.SUCCESS(
-                'No affected accounts: every is_staff user is a superuser or already in the Admin group.'
-            ))
+            self.stdout.write(
+                self.style.SUCCESS(
+                    'No affected accounts: every is_staff user is a superuser or already in the Admin group.'
+                )
+            )
             return
 
         self.stdout.write(
@@ -48,7 +50,9 @@ class Command(BaseCommand):
         )
         for user in affected:
             groups = ', '.join(sorted(user.groups.values_list('name', flat=True))) or '(none)'
-            self.stdout.write(f'  - {user.username} (id={user.pk}, active={user.is_active}) groups: {groups}')
+            self.stdout.write(
+                f'  - {user.username} (id={user.pk}, active={user.is_active}) groups: {groups}'
+            )
 
         if not options['grant_admin']:
             self.stdout.write('')
@@ -63,4 +67,6 @@ class Command(BaseCommand):
         for user in affected:
             user.groups.add(group)
             count += 1
-        self.stdout.write(self.style.SUCCESS(f'Granted the {ROLE_ADMIN} group to {count} account(s).'))
+        self.stdout.write(
+            self.style.SUCCESS(f'Granted the {ROLE_ADMIN} group to {count} account(s).')
+        )

@@ -1,4 +1,5 @@
 """Blog reactions: trusted-proxy IP resolution, daily limits and soft-remove."""
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory
@@ -24,6 +25,7 @@ def post():
 # ---------------------------------------------------------------------------
 # get_client_ip helper
 # ---------------------------------------------------------------------------
+
 
 def _request(remote, xff=None):
     headers = {'REMOTE_ADDR': remote}
@@ -60,6 +62,7 @@ def test_malformed_cidr_entries_are_skipped(settings):
 # Reaction create/update/soft-remove
 # ---------------------------------------------------------------------------
 
+
 def test_create_update_and_soft_remove_reaction(api_client, post):
     url = f'/api/blog/reactions/{post.id}/'
 
@@ -80,12 +83,12 @@ def test_create_update_and_soft_remove_reaction(api_client, post):
 
 def test_daily_limit_of_ten_active_reactions(api_client, settings):
     author = get_user_model().objects.create_user('author2', 'a2@example.com', 'password')
-    posts = [
-        Post.objects.create(title=f'P{i}', author=author, content='x')
-        for i in range(11)
-    ]
+    posts = [Post.objects.create(title=f'P{i}', author=author, content='x') for i in range(11)]
     for post in posts[:10]:
-        assert api_client.post(f'/api/blog/reactions/{post.id}/', {'reaction': 'like'}).status_code == 201
+        assert (
+            api_client.post(f'/api/blog/reactions/{post.id}/', {'reaction': 'like'}).status_code
+            == 201
+        )
 
     response = api_client.post(f'/api/blog/reactions/{posts[10].id}/', {'reaction': 'like'})
     assert response.status_code == 429
@@ -112,6 +115,7 @@ def test_your_reaction_ignores_forged_xff(api_client, post, settings):
 # Per-visitor identity behind a reverse proxy (shared-reaction regression)
 # ---------------------------------------------------------------------------
 
+
 def test_visitors_behind_trusted_proxy_get_separate_reactions(api_client, post, settings):
     """Regression: with the proxy network trusted, two visitors arriving through
     the same nginx must NOT share one reaction row (previously the second
@@ -119,10 +123,12 @@ def test_visitors_behind_trusted_proxy_get_separate_reactions(api_client, post, 
     settings.TRUSTED_PROXY_CIDRS = ['172.16.0.0/12']
     url = f'/api/blog/reactions/{post.id}/'
 
-    first = api_client.post(url, {'reaction': 'like'},
-                            REMOTE_ADDR='172.18.0.1', HTTP_X_FORWARDED_FOR='203.0.113.10')
-    second = api_client.post(url, {'reaction': 'angry'},
-                             REMOTE_ADDR='172.18.0.1', HTTP_X_FORWARDED_FOR='198.51.100.77')
+    first = api_client.post(
+        url, {'reaction': 'like'}, REMOTE_ADDR='172.18.0.1', HTTP_X_FORWARDED_FOR='203.0.113.10'
+    )
+    second = api_client.post(
+        url, {'reaction': 'angry'}, REMOTE_ADDR='172.18.0.1', HTTP_X_FORWARDED_FOR='198.51.100.77'
+    )
 
     assert first.status_code == 201
     assert second.status_code == 201, 'second visitor must create its own row, not update'
@@ -149,26 +155,31 @@ def test_untrusted_proxy_still_collapses_but_check_warns(settings):
 # GET /api/blog/reactions/mine/ — browser-side read of one's own reactions
 # ---------------------------------------------------------------------------
 
+
 def test_my_reactions_returns_only_callers_reactions(api_client, post, settings):
     settings.TRUSTED_PROXY_CIDRS = []
-    api_client.post(f'/api/blog/reactions/{post.id}/', {'reaction': 'love'},
-                    REMOTE_ADDR='203.0.113.10')
+    api_client.post(
+        f'/api/blog/reactions/{post.id}/', {'reaction': 'love'}, REMOTE_ADDR='203.0.113.10'
+    )
     # Someone else's reaction on the same post must never be reported as mine.
     Reaction.objects.create(post=post, ip_address='198.51.100.77', reaction='angry')
 
-    response = api_client.get(f'/api/blog/reactions/mine/?post_ids={post.id}',
-                              REMOTE_ADDR='203.0.113.10')
+    response = api_client.get(
+        f'/api/blog/reactions/mine/?post_ids={post.id}', REMOTE_ADDR='203.0.113.10'
+    )
     assert response.status_code == 200
     assert response.data == {str(post.id): 'love'}
 
     # A different visitor sees only their own.
-    response = api_client.get(f'/api/blog/reactions/mine/?post_ids={post.id}',
-                              REMOTE_ADDR='198.51.100.77')
+    response = api_client.get(
+        f'/api/blog/reactions/mine/?post_ids={post.id}', REMOTE_ADDR='198.51.100.77'
+    )
     assert response.data == {str(post.id): 'angry'}
 
     # A visitor without any reaction gets an empty map (never someone else's).
-    response = api_client.get(f'/api/blog/reactions/mine/?post_ids={post.id}',
-                              REMOTE_ADDR='192.0.2.5')
+    response = api_client.get(
+        f'/api/blog/reactions/mine/?post_ids={post.id}', REMOTE_ADDR='192.0.2.5'
+    )
     assert response.data == {}
 
 
@@ -176,12 +187,12 @@ def test_my_reactions_ignores_soft_removed_and_bad_input(api_client, post, setti
     settings.TRUSTED_PROXY_CIDRS = []
     Reaction.objects.create(post=post, ip_address='203.0.113.10', reaction=None)
 
-    response = api_client.get(f'/api/blog/reactions/mine/?post_ids={post.id}',
-                              REMOTE_ADDR='203.0.113.10')
+    response = api_client.get(
+        f'/api/blog/reactions/mine/?post_ids={post.id}', REMOTE_ADDR='203.0.113.10'
+    )
     assert response.data == {}  # soft-removed reaction is not "mine"
 
     for query in ('', '?post_ids=', '?post_ids=abc,,-1'):
-        response = api_client.get(f'/api/blog/reactions/mine/{query}',
-                                  REMOTE_ADDR='203.0.113.10')
+        response = api_client.get(f'/api/blog/reactions/mine/{query}', REMOTE_ADDR='203.0.113.10')
         assert response.status_code == 200
         assert response.data == {}

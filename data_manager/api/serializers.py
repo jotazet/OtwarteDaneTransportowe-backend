@@ -26,14 +26,20 @@ from data_manager.validators import validate_uploaded_gtfs_zip
 # FeedSubmissionHistory
 # ---------------------------------------------------------------------------
 
+
 class FeedSubmissionHistorySerializer(serializers.ModelSerializer):
     actor = serializers.SerializerMethodField()
 
     class Meta:
         model = FeedSubmissionHistory
         fields = [
-            'id', 'event_type', 'stage_before', 'stage_after',
-            'actor', 'cause', 'created_at',
+            'id',
+            'event_type',
+            'stage_before',
+            'stage_after',
+            'actor',
+            'cause',
+            'created_at',
         ]
         read_only_fields = fields
 
@@ -47,8 +53,13 @@ class RealtimeSubmissionHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = RealtimeSubmissionHistory
         fields = [
-            'id', 'event_type', 'stage_before', 'stage_after',
-            'actor', 'cause', 'created_at',
+            'id',
+            'event_type',
+            'stage_before',
+            'stage_after',
+            'actor',
+            'cause',
+            'created_at',
         ]
         read_only_fields = fields
 
@@ -59,6 +70,7 @@ class RealtimeSubmissionHistorySerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 # Feed labelling helpers (organization name + "#<id> name" feed label)
 # ---------------------------------------------------------------------------
+
 
 def feed_organization_name(submission) -> str | None:
     """Human-readable organization name for a FeedSubmission/RealtimeSubmission."""
@@ -108,10 +120,8 @@ def annotate_fetch_health(qs, error_fk: str):
     'endpoint_rt').
     """
     since = timezone.now() - timedelta(days=7)
-    latest_error = (
-        FeedFetchError.objects
-        .filter(**{error_fk: OuterRef('pk')})
-        .order_by('-occurred_at', '-id')
+    latest_error = FeedFetchError.objects.filter(**{error_fk: OuterRef('pk')}).order_by(
+        '-occurred_at', '-id'
     )
     return qs.annotate(
         annotated_last_fetch_error_message=Subquery(latest_error.values('message')[:1]),
@@ -208,6 +218,7 @@ class ProxyManagedFeedListSerializer(serializers.Serializer):
 # FeedFetchError
 # ---------------------------------------------------------------------------
 
+
 class FeedFetchErrorSerializer(serializers.ModelSerializer):
     source = serializers.SerializerMethodField()
     endpoint_type = serializers.SerializerMethodField()
@@ -217,9 +228,18 @@ class FeedFetchErrorSerializer(serializers.ModelSerializer):
     class Meta:
         model = FeedFetchError
         fields = [
-            'id', 'source', 'static_entry', 'endpoint_rt', 'endpoint_type',
-            'organization', 'feed_name',
-            'error_type', 'http_status_code', 'message', 'url_attempted', 'occurred_at',
+            'id',
+            'source',
+            'static_entry',
+            'endpoint_rt',
+            'endpoint_type',
+            'organization',
+            'feed_name',
+            'error_type',
+            'http_status_code',
+            'message',
+            'url_attempted',
+            'occurred_at',
         ]
         read_only_fields = fields
 
@@ -258,16 +278,30 @@ class FetchHealthSerializerMixin(serializers.Serializer):
 # StaticFeedEntry – private (owner)
 # ---------------------------------------------------------------------------
 
-STATIC_ENTRY_SOURCE_FIELDS = frozenset({
-    'url', 'file', 'is_original', 'hide_original', 'auth_type', 'auth_value',
-})
+STATIC_ENTRY_SOURCE_FIELDS = frozenset(
+    {
+        'url',
+        'file',
+        'is_original',
+        'hide_original',
+        'auth_type',
+        'auth_value',
+    }
+)
 
-PROXY_FETCH_FIELDS = frozenset({
-    'fetch_status', 'fetch_failure_count', 'next_fetch_after',
-    'fetch_paused_at', 'fetch_pause_reason',
-    'last_fetch_success_at', 'last_fetch_error_at',
-    'last_fetch_error_message', 'fetch_error_count_7d',
-})
+PROXY_FETCH_FIELDS = frozenset(
+    {
+        'fetch_status',
+        'fetch_failure_count',
+        'next_fetch_after',
+        'fetch_paused_at',
+        'fetch_pause_reason',
+        'last_fetch_success_at',
+        'last_fetch_error_at',
+        'last_fetch_error_message',
+        'fetch_error_count_7d',
+    }
+)
 
 
 class StaticFeedEntrySerializer(FetchHealthSerializerMixin, serializers.ModelSerializer):
@@ -279,24 +313,53 @@ class StaticFeedEntrySerializer(FetchHealthSerializerMixin, serializers.ModelSer
     class Meta:
         model = StaticFeedEntry
         fields = [
-            'id', 'organization', 'region', 'feed_name', 'is_proxy_managed',
-            'url', 'file', 'is_original', 'hide_original',
-            'auth_type', 'auth_value',
-            'download_time_1', 'download_time_2',
-            'license', 'cached_at', 'uploaded_at',
-            'validation_status', 'validation_message',
-            'fetch_status', 'fetch_failure_count', 'next_fetch_after',
-            'fetch_paused_at', 'fetch_pause_reason',
-            'last_fetch_success_at', 'last_fetch_error_at',
-            'last_fetch_error_message', 'fetch_error_count_7d',
+            'id',
+            'organization',
+            'region',
+            'feed_name',
+            'is_proxy_managed',
+            'url',
+            'file',
+            'is_original',
+            'hide_original',
+            'auth_type',
+            'auth_value',
+            'download_time_1',
+            'download_time_2',
+            'license',
+            'cached_at',
+            'uploaded_at',
+            'validation_status',
+            'validation_message',
+            'fetch_status',
+            'fetch_failure_count',
+            'next_fetch_after',
+            'fetch_paused_at',
+            'fetch_pause_reason',
+            'last_fetch_success_at',
+            'last_fetch_error_at',
+            'last_fetch_error_message',
+            'fetch_error_count_7d',
         ]
         read_only_fields = [
-            'id', 'organization', 'region', 'feed_name', 'is_proxy_managed', 'cached_at', 'uploaded_at',
-            'validation_status', 'validation_message',
-            'fetch_status', 'fetch_failure_count', 'next_fetch_after',
-            'fetch_paused_at', 'fetch_pause_reason',
-            'last_fetch_success_at', 'last_fetch_error_at',
-            'last_fetch_error_message', 'fetch_error_count_7d',
+            'id',
+            'organization',
+            'region',
+            'feed_name',
+            'is_proxy_managed',
+            'cached_at',
+            'uploaded_at',
+            'validation_status',
+            'validation_message',
+            'fetch_status',
+            'fetch_failure_count',
+            'next_fetch_after',
+            'fetch_paused_at',
+            'fetch_pause_reason',
+            'last_fetch_success_at',
+            'last_fetch_error_at',
+            'last_fetch_error_message',
+            'fetch_error_count_7d',
         ]
         extra_kwargs = {
             'auth_value': {'write_only': True},
@@ -338,9 +401,11 @@ class StaticFeedEntrySerializer(FetchHealthSerializerMixin, serializers.ModelSer
             raise serializers.ValidationError(str(exc)) from exc
         return value
 
+
 # ---------------------------------------------------------------------------
 # RealtimeSubmission – realtime flow
 # ---------------------------------------------------------------------------
+
 
 class RealtimeEndpointRTSerializer(FetchHealthSerializerMixin, serializers.ModelSerializer):
     organization = serializers.SerializerMethodField()
@@ -351,21 +416,45 @@ class RealtimeEndpointRTSerializer(FetchHealthSerializerMixin, serializers.Model
     class Meta:
         model = RealtimeEndpointRT
         fields = [
-            'id', 'organization', 'region', 'feed_name', 'is_proxy_managed',
-            'endpoint_type', 'url', 'is_original',
-            'hide_original', 'auth_type', 'auth_value',
-            'interval', 'cached_at',
-            'fetch_status', 'fetch_failure_count', 'next_fetch_after',
-            'fetch_paused_at', 'fetch_pause_reason',
-            'last_fetch_success_at', 'last_fetch_error_at',
-            'last_fetch_error_message', 'fetch_error_count_7d',
+            'id',
+            'organization',
+            'region',
+            'feed_name',
+            'is_proxy_managed',
+            'endpoint_type',
+            'url',
+            'is_original',
+            'hide_original',
+            'auth_type',
+            'auth_value',
+            'interval',
+            'cached_at',
+            'fetch_status',
+            'fetch_failure_count',
+            'next_fetch_after',
+            'fetch_paused_at',
+            'fetch_pause_reason',
+            'last_fetch_success_at',
+            'last_fetch_error_at',
+            'last_fetch_error_message',
+            'fetch_error_count_7d',
         ]
         read_only_fields = [
-            'id', 'organization', 'region', 'feed_name', 'is_proxy_managed', 'cached_at',
-            'fetch_status', 'fetch_failure_count', 'next_fetch_after',
-            'fetch_paused_at', 'fetch_pause_reason',
-            'last_fetch_success_at', 'last_fetch_error_at',
-            'last_fetch_error_message', 'fetch_error_count_7d',
+            'id',
+            'organization',
+            'region',
+            'feed_name',
+            'is_proxy_managed',
+            'cached_at',
+            'fetch_status',
+            'fetch_failure_count',
+            'next_fetch_after',
+            'fetch_paused_at',
+            'fetch_pause_reason',
+            'last_fetch_success_at',
+            'last_fetch_error_at',
+            'last_fetch_error_message',
+            'fetch_error_count_7d',
         ]
         extra_kwargs = {'auth_value': {'write_only': True}}
 
@@ -390,8 +479,13 @@ class RealtimeEndpointRTWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = RealtimeEndpointRT
         fields = [
-            'endpoint_type', 'url', 'is_original',
-            'hide_original', 'auth_type', 'auth_value', 'interval',
+            'endpoint_type',
+            'url',
+            'is_original',
+            'hide_original',
+            'auth_type',
+            'auth_value',
+            'interval',
         ]
         extra_kwargs = {
             'auth_value': {'write_only': True, 'required': False},
@@ -419,17 +513,34 @@ class RealtimeSubmissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = RealtimeSubmission
         fields = [
-            'id', 'transport_organization', 'submitted_by', 'static_submission',
-            'protocol', 'name', 'note', 'license',
-            'created_at', 'updated_at',
-            'current_stage', 'current_stage_label',
-            'is_rejected', 'rejection_cause', 'published_at',
-            'endpoints', 'history',
+            'id',
+            'transport_organization',
+            'submitted_by',
+            'static_submission',
+            'protocol',
+            'name',
+            'note',
+            'license',
+            'created_at',
+            'updated_at',
+            'current_stage',
+            'current_stage_label',
+            'is_rejected',
+            'rejection_cause',
+            'published_at',
+            'endpoints',
+            'history',
         ]
         read_only_fields = [
-            'id', 'created_at', 'updated_at', 'submitted_by',
-            'current_stage', 'current_stage_label',
-            'is_rejected', 'rejection_cause', 'published_at',
+            'id',
+            'created_at',
+            'updated_at',
+            'submitted_by',
+            'current_stage',
+            'current_stage_label',
+            'is_rejected',
+            'rejection_cause',
+            'published_at',
             'history',
         ]
 
@@ -459,12 +570,21 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = RealtimeSubmission
         fields = [
-            'transport_organization', 'static_submission', 'protocol',
-            'name', 'note', 'license', 'endpoints',
+            'transport_organization',
+            'static_submission',
+            'protocol',
+            'name',
+            'note',
+            'license',
+            'endpoints',
         ]
 
     def to_internal_value(self, data):
-        if self.context.get('restricted_realtime_edit') and self.instance and isinstance(data, dict):
+        if (
+            self.context.get('restricted_realtime_edit')
+            and self.instance
+            and isinstance(data, dict)
+        ):
             eps = data.get('endpoints')
             if isinstance(eps, list):
                 by_type = {e.endpoint_type: e for e in self.instance.endpoints.all()}
@@ -494,29 +614,33 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
                 old_n = inst.name or ''
                 new_n = data.get('name') or ''
                 if old_n != new_n:
-                    raise serializers.ValidationError({
-                        'name': 'Cannot change name after stage 1.',
-                    })
+                    raise serializers.ValidationError(
+                        {
+                            'name': 'Cannot change name after stage 1.',
+                        }
+                    )
             if 'transport_organization' in data:
                 if data['transport_organization'].pk != inst.transport_organization_id:
-                    raise serializers.ValidationError({
-                        'transport_organization': (
-                            'Cannot change this field after stage 1.'
-                        ),
-                    })
+                    raise serializers.ValidationError(
+                        {
+                            'transport_organization': ('Cannot change this field after stage 1.'),
+                        }
+                    )
             if 'static_submission' in data:
                 new_ss = data['static_submission']
                 new_id = new_ss.pk if new_ss else None
                 if new_id != inst.static_submission_id:
-                    raise serializers.ValidationError({
-                        'static_submission': (
-                            'Cannot change this field after stage 1.'
-                        ),
-                    })
+                    raise serializers.ValidationError(
+                        {
+                            'static_submission': ('Cannot change this field after stage 1.'),
+                        }
+                    )
             if 'protocol' in data and data['protocol'] != inst.protocol:
-                raise serializers.ValidationError({
-                    'protocol': 'Cannot change this field after stage 1.',
-                })
+                raise serializers.ValidationError(
+                    {
+                        'protocol': 'Cannot change this field after stage 1.',
+                    }
+                )
 
         protocol = data.get('protocol', inst.protocol if inst else '')
         org = data.get('transport_organization', inst.transport_organization if inst else None)
@@ -530,39 +654,53 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
         if restricted and inst is not None and endpoints is not None:
             existing_by = {e.endpoint_type: e for e in inst.endpoints.all()}
             if len(endpoints) != len(existing_by):
-                raise serializers.ValidationError({
-                    'endpoints': 'Cannot add or remove endpoints after validation.',
-                })
+                raise serializers.ValidationError(
+                    {
+                        'endpoints': 'Cannot add or remove endpoints after validation.',
+                    }
+                )
             for ep in endpoints:
                 t = ep['endpoint_type']
                 ex = existing_by.get(t)
                 if ex is None:
-                    raise serializers.ValidationError({
-                        'endpoints': f"Unknown endpoint type '{t}'.",
-                    })
+                    raise serializers.ValidationError(
+                        {
+                            'endpoints': f"Unknown endpoint type '{t}'.",
+                        }
+                    )
                 for field in ('url', 'auth_type', 'hide_original', 'is_original'):
                     if ep.get(field) != getattr(ex, field):
-                        raise serializers.ValidationError({
-                            'endpoints': f"Cannot change {field!r} after stage 1.",
-                        })
+                        raise serializers.ValidationError(
+                            {
+                                'endpoints': f"Cannot change {field!r} after stage 1.",
+                            }
+                        )
                 av_ep = ep.get('auth_value') or None
                 av_ex = ex.auth_value or None
                 if av_ep != av_ex:
-                    raise serializers.ValidationError({
-                        'endpoints': 'Cannot change auth credentials after validation.',
-                    })
+                    raise serializers.ValidationError(
+                        {
+                            'endpoints': 'Cannot change auth credentials after validation.',
+                        }
+                    )
 
         if protocol == RealtimeSubmission.PROTOCOL_GBFS:
             if ss is not None:
-                raise serializers.ValidationError({'static_submission': 'GBFS must not reference a static submission.'})
+                raise serializers.ValidationError(
+                    {'static_submission': 'GBFS must not reference a static submission.'}
+                )
         elif protocol in (RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI):
             if ss is None:
-                raise serializers.ValidationError({'static_submission': 'This field is required for GTFS-RT and SIRI.'})
+                raise serializers.ValidationError(
+                    {'static_submission': 'This field is required for GTFS-RT and SIRI.'}
+                )
             if org and ss.transport_organization_id != org.id:
                 raise serializers.ValidationError(
                     {'static_submission': 'Static submission must belong to the same organization.'}
                 )
-            allowed_protocols = RealtimeSubmission.allowed_protocols_for_static_data_type(ss.data_type)
+            allowed_protocols = RealtimeSubmission.allowed_protocols_for_static_data_type(
+                ss.data_type
+            )
             if protocol not in allowed_protocols:
                 raise serializers.ValidationError(
                     {
@@ -574,7 +712,9 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
                 )
             if ss.id not in completed_submission_ids():
                 raise serializers.ValidationError(
-                    {'static_submission': 'Static feed must be published (completed) before adding realtime.'}
+                    {
+                        'static_submission': 'Static feed must be published (completed) before adding realtime.'
+                    }
                 )
         tmp = RealtimeSubmission(protocol=protocol)
         allowed = tmp.allowed_endpoint_types()
@@ -584,10 +724,14 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
                 t = ep.get('endpoint_type', '')
                 if t not in allowed:
                     raise serializers.ValidationError(
-                        {'endpoints': f"Invalid endpoint_type '{t}' for protocol '{protocol}'. Allowed: {sorted(allowed)}."}
+                        {
+                            'endpoints': f"Invalid endpoint_type '{t}' for protocol '{protocol}'. Allowed: {sorted(allowed)}."
+                        }
                     )
                 if t in seen:
-                    raise serializers.ValidationError({'endpoints': f"Duplicate endpoint_type '{t}'."})
+                    raise serializers.ValidationError(
+                        {'endpoints': f"Duplicate endpoint_type '{t}'."}
+                    )
                 seen.add(t)
 
         return data
@@ -624,6 +768,7 @@ class EligibleRealtimeStaticSubmissionSerializer(serializers.ModelSerializer):
 # FeedSubmission – private list (owner)
 # ---------------------------------------------------------------------------
 
+
 class FeedSubmissionListSerializer(serializers.ModelSerializer):
     current_stage = serializers.IntegerField(read_only=True)
     current_stage_label = serializers.CharField(read_only=True)
@@ -633,10 +778,16 @@ class FeedSubmissionListSerializer(serializers.ModelSerializer):
     class Meta:
         model = FeedSubmission
         fields = [
-            'id', 'transport_organization', 'data_type',
-            'current_stage', 'current_stage_label',
-            'is_rejected', 'published_at',
-            'created_at', 'updated_at', 'has_rejection_cause'
+            'id',
+            'transport_organization',
+            'data_type',
+            'current_stage',
+            'current_stage_label',
+            'is_rejected',
+            'published_at',
+            'created_at',
+            'updated_at',
+            'has_rejection_cause',
         ]
         read_only_fields = fields
 
@@ -655,6 +806,7 @@ class UserFeedSubmissionListSerializer(FeedSubmissionListSerializer):
 # FeedSubmission – detail (owner/admin)
 # ---------------------------------------------------------------------------
 
+
 class FeedSubmissionSerializer(serializers.ModelSerializer):
     static_entry = StaticFeedEntrySerializer(read_only=True)
     realtime_submissions = RealtimeSubmissionSerializer(many=True, read_only=True)
@@ -668,20 +820,33 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = FeedSubmission
         fields = [
-            'id', 'transport_organization',
+            'id',
+            'transport_organization',
             'submitted_by',
-            'data_type', 'name', 'note',
-            'created_at', 'updated_at',
-            'current_stage', 'current_stage_label',
-            'is_rejected', 'rejection_cause', 'published_at',
-            'static_entry', 'realtime_submissions',
+            'data_type',
+            'name',
+            'note',
+            'created_at',
+            'updated_at',
+            'current_stage',
+            'current_stage_label',
+            'is_rejected',
+            'rejection_cause',
+            'published_at',
+            'static_entry',
+            'realtime_submissions',
             'history',
         ]
         read_only_fields = [
-            'id', 'created_at', 'updated_at',
+            'id',
+            'created_at',
+            'updated_at',
             'submitted_by',
-            'current_stage', 'current_stage_label',
-            'is_rejected', 'rejection_cause', 'published_at',
+            'current_stage',
+            'current_stage_label',
+            'is_rejected',
+            'rejection_cause',
+            'published_at',
             'history',
         ]
 
@@ -689,6 +854,7 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 # FeedSubmission – write (create / update)
 # ---------------------------------------------------------------------------
+
 
 def _static_entry_keys_in_request(data) -> set[str]:
     """Field names sent under static_entry (JSON body or multipart keys)."""
@@ -701,7 +867,7 @@ def _static_entry_keys_in_request(data) -> set[str]:
     prefix = 'static_entry.'
     for key in data:
         if isinstance(key, str) and key.startswith(prefix):
-            keys.add(key[len(prefix):].split('.')[0])
+            keys.add(key[len(prefix) :].split('.')[0])
     return keys
 
 
@@ -734,7 +900,10 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = FeedSubmission
         fields = [
-            'transport_organization', 'data_type', 'name', 'note',
+            'transport_organization',
+            'data_type',
+            'name',
+            'note',
             'static_entry',
         ]
 
@@ -754,41 +923,47 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                 old_n = (self.instance.name or '') if self.instance else ''
                 new_n = attrs.get('name') or ''
                 if old_n != new_n:
-                    raise serializers.ValidationError({
-                        'name': 'Cannot change name after stage 1.',
-                    })
+                    raise serializers.ValidationError(
+                        {
+                            'name': 'Cannot change name after stage 1.',
+                        }
+                    )
             if 'transport_organization' in attrs:
-                raise serializers.ValidationError({
-                    'transport_organization': (
-                        'Cannot change organization after stage 1.'
-                    ),
-                })
+                raise serializers.ValidationError(
+                    {
+                        'transport_organization': ('Cannot change organization after stage 1.'),
+                    }
+                )
             if 'data_type' in attrs:
-                raise serializers.ValidationError({
-                    'data_type': (
-                        'Cannot change data type after stage 1.'
-                    ),
-                })
+                raise serializers.ValidationError(
+                    {
+                        'data_type': ('Cannot change data type after stage 1.'),
+                    }
+                )
             allowed = {'license', 'download_time_1', 'download_time_2'}
             sent_keys = _static_entry_keys_in_request(self.initial_data)
             bad_sent = sent_keys - allowed
             if bad_sent:
-                raise serializers.ValidationError({
-                    'static_entry': (
-                        'After stage 1, only license and download schedule times (UTC) can be changed '
-                        f'(disallowed: {", ".join(sorted(bad_sent))}).'
-                    ),
-                })
+                raise serializers.ValidationError(
+                    {
+                        'static_entry': (
+                            'After stage 1, only license and download schedule times (UTC) can be changed '
+                            f'(disallowed: {", ".join(sorted(bad_sent))}).'
+                        ),
+                    }
+                )
             static_entry = attrs.get('static_entry')
             if static_entry is not None:
                 bad = set(static_entry.keys()) - allowed
                 if bad:
-                    raise serializers.ValidationError({
-                        'static_entry': (
-                            'After stage 1, only license and download schedule times (UTC) can be changed '
-                            f'(disallowed: {", ".join(sorted(bad))}).'
-                        ),
-                    })
+                    raise serializers.ValidationError(
+                        {
+                            'static_entry': (
+                                'After stage 1, only license and download schedule times (UTC) can be changed '
+                                f'(disallowed: {", ".join(sorted(bad))}).'
+                            ),
+                        }
+                    )
                 if self.instance is not None:
                     try:
                         entry = self.instance.static_entry
@@ -804,17 +979,21 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                                 old_name = getattr(old_val, 'name', None) if old_val else None
                                 new_name = getattr(new_val, 'name', None)
                                 if new_name != old_name:
-                                    raise serializers.ValidationError({
+                                    raise serializers.ValidationError(
+                                        {
+                                            'static_entry': {
+                                                field_name: 'Cannot change this field after stage 1.',
+                                            },
+                                        }
+                                    )
+                            elif new_val != old_val:
+                                raise serializers.ValidationError(
+                                    {
                                         'static_entry': {
                                             field_name: 'Cannot change this field after stage 1.',
                                         },
-                                    })
-                            elif new_val != old_val:
-                                raise serializers.ValidationError({
-                                    'static_entry': {
-                                        field_name: 'Cannot change this field after stage 1.',
-                                    },
-                                })
+                                    }
+                                )
 
         static_entry = attrs.get('static_entry')
         if not static_entry:
@@ -823,18 +1002,24 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
         # Content check for direct uploads: a GTFS feed must be a ZIP archive.
         # Field-level validation cannot see data_type, hence it lives here.
         if static_entry.get('file'):
-            data_type = attrs.get('data_type') or (self.instance.data_type if self.instance else None)
+            data_type = attrs.get('data_type') or (
+                self.instance.data_type if self.instance else None
+            )
             if data_type == 'gtfs':
                 try:
                     validate_uploaded_gtfs_zip(static_entry['file'])
                 except DjangoValidationError as exc:
-                    raise serializers.ValidationError({'static_entry': {'file': list(exc.messages)}})
+                    raise serializers.ValidationError(
+                        {'static_entry': {'file': list(exc.messages)}}
+                    )
 
         if self.instance is None:
             if not static_entry.get('url') and not static_entry.get('file'):
-                raise serializers.ValidationError({
-                    'static_entry': 'Provide a URL or file for the static feed entry.',
-                })
+                raise serializers.ValidationError(
+                    {
+                        'static_entry': 'Provide a URL or file for the static feed entry.',
+                    }
+                )
             return attrs
 
         try:
@@ -844,12 +1029,14 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 
         if entry is None:
             if not static_entry.get('url') and not static_entry.get('file'):
-                raise serializers.ValidationError({
-                    'static_entry': (
-                        'Provide a URL or file when adding a static feed entry '
-                        'to this submission.'
-                    ),
-                })
+                raise serializers.ValidationError(
+                    {
+                        'static_entry': (
+                            'Provide a URL or file when adding a static feed entry '
+                            'to this submission.'
+                        ),
+                    }
+                )
             return attrs
 
         return attrs
@@ -874,9 +1061,11 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
         # the data was committed; a broker outage must not do that.
         if entry.is_proxy_managed:
             from data_manager.tasks import enqueue, fetch_static_entry_task
+
             transaction.on_commit(lambda: enqueue(fetch_static_entry_task, entry_id))
         elif entry.submission.data_type == 'gtfs':
             from data_manager.tasks import enqueue, validate_gtfs_feed_task
+
             transaction.on_commit(lambda: enqueue(validate_gtfs_feed_task, entry_id))
 
     # Atomic: a rejected static entry (full_clean below) must not leave the
@@ -950,9 +1139,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                 else:
                     if static_entry_data.get('auth_type') is not None:
                         static_entry_data['hide_original'] = True
-                    new_entry = StaticFeedEntry(
-                        submission=instance, **static_entry_data
-                    )
+                    new_entry = StaticFeedEntry(submission=instance, **static_entry_data)
                     try:
                         new_entry.full_clean()
                     except DjangoValidationError as exc:
@@ -968,13 +1155,16 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 # Admin FeedSubmission serializer – sees everything
 # ---------------------------------------------------------------------------
 
+
 class AdminFeedSubmissionSerializer(FeedSubmissionSerializer):
     submitted_by_username = serializers.SerializerMethodField()
 
     class Meta(FeedSubmissionSerializer.Meta):
         # 'note' is already in the parent field list.
         fields = FeedSubmissionSerializer.Meta.fields + ['submitted_by_username']
-        read_only_fields = FeedSubmissionSerializer.Meta.read_only_fields + ['submitted_by_username']
+        read_only_fields = FeedSubmissionSerializer.Meta.read_only_fields + [
+            'submitted_by_username'
+        ]
 
     def get_submitted_by_username(self, obj):
         return obj.submitted_by.username if obj.submitted_by else None
@@ -983,6 +1173,7 @@ class AdminFeedSubmissionSerializer(FeedSubmissionSerializer):
 # ---------------------------------------------------------------------------
 # PUBLIC serializers
 # ---------------------------------------------------------------------------
+
 
 class PublishedStaticEntrySerializer(serializers.ModelSerializer):
     download_url = serializers.SerializerMethodField()
@@ -998,9 +1189,7 @@ class PublishedStaticEntrySerializer(serializers.ModelSerializer):
             if feed_file:
                 if request:
                     filename = feed_file.name.split('/')[-1]
-                    return request.build_absolute_uri(
-                        f'/feed/{obj.submission_id}/{filename}'
-                    )
+                    return request.build_absolute_uri(f'/feed/{obj.submission_id}/{filename}')
             return None
         return obj.url
 
@@ -1136,13 +1325,21 @@ class FeedListSerializer(serializers.ModelSerializer):
 class FeedDetailSerializer(FeedSubmissionSerializer):
     class Meta(FeedSubmissionSerializer.Meta):
         fields = [
-            'id', 'transport_organization',
+            'id',
+            'transport_organization',
             'submitted_by',
-            'data_type', 'name', 'note',
-            'created_at', 'updated_at',
-            'current_stage', 'current_stage_label',
-            'is_rejected', 'rejection_cause', 'published_at',
-            'static_entry', 'realtime_submissions',
+            'data_type',
+            'name',
+            'note',
+            'created_at',
+            'updated_at',
+            'current_stage',
+            'current_stage_label',
+            'is_rejected',
+            'rejection_cause',
+            'published_at',
+            'static_entry',
+            'realtime_submissions',
         ]
         read_only_fields = FeedSubmissionSerializer.Meta.read_only_fields
 
@@ -1150,6 +1347,7 @@ class FeedDetailSerializer(FeedSubmissionSerializer):
 # ---------------------------------------------------------------------------
 # Organization-level feed serializers
 # ---------------------------------------------------------------------------
+
 
 class OrganizationFeedSubmissionSerializer(serializers.ModelSerializer):
     submitted_by = serializers.SerializerMethodField()
@@ -1159,9 +1357,14 @@ class OrganizationFeedSubmissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = FeedSubmission
         fields = [
-            'id', 'name', 'data_type',
-            'submitted_by', 'created_at', 'updated_at',
-            'static_feed', 'realtime_feed',
+            'id',
+            'name',
+            'data_type',
+            'submitted_by',
+            'created_at',
+            'updated_at',
+            'static_feed',
+            'realtime_feed',
         ]
         read_only_fields = fields
 
@@ -1184,9 +1387,14 @@ class OrganizationGbfsFeedAsFeedSerializer(serializers.ModelSerializer):
     class Meta:
         model = RealtimeSubmission
         fields = [
-            'id', 'name', 'data_type',
-            'submitted_by', 'created_at', 'updated_at',
-            'static_feed', 'realtime_feed',
+            'id',
+            'name',
+            'data_type',
+            'submitted_by',
+            'created_at',
+            'updated_at',
+            'static_feed',
+            'realtime_feed',
         ]
         read_only_fields = fields
 
@@ -1209,7 +1417,13 @@ class OrganizationFeedsSerializer(serializers.ModelSerializer):
     class Meta:
         model = TransportOrganization
         fields = [
-            'id', 'region', 'transport_organization', 'website', 'contact_email', 'phone_number', 'is_public',
+            'id',
+            'region',
+            'transport_organization',
+            'website',
+            'contact_email',
+            'phone_number',
+            'is_public',
             'feeds',
         ]
         read_only_fields = fields
@@ -1237,8 +1451,15 @@ class OrganizationFeedsSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = TransportOrganization
         fields = [
-            'id', 'region', 'transport_organization', 'website', 'contact_email', 'phone_number', 'is_public',
-            'static_types', 'dynamic_types',
+            'id',
+            'region',
+            'transport_organization',
+            'website',
+            'contact_email',
+            'phone_number',
+            'is_public',
+            'static_types',
+            'dynamic_types',
         ]
         read_only_fields = fields
 
@@ -1275,7 +1496,9 @@ class AdminRealtimeSubmissionSerializer(RealtimeSubmissionSerializer):
 
     class Meta(RealtimeSubmissionSerializer.Meta):
         fields = RealtimeSubmissionSerializer.Meta.fields + ['submitted_by_username']
-        read_only_fields = RealtimeSubmissionSerializer.Meta.read_only_fields + ['submitted_by_username']
+        read_only_fields = RealtimeSubmissionSerializer.Meta.read_only_fields + [
+            'submitted_by_username'
+        ]
 
     def get_submitted_by_username(self, obj):
         return obj.submitted_by.username if obj.submitted_by else None

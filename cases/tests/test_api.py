@@ -1,5 +1,6 @@
 """Cases API: reads are intentionally public (transparency portal),
 writes require the Helper/Admin (case manager) role."""
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
@@ -26,7 +27,9 @@ def helper_user():
 @pytest.fixture
 def org():
     return TransportOrganization.objects.create(
-        region='R', transport_organization='Org', is_public=False,
+        region='R',
+        transport_organization='Org',
+        is_public=False,
         contact_email='org@example.com',
     )
 

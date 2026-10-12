@@ -8,6 +8,7 @@ Scheduler: django-celery-beat przechowuje harmonogram w bazie danych Django,
            dzięki czemu interwały dla poszczególnych endpointów RT są dynamiczne
            i nie wymagają restartu workera po zmianie.
 """
+
 import os
 
 from celery import Celery
@@ -21,4 +22,3 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 
 # Automatycznie wykrywaj tasks.py we wszystkich INSTALLED_APPS
 app.autodiscover_tasks()
-

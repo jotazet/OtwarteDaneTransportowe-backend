@@ -1,5 +1,6 @@
 from django.db import models, transaction
 
+
 class CaseStatus(models.Model):
     STATUS_CHOICES = [
         ('none', 'None'),
@@ -18,7 +19,9 @@ class CaseStatus(models.Model):
     status = models.CharField(max_length=32, choices=STATUS_CHOICES, default='none')
     date = models.DateTimeField(auto_now_add=True)
     description = models.TextField(blank=True, null=True)
-    case = models.ForeignKey('TransportOrganization', related_name='case_status', on_delete=models.CASCADE)
+    case = models.ForeignKey(
+        'TransportOrganization', related_name='case_status', on_delete=models.CASCADE
+    )
 
     class Meta:
         ordering = ['-date']
@@ -40,7 +43,9 @@ class DataProvider(models.Model):
 
 
 class TransportOrganization(models.Model):
-    data_providers = models.ManyToManyField(DataProvider, related_name="transport_organizations", blank=True)
+    data_providers = models.ManyToManyField(
+        DataProvider, related_name="transport_organizations", blank=True
+    )
     region = models.CharField(max_length=50)
     transport_organization = models.CharField(max_length=100)
     website = models.URLField(blank=True, null=True)

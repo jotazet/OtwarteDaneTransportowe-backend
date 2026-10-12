@@ -135,6 +135,7 @@ def _scheduler():
         _completed_submission_ids,
         _completed_realtime_submission_ids,
     )
+
     return (
         _fetch_static_entry,
         _fetch_realtime_endpoint_rt,
@@ -147,6 +148,7 @@ def _scheduler():
 # STATYCZNE — dispatch co minutę przez Beat
 # ---------------------------------------------------------------------------
 
+
 @shared_task(name='data_manager.refresh_static_feeds')
 def refresh_static_feeds_task() -> dict:
     """
@@ -158,6 +160,7 @@ def refresh_static_feeds_task() -> dict:
 
     from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, StaticFeedEntry
     from django.db.models import Q
+
     _, _, _completed, _ = _scheduler()
 
     # One clock read: two calls could straddle a minute boundary and dispatch
@@ -189,9 +192,9 @@ def refresh_static_feeds_task() -> dict:
             hide_original=True,
             url__isnull=False,
             submission_id__in=completed_ids,
-        ).filter(
-            scheduled_due | retry_due
-        ).values_list('id', flat=True)
+        )
+        .filter(scheduled_due | retry_due)
+        .values_list('id', flat=True)
     )
 
     for entry_id in entry_ids:
@@ -220,6 +223,7 @@ def fetch_static_entry_task(self, entry_id: int) -> dict:
     respektuje cykliczny dispatcher.
     """
     from data_manager.models import StaticFeedEntry
+
     _fetch, _, _, _ = _scheduler()
 
     try:
@@ -233,7 +237,11 @@ def fetch_static_entry_task(self, entry_id: int) -> dict:
         return {'status': 'skipped_not_proxied', 'entry_id': entry_id}
 
     if not entry.fetch_is_due():
-        return {'status': 'deferred', 'entry_id': entry_id, 'next_fetch_after': entry.next_fetch_after}
+        return {
+            'status': 'deferred',
+            'entry_id': entry_id,
+            'next_fetch_after': entry.next_fetch_after,
+        }
     result = _fetch(entry)
     entry.refresh_from_db(fields=['fetch_status', 'next_fetch_after', 'fetch_failure_count'])
     return {
@@ -249,6 +257,7 @@ def fetch_static_entry_task(self, entry_id: int) -> dict:
 # REALTIME — self-scheduling, bez pollingu
 # ---------------------------------------------------------------------------
 
+
 @shared_task(name='data_manager.bootstrap_realtime_tasks')
 def bootstrap_realtime_tasks() -> dict:
     """
@@ -263,6 +272,7 @@ def bootstrap_realtime_tasks() -> dict:
     """
     from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, RealtimeEndpointRT
     from django.db.models import Q
+
     _, _, _, _completed_rt = _scheduler()
 
     completed_ids = _completed_rt()
@@ -270,17 +280,21 @@ def bootstrap_realtime_tasks() -> dict:
         RealtimeEndpointRT.objects.filter(
             hide_original=True,
             submission_id__in=completed_ids,
-        ).filter(
+        )
+        .filter(
             Q(fetch_status=FETCH_STATUS_ACTIVE)
             | Q(fetch_status=FETCH_STATUS_DELAYED, next_fetch_after__lte=timezone.now())
-        ).values_list('id', 'interval')
+        )
+        .values_list('id', 'interval')
     )
 
     scheduled = 0
     for index, (endpoint_id, interval) in enumerate(endpoints):
         interval = interval or 60
         # Rozloz start endpointow, aby uniknac jednoczesnego burstu.
-        stagger = (index * RT_BOOTSTRAP_STAGGER_SECONDS) + random.randint(0, RT_BOOTSTRAP_JITTER_MAX_SECONDS)
+        stagger = (index * RT_BOOTSTRAP_STAGGER_SECONDS) + random.randint(
+            0, RT_BOOTSTRAP_JITTER_MAX_SECONDS
+        )
         reserve_ttl = stagger + interval + RT_ALIVE_TTL_BUFFER_SECONDS
         # Atomowo rezerwuj slot: jesli marker juz istnieje, petla zyje -> pomijamy.
         if not cache.add(_rt_alive_key(endpoint_id), '1', timeout=reserve_ttl):
@@ -318,6 +332,7 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
         FETCH_STATUS_MANUAL_PAUSED,
         RealtimeEndpointRT,
     )
+
     _, _fetch, _, _completed_rt = _scheduler()
 
     lock_key = f'rt-endpoint-lock:{endpoint_id}'
@@ -329,9 +344,7 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
 
     try:
         try:
-            endpoint = RealtimeEndpointRT.objects.select_related(
-                'submission'
-            ).get(pk=endpoint_id)
+            endpoint = RealtimeEndpointRT.objects.select_related('submission').get(pk=endpoint_id)
         except RealtimeEndpointRT.DoesNotExist:
             logger.info('RealtimeEndpointRT id=%d deleted, stopping loop', endpoint_id)
             cache.delete(_rt_alive_key(endpoint_id))
@@ -364,7 +377,11 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
             cache.delete(_rt_alive_key(endpoint_id))
             return {'status': endpoint.fetch_status, 'endpoint_id': endpoint_id}
 
-        if endpoint.fetch_status == FETCH_STATUS_DELAYED and endpoint.next_fetch_after and endpoint.next_fetch_after > now:
+        if (
+            endpoint.fetch_status == FETCH_STATUS_DELAYED
+            and endpoint.next_fetch_after
+            and endpoint.next_fetch_after > now
+        ):
             countdown = _seconds_until(endpoint.next_fetch_after)
             _mark_rt_alive(endpoint_id, countdown)
             fetch_realtime_endpoint_task.apply_async(args=[endpoint_id], countdown=countdown)
@@ -381,12 +398,14 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
             logger.warning('fetch_realtime_endpoint_rt id=%d error: %s', endpoint_id, exc)
             result = 'error'
 
-        endpoint.refresh_from_db(fields=[
-            'fetch_status',
-            'next_fetch_after',
-            'fetch_failure_count',
-            'interval',
-        ])
+        endpoint.refresh_from_db(
+            fields=[
+                'fetch_status',
+                'next_fetch_after',
+                'fetch_failure_count',
+                'interval',
+            ]
+        )
         if endpoint.fetch_status == FETCH_STATUS_ACTIVE:
             countdown = endpoint.interval
         elif endpoint.fetch_status == FETCH_STATUS_DELAYED and endpoint.next_fetch_after:
@@ -419,6 +438,7 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
 # GTFS VALIDATION TASK
 # ---------------------------------------------------------------------------
 
+
 @shared_task(
     name='data_manager.validate_gtfs_feed',
     bind=True,
@@ -442,11 +462,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
     import logging
     import docker
     from django.conf import settings
-    from data_manager.models import (
-        StaticFeedEntry,
-        FeedValidationReport,
-        FeedSubmissionHistory
-    )
+    from data_manager.models import StaticFeedEntry, FeedValidationReport, FeedSubmissionHistory
 
     logger.info(f"Starting GTFS validation for StaticFeedEntry id={entry_id}")
 
@@ -571,7 +587,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             # file_field.name is relative to MEDIA_ROOT (e.g. '1/2/static/feed.zip')
             relative_path = file_field.name
             if relative_path.startswith('uploaded_data/'):
-                relative_path = relative_path[len('uploaded_data/'):]
+                relative_path = relative_path[len('uploaded_data/') :]
             filename = os.path.basename(relative_path)
             container_file_path = file_field.path
             container_input_dir = os.path.dirname(container_file_path)
@@ -579,7 +595,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
         relative_dir = os.path.relpath(container_input_dir, settings.MEDIA_ROOT)
         # HOST_PROJECT_PATH is the absolute path to project root on the host machine
         host_project_path = os.environ.get('HOST_PROJECT_PATH', str(settings.BASE_DIR))
-        host_media_root = os.environ.get('HOST_MEDIA_ROOT', os.path.join(host_project_path, 'uploaded_data'))
+        host_media_root = os.environ.get(
+            'HOST_MEDIA_ROOT', os.path.join(host_project_path, 'uploaded_data')
+        )
 
         # Host paths for Docker bind mounts
         host_input_dir = os.path.join(host_media_root, relative_dir)
@@ -711,10 +729,16 @@ def validate_gtfs_feed_task(self, entry_id: int):
 
             # Summary-based fallbacks
             error_fallback = (
-                summary.get('errorCount') or summary.get('error_count') or summary.get('errors') or 0
+                summary.get('errorCount')
+                or summary.get('error_count')
+                or summary.get('errors')
+                or 0
             )
             warning_fallback = (
-                summary.get('warningCount') or summary.get('warning_count') or summary.get('warnings') or 0
+                summary.get('warningCount')
+                or summary.get('warning_count')
+                or summary.get('warnings')
+                or 0
             )
 
             # Look for notices lists in known fields
@@ -801,7 +825,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
                     stage_after=3,
                     actor=None,
                 )
-                logger.info(f"Submission {submission.id} advanced to Stage 3 (valid GTFS, awaiting admin).")
+                logger.info(
+                    f"Submission {submission.id} advanced to Stage 3 (valid GTFS, awaiting admin)."
+                )
     finally:
         _cleanup_workdirs()
 
@@ -835,9 +861,11 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     max_link_bytes = settings.MAX_REALTIME_FEED_BYTES
 
     try:
-        rts = RealtimeSubmission.objects.select_related('static_submission').prefetch_related(
-            'endpoints'
-        ).get(pk=submission_id)
+        rts = (
+            RealtimeSubmission.objects.select_related('static_submission')
+            .prefetch_related('endpoints')
+            .get(pk=submission_id)
+        )
     except RealtimeSubmission.DoesNotExist:
         return {'status': 'not_found', 'id': submission_id}
 

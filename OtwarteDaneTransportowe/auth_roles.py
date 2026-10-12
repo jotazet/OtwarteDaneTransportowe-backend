@@ -7,13 +7,15 @@ ROLE_EDITOR = 'Editor'
 ROLE_DATA_PROVIDER = 'DataProvider'
 ROLE_HELPER = 'Helper'
 
-ALLOWED_ROLE_NAMES = frozenset({
-    ROLE_ADMIN,
-    ROLE_BLOGGER,
-    ROLE_EDITOR,
-    ROLE_DATA_PROVIDER,
-    ROLE_HELPER,
-})
+ALLOWED_ROLE_NAMES = frozenset(
+    {
+        ROLE_ADMIN,
+        ROLE_BLOGGER,
+        ROLE_EDITOR,
+        ROLE_DATA_PROVIDER,
+        ROLE_HELPER,
+    }
+)
 
 
 def role_names(user) -> frozenset:
@@ -64,6 +66,7 @@ def has_role(user, role: str) -> bool:
 def can_publish_blog(user) -> bool:
     return has_role(user, ROLE_BLOGGER)
 
+
 def can_edit_any_blog(user) -> bool:
     return has_role(user, ROLE_EDITOR)
 
@@ -99,10 +102,7 @@ def is_helper_reviewer(user) -> bool:
 
 
 def _is_submission_owner_provider(user, submission) -> bool:
-    return (
-        submission.submitted_by_id == user.id
-        and ROLE_DATA_PROVIDER in role_names(user)
-    )
+    return submission.submitted_by_id == user.id and ROLE_DATA_PROVIDER in role_names(user)
 
 
 def can_edit_static_feed_source(user, submission) -> bool:
@@ -162,6 +162,7 @@ class RoleReadOnlyOrWritePermission(BasePermission):
 
 class IsBloggerOrReadOnly(RoleReadOnlyOrWritePermission):
     write_check = staticmethod(can_publish_blog)
+
 
 class IsEditorOrOwnBloggerOrReadOnly(BasePermission):
     """
