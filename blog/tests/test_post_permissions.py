@@ -5,9 +5,6 @@ need Editor or Admin, or Blogger on their own post.
 """
 
 import pytest
-from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group
-from rest_framework.test import APIClient
 
 from blog.models import Post
 from OtwarteDaneTransportowe.auth_roles import (
@@ -24,26 +21,9 @@ POSTS_URL = '/api/blog/posts/'
 ANONYMOUS = None
 
 
-def _user(username, role):
-    user = get_user_model().objects.create_user(username, f'{username}@example.com', 'password')
-    group, _ = Group.objects.get_or_create(name=role)
-    user.groups.add(group)
-    return user
-
-
-def _client(role):
-    """APIClient authenticated as a fresh user holding ``role`` (or anonymous)."""
-    client = APIClient()
-    user = None
-    if role is not ANONYMOUS:
-        user = _user(f'user-{role.lower()}', role)
-        client.force_authenticate(user=user)
-    return client, user
-
-
 @pytest.fixture
-def other_bloggers_post():
-    author = _user('post-author', ROLE_BLOGGER)
+def other_bloggers_post(make_user):
+    author = make_user(ROLE_BLOGGER, 'post-author')
     return Post.objects.create(title='Original', author=author, content='body')
 
 
@@ -58,10 +38,10 @@ def other_bloggers_post():
         (ROLE_ADMIN, 201),
     ],
 )
-def test_create_post_by_role(role, expected):
-    client, user = _client(role)
+def test_create_post_by_role(role, expected, make_user, client_as):
+    user = make_user(role)
 
-    response = client.post(
+    response = client_as(user).post(
         POSTS_URL, {'title': 'New post', 'tags': ['gtfs'], 'content': 'Body'}, format='json'
     )
 
@@ -74,14 +54,12 @@ def test_create_post_by_role(role, expected):
         assert not Post.objects.exists()
 
 
-def test_create_ignores_author_in_payload():
+def test_create_ignores_author_in_payload(make_user, client_as):
     """The author is always the caller; a Blogger cannot post as someone else."""
-    blogger = _user('blogger', ROLE_BLOGGER)
-    someone_else = _user('someone-else', ROLE_BLOGGER)
-    client = APIClient()
-    client.force_authenticate(user=blogger)
+    blogger = make_user(ROLE_BLOGGER)
+    someone_else = make_user(ROLE_BLOGGER)
 
-    response = client.post(
+    response = client_as(blogger).post(
         POSTS_URL,
         {'title': 'Spoofed', 'content': 'Body', 'author': someone_else.id},
         format='json',
@@ -102,8 +80,10 @@ def test_create_ignores_author_in_payload():
         (ROLE_ADMIN, 200),
     ],
 )
-def test_update_someone_elses_post_by_role(role, expected, other_bloggers_post):
-    client, _ = _client(role)
+def test_update_someone_elses_post_by_role(
+    role, expected, other_bloggers_post, make_user, client_as
+):
+    client = client_as(make_user(role))
 
     response = client.patch(
         f'{POSTS_URL}{other_bloggers_post.id}/', {'title': 'Edited'}, format='json'
@@ -127,8 +107,10 @@ def test_update_someone_elses_post_by_role(role, expected, other_bloggers_post):
         (ROLE_ADMIN, 204),
     ],
 )
-def test_delete_someone_elses_post_by_role(role, expected, other_bloggers_post):
-    client, _ = _client(role)
+def test_delete_someone_elses_post_by_role(
+    role, expected, other_bloggers_post, make_user, client_as
+):
+    client = client_as(make_user(role))
 
     response = client.delete(f'{POSTS_URL}{other_bloggers_post.id}/')
 
@@ -136,11 +118,10 @@ def test_delete_someone_elses_post_by_role(role, expected, other_bloggers_post):
     assert Post.objects.filter(pk=other_bloggers_post.pk).exists() == (expected != 204)
 
 
-def test_blogger_can_update_and_delete_own_post():
-    blogger = _user('own-blogger', ROLE_BLOGGER)
+def test_blogger_can_update_and_delete_own_post(make_user, client_as):
+    blogger = make_user(ROLE_BLOGGER)
     post = Post.objects.create(title='Mine', author=blogger, content='body')
-    client = APIClient()
-    client.force_authenticate(user=blogger)
+    client = client_as(blogger)
 
     response = client.patch(f'{POSTS_URL}{post.id}/', {'title': 'Mine, edited'}, format='json')
     assert response.status_code == 200, response.data
@@ -160,8 +141,8 @@ def test_blogger_can_update_and_delete_own_post():
 
 
 @pytest.mark.parametrize('role', [ANONYMOUS, ROLE_DATA_PROVIDER, ROLE_HELPER, ROLE_BLOGGER])
-def test_posts_are_publicly_readable(role, other_bloggers_post):
-    client, _ = _client(role)
+def test_posts_are_publicly_readable(role, other_bloggers_post, make_user, client_as):
+    client = client_as(make_user(role))
 
     response = client.get(POSTS_URL)
     assert response.status_code == 200

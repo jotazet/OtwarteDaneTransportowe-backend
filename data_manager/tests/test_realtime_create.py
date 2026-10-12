@@ -7,13 +7,7 @@ conftest's `celery_send_task` fixture; DNS is faked, so nothing leaves the
 process.
 """
 
-import socket
-
 import pytest
-from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group
-from django.test import TestCase
-from rest_framework.test import APIClient
 
 from cases.models import TransportOrganization
 from data_manager.models import (
@@ -39,20 +33,9 @@ PRIVATE_HOST = 'intranet.example.org'
 
 
 @pytest.fixture(autouse=True)
-def fake_dns(monkeypatch):
-    """Endpoint URLs are SSRF-checked on input; resolve without real DNS."""
-
-    def getaddrinfo(host, port, *args, **kwargs):
-        ip = '10.0.0.5' if host == PRIVATE_HOST else '93.184.216.34'
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (ip, port))]
-
-    monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo', getaddrinfo)
-
-
-def _user(username, role):
-    user = get_user_model().objects.create_user(username, f'{username}@example.com', 'password')
-    user.groups.add(Group.objects.get_or_create(name=role)[0])
-    return user
+def _private_host(fake_dns):
+    """Endpoint URLs are SSRF-checked on input; PRIVATE_HOST resolves to a private IP."""
+    fake_dns[PRIVATE_HOST] = '10.0.0.5'
 
 
 @pytest.fixture
@@ -61,8 +44,8 @@ def org():
 
 
 @pytest.fixture
-def provider():
-    return _user('provider', ROLE_DATA_PROVIDER)
+def provider(make_user):
+    return make_user(ROLE_DATA_PROVIDER, 'provider')
 
 
 def _static_submission(org, user, *, data_type='gtfs', published=True):
@@ -133,14 +116,17 @@ def _gtfs_rt_payload(org, static_submission):
     }
 
 
-def _post(user, payload):
-    client = APIClient()
-    if user is not None:
-        client.force_authenticate(user=user)
-    # Validation is queued from transaction.on_commit, which never fires inside
-    # the test's transaction unless captured.
-    with TestCase.captureOnCommitCallbacks(execute=True):
-        return client.post(URL, payload, format='json')
+@pytest.fixture
+def post_as(client_as, django_capture_on_commit_callbacks):
+    """``post_as(user, payload)`` -> the response to creating a realtime submission."""
+
+    def post(user, payload):
+        # Validation is queued from transaction.on_commit, which never fires
+        # inside the test's transaction unless captured.
+        with django_capture_on_commit_callbacks(execute=True):
+            return client_as(user).post(URL, payload, format='json')
+
+    return post
 
 
 def _validation_queued_for(celery_send_task):
@@ -150,8 +136,8 @@ def _validation_queued_for(celery_send_task):
     ]
 
 
-def test_data_provider_creates_gbfs_submission_at_stage_1(provider, org, celery_send_task):
-    response = _post(provider, _gbfs_payload(org))
+def test_data_provider_creates_gbfs_submission_at_stage_1(provider, org, post_as, celery_send_task):
+    response = post_as(provider, _gbfs_payload(org))
 
     assert response.status_code == 201, response.data
     rts = RealtimeSubmission.objects.get(pk=response.data['id'])
@@ -170,10 +156,10 @@ def test_data_provider_creates_gbfs_submission_at_stage_1(provider, org, celery_
     assert _validation_queued_for(celery_send_task) == [rts.id]
 
 
-def test_data_provider_creates_gtfs_rt_for_published_gtfs(provider, org, celery_send_task):
+def test_data_provider_creates_gtfs_rt_for_published_gtfs(provider, org, post_as, celery_send_task):
     static = _static_submission(org, provider)
 
-    response = _post(provider, _gtfs_rt_payload(org, static))
+    response = post_as(provider, _gtfs_rt_payload(org, static))
 
     assert response.status_code == 201, response.data
     assert response.data['static_submission'] == static.id
@@ -189,17 +175,6 @@ def test_data_provider_creates_gtfs_rt_for_published_gtfs(provider, org, celery_
     assert _validation_queued_for(celery_send_task) == [response.data['id']]
 
 
-def test_admin_group_member_creates_submission(org, celery_send_task):
-    admin = _user('admin-group', ROLE_ADMIN)
-
-    response = _post(admin, _gbfs_payload(org))
-
-    assert response.status_code == 201, response.data
-    assert response.data['submitted_by_username'] == 'admin-group'
-    assert response.data['current_stage'] == 1
-    assert _validation_queued_for(celery_send_task) == [response.data['id']]
-
-
 @pytest.mark.parametrize(
     'role, expected',
     [
@@ -207,16 +182,28 @@ def test_admin_group_member_creates_submission(org, celery_send_task):
         (ROLE_HELPER, 403),
         (ROLE_BLOGGER, 403),
         (ROLE_EDITOR, 403),
+        (ROLE_DATA_PROVIDER, 201),
+        # The Admin group alone, without is_superuser.
+        (ROLE_ADMIN, 201),
     ],
 )
-def test_other_roles_cannot_create(role, expected, org, celery_send_task):
-    user = None if role is ANONYMOUS else _user('not-a-provider', role)
+def test_create_by_role(role, expected, org, make_user, post_as, celery_send_task):
+    user = make_user(role)
 
-    response = _post(user, _gbfs_payload(org))
+    response = post_as(user, _gbfs_payload(org))
 
-    assert response.status_code == expected
-    assert not RealtimeSubmission.objects.exists()
-    celery_send_task.assert_not_called()
+    assert response.status_code == expected, response.data
+    if expected == 201:
+        assert response.data['submitted_by'] == user.id
+        assert response.data['current_stage'] == 1
+        assert [
+            (h['event_type'], h['stage_before'], h['stage_after'], h['actor'])
+            for h in response.data['history']
+        ] == [('uploaded', 0, 1, user.username)]
+        assert _validation_queued_for(celery_send_task) == [response.data['id']]
+    else:
+        assert not RealtimeSubmission.objects.exists()
+        celery_send_task.assert_not_called()
 
 
 def _no_endpoints(org, static, other_org):
@@ -281,11 +268,13 @@ def _private_endpoint_url(org, static, other_org):
         (_private_endpoint_url, 'endpoints'),
     ],
 )
-def test_invalid_payload_is_rejected(make_payload, error_field, provider, org, celery_send_task):
+def test_invalid_payload_is_rejected(
+    make_payload, error_field, provider, org, post_as, celery_send_task
+):
     static = _static_submission(org, provider)
     other_org = TransportOrganization.objects.create(region='R2', transport_organization='Other')
 
-    response = _post(provider, make_payload(org, static, other_org))
+    response = post_as(provider, make_payload(org, static, other_org))
 
     assert response.status_code == 400, response.data
     assert error_field in response.data, response.data
@@ -294,13 +283,13 @@ def test_invalid_payload_is_rejected(make_payload, error_field, provider, org, c
 
 
 def test_second_realtime_of_same_protocol_for_one_static_is_rejected(
-    provider, org, celery_send_task
+    provider, org, post_as, celery_send_task
 ):
     static = _static_submission(org, provider)
-    first = _post(provider, _gtfs_rt_payload(org, static))
+    first = post_as(provider, _gtfs_rt_payload(org, static))
     assert first.status_code == 201, first.data
 
-    response = _post(provider, _gtfs_rt_payload(org, static))
+    response = post_as(provider, _gtfs_rt_payload(org, static))
 
     assert response.status_code == 400, response.data
     assert response.data['non_field_errors'][0].code == 'unique'
@@ -308,10 +297,10 @@ def test_second_realtime_of_same_protocol_for_one_static_is_rejected(
     assert _validation_queued_for(celery_send_task) == [first.data['id']]
 
 
-def test_documented_gbfs_payload_without_static_submission_is_accepted(provider, org):
+def test_documented_gbfs_payload_without_static_submission_is_accepted(provider, org, post_as):
     payload = _gbfs_payload(org)
     del payload['static_submission']
 
-    response = _post(provider, payload)
+    response = post_as(provider, payload)
 
     assert response.status_code == 201, response.data

@@ -7,13 +7,9 @@ Blogger and Editor hold no feed role, so the feed endpoints treat them like
 any other logged-in user without one.
 """
 
-import socket
 from datetime import time
 
 import pytest
-from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group
-from rest_framework.test import APIClient
 
 from cases.models import TransportOrganization
 from data_manager.models import (
@@ -34,11 +30,13 @@ from OtwarteDaneTransportowe.auth_roles import (
     ROLE_HELPER,
 )
 
-pytestmark = pytest.mark.django_db
+# Source URLs are SSRF-checked on input; resolve them without real DNS.
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures('fake_dns')]
 
 API = '/api/data_manager'
+# Actor name -> role of a fresh user (None: anonymous); 'owner' is the fixture user.
 ROLE_OF = {
-    'owner': ROLE_DATA_PROVIDER,
+    'anonymous': None,
     'other_provider': ROLE_DATA_PROVIDER,
     'helper': ROLE_HELPER,
     'blogger': ROLE_BLOGGER,
@@ -48,23 +46,6 @@ ROLE_OF = {
 SUBMISSION_KINDS = ['feed-submissions', 'realtime-submissions']
 
 
-def _user(username, role):
-    user = get_user_model().objects.create_user(username, f'{username}@example.com', 'password')
-    user.groups.add(Group.objects.get_or_create(name=role)[0])
-    return user
-
-
-@pytest.fixture(autouse=True)
-def fake_dns(monkeypatch):
-    """Source URLs are SSRF-checked on input; resolve them without real DNS."""
-    monkeypatch.setattr(
-        'data_manager.net_security.socket.getaddrinfo',
-        lambda host, port, *a, **k: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', port))
-        ],
-    )
-
-
 @pytest.fixture
 def org(settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
@@ -72,23 +53,14 @@ def org(settings, tmp_path):
 
 
 @pytest.fixture
-def owner():
-    return _user('owner', ROLE_DATA_PROVIDER)
+def owner(make_user):
+    return make_user(ROLE_DATA_PROVIDER, 'owner')
 
 
 @pytest.fixture
-def client_for(owner):
+def client_for(owner, make_user, client_as):
     """APIClient for an actor name; 'owner' is the fixture user, others are fresh."""
-
-    def make(actor):
-        client = APIClient()
-        if actor == 'owner':
-            client.force_authenticate(user=owner)
-        elif actor != 'anonymous':
-            client.force_authenticate(user=_user(actor, ROLE_OF[actor]))
-        return client
-
-    return make
+    return lambda actor: client_as(owner if actor == 'owner' else make_user(ROLE_OF[actor]))
 
 
 @pytest.fixture
