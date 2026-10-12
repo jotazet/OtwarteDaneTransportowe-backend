@@ -564,12 +564,12 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
     transport_organization = serializers.PrimaryKeyRelatedField(
         queryset=TransportOrganization.objects.all(),
     )
-    # default=None, not just required=False: the UniqueTogetherValidator DRF
-    # derives from the (static_submission, protocol) constraint makes a field
-    # without a default required on create, which rejected GBFS (no static).
+    # default=None (which also makes the field optional), not required=False:
+    # the UniqueTogetherValidator DRF derives from the (static_submission,
+    # protocol) constraint makes a field without a default required on
+    # create, which rejected GBFS (no static).
     static_submission = serializers.PrimaryKeyRelatedField(
         queryset=FeedSubmission.objects.all(),
-        required=False,
         allow_null=True,
         default=None,
     )
