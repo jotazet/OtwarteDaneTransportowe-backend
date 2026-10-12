@@ -236,6 +236,8 @@ static_entry.license=CC BY 4.0
 
 `stage` must be a number from 1 to 4. If `stage=4`, the backend creates a `completed` history entry and the feed becomes public.
 
+**Reviewer override:** Helper/Admin may set **any** stage from any state. They can skip stages (e.g. 2 → 4 before validation has finished) or move a submission back (e.g. 4 → 2, which takes it out of the public catalogue). This is deliberate: the ODT team can override the normal path, and every change is recorded in `history` with the reviewer as `actor`: `completed` for stage 4, otherwise `stage_advanced`, also when moving back (`stage_before` and `stage_after` give the direction). Sending the current stage changes nothing. A non-empty `rejection_cause` takes precedence over `stage`. The same applies to realtime submissions.
+
 **Rejection by Helper/Admin:**
 
 ```json

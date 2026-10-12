@@ -58,6 +58,6 @@ A static feed has `FeedSubmissionHistory`, a realtime feed has `RealtimeSubmissi
 | `event_type` | Meaning |
 |--------------|---------|
 | `uploaded` | Creation or re-upload of data |
-| `stage_advanced` | Transition to the next stage |
+| `stage_advanced` | A stage change other than publication: the automatic move after validation, or a Helper/Admin setting a stage. A reviewer may skip stages or move a submission back, which is also recorded as `stage_advanced`; `stage_before`/`stage_after` give the direction |
 | `rejected` | Rejection; `cause` contains a reviewer's text, and for realtime feeds `reasons` holds coded automatic reasons (see [Realtime rejection reasons](feeds.md#realtime-rejection-reasons)) |
 | `completed` | Publication, stage 4 |
