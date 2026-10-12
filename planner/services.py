@@ -1,6 +1,5 @@
 """Planner operations shared by the admin API and Celery tasks (no DRF here)."""
 
-import json
 import os
 
 from django.conf import settings
@@ -9,6 +8,7 @@ from django_celery_beat.models import CrontabSchedule, PeriodicTask
 
 from data_manager.tasks import enqueue_on_commit
 from planner.models import GraphBuild
+from planner.pipeline import graph_dir
 
 SCHEDULE_TASK_NAME = 'planner-graph-build'
 DEFAULT_SCHEDULE = {'enabled': False, 'weekdays': [3, 7], 'time_utc': '01:40'}
@@ -31,8 +31,6 @@ def request_build(trigger: str, user=None) -> GraphBuild:
 
 def request_rollback(target: GraphBuild, user=None) -> GraphBuild:
     """Serve an earlier build's graph again, if it is still on disk."""
-    from planner.pipeline import graph_dir
-
     if (
         target.status != GraphBuild.STATUS_SUCCEEDED
         or target.is_active
@@ -45,7 +43,6 @@ def request_rollback(target: GraphBuild, user=None) -> GraphBuild:
         requested_by=user,
         rollback_of=target.rollback_of or target,
         otp_image=target.otp_image,
-        street_graph_key=target.street_graph_key,
         feed_results=target.feed_results,
     )
 
@@ -115,7 +112,7 @@ def set_build_schedule(*, enabled: bool, weekdays: list[int], time_utc: str) -> 
             # Without this, beat treats a run time that passed since the last
             # run as due and starts a build the moment the schedule is saved.
             'last_run_at': None,
-            'kwargs': json.dumps({}),
+            'kwargs': '{}',
         },
     )
     return get_build_schedule()

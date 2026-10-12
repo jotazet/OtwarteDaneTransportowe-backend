@@ -86,12 +86,10 @@ def run_otp(host_dir, args, *, heap, mem_limit, memswap_limit=None, mounts=None,
         container.remove(force=True)
 
 
-def remove_build_containers() -> int:
+def remove_build_containers() -> None:
     """Remove build containers left behind by a worker that died mid-build."""
-    containers = _client().containers.list(all=True, filters={'label': BUILD_LABEL})
-    for container in containers:
+    for container in _client().containers.list(all=True, filters={'label': BUILD_LABEL}):
         container.remove(force=True)
-    return len(containers)
 
 
 def _server():

@@ -101,7 +101,6 @@ class GraphBuildSerializer(serializers.ModelSerializer):
             'otp_stopped_at',
             'finished_at',
             'is_active',
-            'activated_at',
             'error_code',
         ]
         read_only_fields = fields

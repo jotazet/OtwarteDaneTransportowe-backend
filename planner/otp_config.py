@@ -8,10 +8,7 @@ from django.conf import settings
 
 from data_manager.models import RealtimeSubmission, completed_realtime_submission_ids
 from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url, split_userinfo
-
-# Header OTP sends when it polls this app for proxied realtime files; it exempts
-# the poll from public throttling (data_manager RealtimePublicFeedDownloadView).
-INTERNAL_TOKEN_HEADER = 'X-ODT-Internal-Token'
+from OtwarteDaneTransportowe.internal_requests import INTERNAL_TOKEN_HEADER
 
 # Service days kept in the graph: feeds publish 1–8 weeks ahead, and a shorter
 # window keeps the graph small enough for the VPS (docs/deployment.md, sizing).

@@ -1,8 +1,6 @@
-import hmac
 from collections import OrderedDict
 from datetime import timedelta
 
-from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import CharField, F, OuterRef, Prefetch, Q, Subquery, Value
@@ -63,6 +61,7 @@ from OtwarteDaneTransportowe.auth_roles import (
     is_helper_reviewer,
     patch_request_includes_submission_content,
 )
+from OtwarteDaneTransportowe.internal_requests import has_internal_token
 
 
 def _page_url(request, page_number: int) -> str | None:
@@ -401,12 +400,8 @@ class RealtimePublicFeedDownloadView(APIView):
     throttle_scope = 'feed_download'
 
     def get_throttles(self):
-        # The journey planner's OTP polls proxied realtime files every few
-        # seconds from one address; it sends a shared token (header name in
-        # planner.otp_config.INTERNAL_TOKEN_HEADER) instead of being throttled.
-        token = settings.PLANNER_INTERNAL_TOKEN
-        sent = self.request.headers.get('X-ODT-Internal-Token', '')
-        if token and sent and hmac.compare_digest(sent, token):
+        # The journey planner's OTP polls these files every few seconds.
+        if has_internal_token(self.request):
             return []
         return super().get_throttles()
 

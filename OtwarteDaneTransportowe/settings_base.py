@@ -391,7 +391,8 @@ PLANNER_OTP_FEED_TEST_HEAP = os.getenv('PLANNER_OTP_FEED_TEST_HEAP') or '6g'
 PLANNER_OTP_FEED_TEST_MEM_LIMIT = os.getenv('PLANNER_OTP_FEED_TEST_MEM_LIMIT') or '7g'
 # Build containers write into planner_data as the app's own user.
 PLANNER_CONTAINER_USER = f'{GTFS_VALIDATOR_UID}:{GTFS_VALIDATOR_GID}'
-# OTP polls realtime files with the internal host name in the Host header.
-_planner_internal_host = urlsplit(PLANNER_ODT_INTERNAL_URL).hostname
-if _planner_internal_host and _planner_internal_host not in ALLOWED_HOSTS:
-    ALLOWED_HOSTS.append(_planner_internal_host)
+# OTP polls realtime files with the internal host name in the Host header
+# (settings_dev, which replaces ALLOWED_HOSTS, adds it again).
+PLANNER_INTERNAL_HOST = urlsplit(PLANNER_ODT_INTERNAL_URL).hostname
+if PLANNER_INTERNAL_HOST not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(PLANNER_INTERNAL_HOST)

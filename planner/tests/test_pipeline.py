@@ -346,7 +346,7 @@ def test_last_good_version_is_retested_after_an_otp_upgrade(
 def test_excluded_feed_keeps_its_area_in_the_street_graph(make_feed, fake_otp):
     make_feed('krk')
     waw = make_feed('waw', content=gtfs_variant('v1'), failure_policy=PlannerFeed.POLICY_EXCLUDE)
-    first = build_now()
+    build_now()
     set_feed_content(waw, gtfs_variant('v2'))
     fake_otp.failing_feeds['waw'] = (255, 'boom')
     fake_otp.runs.clear()
@@ -355,4 +355,3 @@ def test_excluded_feed_keeps_its_area_in_the_street_graph(make_feed, fake_otp):
 
     assert results(build)['waw']['outcome'] == 'excluded'
     assert 'street' not in fake_otp.kinds()
-    assert build.street_graph_key == first.street_graph_key

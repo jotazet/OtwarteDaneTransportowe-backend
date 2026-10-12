@@ -94,7 +94,6 @@ POST /api/planner/admin/builds/{id}/activate/
   "otp_stopped_at": "2026-10-14T01:40:30Z",
   "finished_at": "2026-10-14T01:56:12Z",
   "is_active": true,
-  "activated_at": "2026-10-14T01:56:12Z",
   "error_code": "",
   "feed_results": [
     { "planner_feed": 3, "feed_id": "kml", "submission": 38, "outcome": "stale", "sha256": "…",

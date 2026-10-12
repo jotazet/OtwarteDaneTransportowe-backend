@@ -1,6 +1,5 @@
 import io
 import json
-import os
 import zipfile
 from pathlib import Path
 
@@ -174,10 +173,8 @@ def fake_otp(monkeypatch):
     monkeypatch.setattr(pipeline, '_sleep', lambda seconds: None)
     monkeypatch.setattr(pipeline, 'SERVER_START_TIMEOUT_SECONDS', 0)
 
-    def prepare_osm(source, cells, workdir):
-        for name in ('street.osm.pbf', 'coverage.geojson'):
-            Path(workdir, name).write_text('x')
-        return os.path.join(workdir, 'street.osm.pbf')
+    def prepare_osm(source, cells, target):
+        Path(target).write_text('x')
 
     monkeypatch.setattr(osm, 'prepare_osm', prepare_osm)
     return fake

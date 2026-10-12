@@ -14,7 +14,7 @@ import os
 import shutil
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 import requests
@@ -38,6 +38,7 @@ SERVER_POLL_SECONDS = 10
 EXIT_DATA_ERROR = 100
 EXIT_OUT_OF_MEMORY = 3
 LOG_EXCERPT_CHARS = 4000
+STREET_OSM_FILE = 'street.osm.pbf'
 DOWNLOAD_TIMEOUT_SECONDS = 60
 FETCH_RETRY_DELAY_SECONDS = 5
 
@@ -49,6 +50,10 @@ class BuildFailed(Exception):
         self.log = log
 
 
+class FeedUnavailable(Exception):
+    pass
+
+
 @dataclass
 class Candidate:
     feed: PlannerFeed
@@ -58,7 +63,7 @@ class Candidate:
     version_at: str | None = None
     error_code: str = ''
     log_excerpt: str = ''
-    realtime_skipped: list | None = None
+    realtime_skipped: list = field(default_factory=list)
 
     def result(self) -> dict:
         return {
@@ -70,7 +75,7 @@ class Candidate:
             'version_at': self.version_at,
             'error_code': self.error_code,
             'log_excerpt': self.log_excerpt,
-            'realtime_skipped': self.realtime_skipped or [],
+            'realtime_skipped': self.realtime_skipped,
         }
 
 
@@ -152,11 +157,10 @@ def fail_stale_builds() -> int:
     stale = GraphBuild.objects.filter(
         status=GraphBuild.STATUS_RUNNING, heartbeat_at__lt=cutoff
     ) | GraphBuild.objects.filter(status=GraphBuild.STATUS_QUEUED, created_at__lt=cutoff)
-    count = 0
+    stale = list(stale)
     for build in stale:
         _finish_failed(build, 'planner.build_interrupted')
-        count += 1
-    return count
+    return len(stale)
 
 
 # ---------------------------------------------------------------------------
@@ -229,10 +233,6 @@ def _collect_candidates(build: GraphBuild, workdir: str) -> list[Candidate]:
     return candidates
 
 
-class FeedUnavailable(Exception):
-    pass
-
-
 def _fetch_feed(feed: PlannerFeed, target: str):
     """Copy (or download) the feed's current file to ``target``; returns its version time.
 
@@ -248,7 +248,7 @@ def _fetch_feed(feed: PlannerFeed, target: str):
             _sleep(FETCH_RETRY_DELAY_SECONDS)
             entry.refresh_from_db()
         try:
-            source = entry.cached_file or entry.file
+            source = entry.validation_source_file
             if source:
                 with source.open('rb') as src, open(target, 'wb') as dst:
                     shutil.copyfileobj(src, dst)
@@ -294,9 +294,18 @@ def _fall_back(feed: PlannerFeed, target: str, error_code: str, log: str = '') -
             error_code=error_code,
             log_excerpt=log,
         )
-    if os.path.exists(target):
-        os.remove(target)
-    return Candidate(feed, GraphBuild.OUTCOME_EXCLUDED, error_code=error_code, log_excerpt=log)
+    return _excluded(feed, target, error_code, log)
+
+
+def _excluded(feed: PlannerFeed, path: str, error_code: str, log: str = '') -> Candidate:
+    if os.path.exists(path):
+        os.remove(path)
+    return Candidate(
+        feed,
+        GraphBuild.OUTCOME_EXCLUDED,
+        error_code=error_code,
+        log_excerpt=log[-LOG_EXCERPT_CHARS:],
+    )
 
 
 def _test_changed_feeds(build: GraphBuild, candidates: list[Candidate], workdir: str) -> None:
@@ -306,16 +315,12 @@ def _test_changed_feeds(build: GraphBuild, candidates: list[Candidate], workdir:
     for index, candidate in enumerate(candidates):
         if candidate.outcome == GraphBuild.OUTCOME_EXCLUDED:
             continue
-        # A last good version passed with the OTP that built it; a new OTP
-        # re-tests it too, so it cannot break the full build unnoticed.
-        if not image_changed and (
-            candidate.outcome == GraphBuild.OUTCOME_STALE
-            or candidate.sha256 == candidate.feed.last_good_sha256
-        ):
+        # Unchanged files passed before (a last good version has that sha256
+        # too); a new OTP version re-tests everything, last good versions included.
+        if not image_changed and candidate.sha256 == candidate.feed.last_good_sha256:
             continue
         testdir = os.path.join(workdir, 'tests', candidate.feed.feed_id)
         os.makedirs(testdir, exist_ok=True)
-        shutil.copyfile(candidate.path, os.path.join(testdir, 'feed.zip'))
         _write_json(
             os.path.join(testdir, 'build-config.json'),
             otp_config.build_config({candidate.feed.feed_id: 'feed.zip'}),
@@ -325,6 +330,7 @@ def _test_changed_feeds(build: GraphBuild, candidates: list[Candidate], workdir:
             ['--build', '--save'],
             heap=settings.PLANNER_OTP_FEED_TEST_HEAP,
             mem_limit=settings.PLANNER_OTP_FEED_TEST_MEM_LIMIT,
+            mounts={host_path(candidate.path): f'{otp_runtime.OTP_HOME}/feed.zip'},
             on_tick=lambda: _heartbeat(build),
         )
         shutil.rmtree(testdir, ignore_errors=True)
@@ -336,13 +342,7 @@ def _test_changed_feeds(build: GraphBuild, candidates: list[Candidate], workdir:
         else:
             code = 'planner.feed_invalid'
         if candidate.outcome == GraphBuild.OUTCOME_STALE:
-            os.remove(candidate.path)
-            candidates[index] = Candidate(
-                candidate.feed,
-                GraphBuild.OUTCOME_EXCLUDED,
-                error_code=code,
-                log_excerpt=result.log_tail[-LOG_EXCERPT_CHARS:],
-            )
+            candidates[index] = _excluded(candidate.feed, candidate.path, code, result.log_tail)
         else:
             candidates[index] = _fall_back(candidate.feed, candidate.path, code, result.log_tail)
 
@@ -360,10 +360,7 @@ def _ensure_street_graph(build: GraphBuild, candidates: list[Candidate]) -> str:
         if not c.path and c.feed.last_good_sha256 and os.path.exists(snapshot_path(c.feed))
     ]
     cells = osm.stop_cells(area_files)
-    key = osm.street_graph_key(cells, osm_file, build.otp_image)
-    build.street_graph_key = key
-    build.save(update_fields=['street_graph_key'])
-    street_dir = data_path('street', key)
+    street_dir = data_path('street', osm.street_graph_key(cells, osm_file, build.otp_image))
     street_graph = os.path.join(street_dir, 'streetGraph.obj')
     if os.path.exists(street_graph):
         return street_graph
@@ -372,25 +369,24 @@ def _ensure_street_graph(build: GraphBuild, candidates: list[Candidate]) -> str:
     shutil.rmtree(tmp_dir, ignore_errors=True)
     os.makedirs(tmp_dir)
     try:
-        osm.prepare_osm(osm_file, cells, tmp_dir)
+        osm.prepare_osm(osm_file, cells, os.path.join(tmp_dir, STREET_OSM_FILE))
+        _write_json(
+            os.path.join(tmp_dir, 'build-config.json'),
+            otp_config.build_config({}, osm_file=STREET_OSM_FILE),
+        )
+        result = _run_build_container(build, tmp_dir, ['--buildStreet'])
+        if result.exit_code != 0 or not os.path.exists(os.path.join(tmp_dir, 'streetGraph.obj')):
+            raise BuildFailed(
+                _build_error_code(result, 'planner.street_build_failed'), result.log_tail
+            )
+        os.remove(os.path.join(tmp_dir, STREET_OSM_FILE))
     except osm.OsmPreparationError as exc:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise BuildFailed('planner.osm_preparation_failed', str(exc)) from exc
-    config = otp_config.build_config({}, osm_file='street.osm.pbf')
-    _write_json(os.path.join(tmp_dir, 'build-config.json'), config)
-    result = otp_runtime.run_otp(
-        host_path(tmp_dir),
-        ['--buildStreet'],
-        heap=settings.PLANNER_OTP_BUILD_HEAP,
-        mem_limit=settings.PLANNER_OTP_BUILD_MEM_LIMIT,
-        memswap_limit=settings.PLANNER_OTP_BUILD_MEMSWAP_LIMIT,
-        on_tick=lambda: _heartbeat(build),
-    )
-    if result.exit_code != 0 or not os.path.exists(os.path.join(tmp_dir, 'streetGraph.obj')):
+    except BuildFailed:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise BuildFailed(_build_error_code(result, 'planner.street_build_failed'), result.log_tail)
-    for name in ('street.osm.pbf', 'coverage.geojson'):
-        os.remove(os.path.join(tmp_dir, name))
+        raise
+    # One street graph is kept: older ones belong to maps or areas no longer used.
     for other in os.listdir(data_path('street')):
         if other != os.path.basename(tmp_dir):
             shutil.rmtree(data_path('street', other), ignore_errors=True)
@@ -398,17 +394,26 @@ def _ensure_street_graph(build: GraphBuild, candidates: list[Candidate]) -> str:
     return street_graph
 
 
-def _build_graph(build, included: list[Candidate], workdir: str, street_graph: str) -> None:
-    feed_files = {c.feed.feed_id: f'feeds/{c.feed.feed_id}.zip' for c in included}
-    _write_json(os.path.join(workdir, 'build-config.json'), otp_config.build_config(feed_files))
-    result = otp_runtime.run_otp(
-        host_path(workdir),
-        ['--loadStreet', '--save'],
+def _run_build_container(build, directory: str, args: list[str], mounts=None):
+    return otp_runtime.run_otp(
+        host_path(directory),
+        args,
         heap=settings.PLANNER_OTP_BUILD_HEAP,
         mem_limit=settings.PLANNER_OTP_BUILD_MEM_LIMIT,
         memswap_limit=settings.PLANNER_OTP_BUILD_MEMSWAP_LIMIT,
-        mounts={host_path(street_graph): f'{otp_runtime.OTP_HOME}/streetGraph.obj'},
+        mounts=mounts,
         on_tick=lambda: _heartbeat(build),
+    )
+
+
+def _build_graph(build, included: list[Candidate], workdir: str, street_graph: str) -> None:
+    feed_files = {c.feed.feed_id: f'feeds/{c.feed.feed_id}.zip' for c in included}
+    _write_json(os.path.join(workdir, 'build-config.json'), otp_config.build_config(feed_files))
+    result = _run_build_container(
+        build,
+        workdir,
+        ['--loadStreet', '--save'],
+        mounts={host_path(street_graph): f'{otp_runtime.OTP_HOME}/streetGraph.obj'},
     )
     if result.exit_code != 0 or not os.path.exists(os.path.join(workdir, 'graph.obj')):
         raise BuildFailed(_build_error_code(result, 'planner.graph_build_failed'), result.log_tail)
@@ -434,21 +439,22 @@ def _activate(build: GraphBuild, included_feed_ids: list[str], fresh: list[Candi
 
     # Copies first (may fail), then the database, then atomic renames, so a
     # snapshot never disagrees with the last_good_sha256 that describes it.
-    staged = [(_stage_snapshot(candidate), snapshot_path(candidate.feed)) for candidate in fresh]
+    staged = [_stage_snapshot(candidate) for candidate in fresh]
+    staged = [paths for paths in staged if paths]
     now = timezone.now()
     with transaction.atomic():
         GraphBuild.objects.filter(is_active=True).update(is_active=False)
         build.is_active = True
-        build.activated_at = build.finished_at = now
+        build.finished_at = now
         build.status = GraphBuild.STATUS_SUCCEEDED
-        build.save(update_fields=['is_active', 'activated_at', 'finished_at', 'status'])
+        build.save(update_fields=['is_active', 'finished_at', 'status'])
         for candidate in fresh:
             PlannerFeed.objects.filter(pk=candidate.feed.pk).update(
                 last_good_sha256=candidate.sha256, last_good_at=now
             )
     for tmp, snapshot in staged:
         os.replace(tmp, snapshot)
-    _remove_unused_graphs(keep={target})
+    _remove_unused_graphs(current=target)
     logger.info('Graph build %s is now serving', build.id)
 
 
@@ -509,17 +515,22 @@ def _serves_feeds(feed_ids: list[str]) -> bool:
     return set(feed_ids) <= {feed['feedId'] for feed in data.get('feeds') or []}
 
 
-def _stage_snapshot(candidate: Candidate) -> str:
+def _stage_snapshot(candidate: Candidate) -> tuple[str, str] | None:
+    """Link the new last good version next to its snapshot; None if it is unchanged."""
     snapshot = snapshot_path(candidate.feed)
+    if candidate.sha256 == candidate.feed.last_good_sha256 and os.path.exists(snapshot):
+        return None
     os.makedirs(os.path.dirname(snapshot), exist_ok=True)
     tmp = f'{snapshot}.tmp'
-    shutil.copyfile(candidate.path, tmp)
-    return tmp
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    os.link(candidate.path, tmp)
+    return tmp, snapshot
 
 
-def _remove_unused_graphs(keep: set[str]) -> None:
+def _remove_unused_graphs(current: str) -> None:
     """Keep the serving graph and the newest other one (for a rollback)."""
-    keep = set(keep)
+    keep = {current}
     previous = (
         GraphBuild.objects.filter(status=GraphBuild.STATUS_SUCCEEDED, rollback_of__isnull=True)
         .exclude(is_active=True)
@@ -560,9 +571,10 @@ def _build_error_code(result: otp_runtime.RunResult, default: str) -> str:
 
 
 def _is_valid_zip(path: str) -> bool:
+    """A copy cut off mid-rewrite has no central directory; OTP's test catches the rest."""
     try:
-        with zipfile.ZipFile(path) as archive:
-            return archive.testzip() is None
+        with zipfile.ZipFile(path):
+            return True
     except (OSError, zipfile.BadZipFile):
         return False
 

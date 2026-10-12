@@ -86,7 +86,6 @@ class GraphBuild(models.Model):
     # A rollback re-serves this earlier build's graph instead of building one.
     rollback_of = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True)
     otp_image = models.CharField(max_length=255)
-    street_graph_key = models.CharField(max_length=64, blank=True, default='')
 
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
@@ -96,10 +95,9 @@ class GraphBuild(models.Model):
     finished_at = models.DateTimeField(null=True, blank=True)
 
     is_active = models.BooleanField(default=False)
-    activated_at = models.DateTimeField(null=True, blank=True)
 
-    # One entry per planner feed: feed_id, submission_id, outcome, sha256,
-    # version_at, error_code, log_excerpt.
+    # One entry per planner feed: planner_feed, feed_id, submission, outcome,
+    # sha256, version_at, error_code, log_excerpt, realtime_skipped.
     feed_results = models.JSONField(default=list, blank=True)
     error_code = models.CharField(max_length=64, blank=True, default='')
     log_excerpt = models.TextField(blank=True, default='')

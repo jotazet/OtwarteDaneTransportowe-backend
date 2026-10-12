@@ -24,6 +24,16 @@ def _error(code: str, http_status: int) -> Response:
     return Response({'code': code, 'details': {}}, status=http_status)
 
 
+def _queued(request_build) -> Response:
+    try:
+        build = request_build()
+    except services.BuildInProgress:
+        return _error('planner.build_in_progress', status.HTTP_409_CONFLICT)
+    except services.BuildNotActivatable:
+        return _error('planner.build_not_activatable', status.HTTP_409_CONFLICT)
+    return Response(GraphBuildSerializer(build).data, status=status.HTTP_202_ACCEPTED)
+
+
 class PlannerFeedViewSet(viewsets.ModelViewSet):
     """Feeds included in the planner graph."""
 
@@ -69,22 +79,13 @@ class GraphBuildViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
 
     def create(self, request):
         """Build now, outside the schedule."""
-        try:
-            build = services.request_build(GraphBuild.TRIGGER_MANUAL, request.user)
-        except services.BuildInProgress:
-            return _error('planner.build_in_progress', status.HTTP_409_CONFLICT)
-        return Response(GraphBuildSerializer(build).data, status=status.HTTP_202_ACCEPTED)
+        return _queued(lambda: services.request_build(GraphBuild.TRIGGER_MANUAL, request.user))
 
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):
         """Serve this earlier build's graph again (rollback)."""
-        try:
-            build = services.request_rollback(self.get_object(), request.user)
-        except services.BuildInProgress:
-            return _error('planner.build_in_progress', status.HTTP_409_CONFLICT)
-        except services.BuildNotActivatable:
-            return _error('planner.build_not_activatable', status.HTTP_409_CONFLICT)
-        return Response(GraphBuildSerializer(build).data, status=status.HTTP_202_ACCEPTED)
+        target = self.get_object()
+        return _queued(lambda: services.request_rollback(target, request.user))
 
 
 class BuildScheduleView(APIView):

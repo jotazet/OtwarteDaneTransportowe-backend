@@ -63,8 +63,9 @@ def street_graph_key(cells, osm_path: str, otp_image: str) -> str:
     return digest.hexdigest()
 
 
-def prepare_osm(source: str, cells, workdir: str) -> str:
-    """Filter and crop ``source`` to the cells; returns the path of the result."""
+def prepare_osm(source: str, cells, target: str) -> None:
+    """Write ``source`` filtered to routable ways and cropped to the cells to ``target``."""
+    workdir = os.path.dirname(target)
     polygons = [
         [
             [
@@ -88,13 +89,15 @@ def prepare_osm(source: str, cells, workdir: str) -> str:
             fh,
         )
     filtered = os.path.join(workdir, 'filtered.osm.pbf')
-    cropped = os.path.join(workdir, 'street.osm.pbf')
-    _osmium('tags-filter', source, *TAG_FILTER, '-o', filtered)
-    _osmium(
-        'extract', '--strategy', 'complete_ways', '--polygon', coverage, filtered, '-o', cropped
-    )
-    os.remove(filtered)
-    return cropped
+    try:
+        _osmium('tags-filter', source, *TAG_FILTER, '-o', filtered)
+        _osmium(
+            'extract', '--strategy', 'complete_ways', '--polygon', coverage, filtered, '-o', target
+        )
+    finally:
+        for path in (coverage, filtered):
+            if os.path.exists(path):
+                os.remove(path)
 
 
 def _osmium(*args):
