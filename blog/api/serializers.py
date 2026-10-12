@@ -9,7 +9,7 @@ def reaction_count_annotations() -> dict:
     """Per-type reaction counts, computed by the database.
 
     One conditional COUNT per reaction type; Postgres resolves them all from a
-    single join. Soft-removed reactions (reaction IS NULL) are excluded, matching
+    single join. Soft-removed reactions (reaction = '') are excluded, matching
     what the old in-Python tally did.
     """
     return {

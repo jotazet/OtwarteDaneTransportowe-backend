@@ -8,6 +8,8 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 **Deploy order:** first the `auth_type` fix below, then the frontend that sends `""`, then this backend version. The backend before this one already accepts `""` for all these fields.
 
+**Deploy and rollback:** the previous backend writes `NULL` into these columns, which fails once the migrations have run. Stop the services that write before deploying (`./scripts/deploy.sh stop web celery_worker celery_validator_worker celery_beat`; a short downtime) so no old container writes between the migration and its own restart. To roll back, reverse the migrations **before** starting the old image: `migrate data_manager 0009`, `migrate cases 0004`, `migrate blog 0002`.
+
 Affected fields:
 
 | Resource | Fields |
