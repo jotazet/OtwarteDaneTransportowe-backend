@@ -92,13 +92,13 @@ def org(normal_user, settings, tmp_path):
 def _mock_docker_from_env(error_count: int, runs: list | None = None):
     """Simulate gtfs-validator container writing report.json (no Docker socket required).
 
-    Pass ``runs`` to collect the image of each containers.run() call.
+    Pass ``runs`` to collect the image and options of each containers.run() call.
     """
 
     class _Containers:
         def run(self, image, command, volumes, **kwargs):
             if runs is not None:
-                runs.append(image)
+                runs.append({'image': image, **kwargs})
             output_host_dir = next(
                 host for host, spec in volumes.items() if spec.get('bind') == '/output'
             )
@@ -203,9 +203,14 @@ def test_gtfs_upload_flow_correct(api_client, admin_user, normal_user, org):
     )
 
 
-def test_validation_runs_configured_image(normal_user, org, settings):
+def test_validation_container_uses_configured_image_user_and_limits(normal_user, org, settings):
     settings.GTFS_VALIDATOR_IMAGE = 'registry.example.org/gtfs-validator:9.9.9'
     settings.HOST_MEDIA_ROOT = str(settings.MEDIA_ROOT)
+    settings.GTFS_VALIDATOR_UID = '1234'
+    settings.GTFS_VALIDATOR_GID = '5678'
+    settings.GTFS_VALIDATOR_MEM_LIMIT = '1g'
+    settings.GTFS_VALIDATOR_PIDS_LIMIT = 64
+    settings.GTFS_VALIDATOR_NANO_CPUS = 500_000_000
     submission = FeedSubmission.objects.create(
         transport_organization=org,
         submitted_by=normal_user,
@@ -222,46 +227,12 @@ def test_validation_runs_configured_image(normal_user, org, settings):
     with patch('docker.from_env', _mock_docker_from_env(0, runs)):
         validate_gtfs_feed_task(entry.id)
 
-    assert runs == ['registry.example.org/gtfs-validator:9.9.9']
-
-
-def test_validation_container_uses_configured_user_and_limits(normal_user, org, settings):
-    settings.HOST_MEDIA_ROOT = str(settings.MEDIA_ROOT)
-    settings.GTFS_VALIDATOR_UID = '1234'
-    settings.GTFS_VALIDATOR_GID = '5678'
-    settings.GTFS_VALIDATOR_MEM_LIMIT = '1g'
-    settings.GTFS_VALIDATOR_PIDS_LIMIT = 64
-    settings.GTFS_VALIDATOR_NANO_CPUS = 500_000_000
-    submission = FeedSubmission.objects.create(
-        transport_organization=org,
-        submitted_by=normal_user,
-        data_type='gtfs',
-        name='Configured validator limits',
-    )
-    with patch('data_manager.signals.validate_gtfs_feed_task.delay'):
-        entry = StaticFeedEntry.objects.create(
-            submission=submission,
-            file=ContentFile(b'PK\x03\x04data', name='feed.zip'),
-        )
-
-    calls = []
-
-    class _Containers:
-        def run(self, **kwargs):
-            calls.append(kwargs)
-            raise RuntimeError('stop after recording the call')
-
-    class _DockerClient:
-        containers = _Containers()
-
-    with patch('docker.from_env', lambda: _DockerClient()):
-        validate_gtfs_feed_task(entry.id)
-
-    assert len(calls) == 1
-    assert calls[0]['user'] == '1234:5678'
-    assert calls[0]['mem_limit'] == '1g'
-    assert calls[0]['pids_limit'] == 64
-    assert calls[0]['nano_cpus'] == 500_000_000
+    assert len(runs) == 1
+    assert runs[0]['image'] == 'registry.example.org/gtfs-validator:9.9.9'
+    assert runs[0]['user'] == '1234:5678'
+    assert runs[0]['mem_limit'] == '1g'
+    assert runs[0]['pids_limit'] == 64
+    assert runs[0]['nano_cpus'] == 500_000_000
 
 
 def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
