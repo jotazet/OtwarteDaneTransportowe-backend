@@ -1,6 +1,5 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
-
 ROLE_ADMIN = 'Admin'
 ROLE_BLOGGER = 'Blogger'
 ROLE_EDITOR = 'Editor'

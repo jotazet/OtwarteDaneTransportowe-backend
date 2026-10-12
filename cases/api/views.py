@@ -1,13 +1,13 @@
 from rest_framework import viewsets
 
-from OtwarteDaneTransportowe.auth_roles import IsCaseManagerOrReadOnly
-from cases.models import CaseStatus, DataProvider, TransportOrganization
 from cases.api.serializers import (
     CaseStatusSerializer,
     DataProviderSerializer,
-    TransportOrganizationSerializer,
     TransportOrganizationDetailSerializer,
+    TransportOrganizationSerializer,
 )
+from cases.models import CaseStatus, DataProvider, TransportOrganization
+from OtwarteDaneTransportowe.auth_roles import IsCaseManagerOrReadOnly
 
 
 class DataProviderViewSet(viewsets.ModelViewSet):

@@ -2,9 +2,9 @@
 deterministic /feed/rt/<pk>/<endpoint_type>/ route."""
 
 import pytest
-from django.core.files.base import ContentFile
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.core.files.base import ContentFile
 from rest_framework.test import APIClient
 
 from cases.models import TransportOrganization

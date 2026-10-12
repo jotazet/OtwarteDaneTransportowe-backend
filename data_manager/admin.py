@@ -2,8 +2,6 @@ from django import forms
 from django.contrib import admin
 from django.utils.html import format_html
 
-from OtwarteDaneTransportowe.auth_roles import is_admin
-
 from data_manager.models import (
     FeedFetchError,
     FeedSubmission,
@@ -13,6 +11,7 @@ from data_manager.models import (
     RealtimeSubmissionHistory,
     StaticFeedEntry,
 )
+from OtwarteDaneTransportowe.auth_roles import is_admin
 
 
 class _CredentialInlineForm(forms.ModelForm):

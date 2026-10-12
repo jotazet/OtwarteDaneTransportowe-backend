@@ -5,7 +5,6 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from OtwarteDaneTransportowe.auth_roles import RequiresAdminGroup
 from accounts.api.serializers import (
     ChangeEmailSerializer,
     ChangePasswordSerializer,
@@ -18,6 +17,7 @@ from accounts.services import (
     generate_random_password,
     would_remove_last_admin,
 )
+from OtwarteDaneTransportowe.auth_roles import RequiresAdminGroup
 
 User = get_user_model()
 

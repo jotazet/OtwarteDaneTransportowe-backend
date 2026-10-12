@@ -1,55 +1,44 @@
 from collections import OrderedDict
 from datetime import timedelta
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.db.models import CharField, F, OuterRef, Prefetch, Q, Subquery, Value
+from django.db.models.functions import Coalesce, Concat
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework.response import Response
-from rest_framework.views import APIView
 
 # DRF's ValidationError renders as HTTP 400; Django's would bubble up as 500.
 from rest_framework.exceptions import ValidationError
-from django.db.models import CharField, F, OuterRef, Q, Subquery, Prefetch, Value
-from django.db.models.functions import Coalesce, Concat
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from OtwarteDaneTransportowe.auth_roles import (
-    IsFeedParticipant,
-    can_add_feeds,
-    can_confirm_feeds,
-    can_edit_realtime_submission_content,
-    can_edit_static_feed_source,
-    is_admin,
-    is_helper_reviewer,
-    patch_request_includes_submission_content,
-)
-from django.core.exceptions import ValidationError as DjangoValidationError
-
+from cases.models import TransportOrganization
 from data_manager.api.serializers import (
+    STATIC_ENTRY_SOURCE_FIELDS,
     AdminFeedSubmissionSerializer,
     AdminRealtimeSubmissionSerializer,
-    annotate_fetch_health,
-    raise_as_drf_validation_error,
     EligibleRealtimeStaticSubmissionSerializer,
     FeedFetchErrorSerializer,
     FeedSubmissionListSerializer,
     FeedSubmissionSerializer,
     FeedSubmissionWriteSerializer,
-    FeedDetailSerializer,
     OrganizationFeedsSerializer,
     OrganizationFeedsSummarySerializer,
     ProxyManagedFeedListSerializer,
     RealtimeEndpointRTSerializer,
     RealtimeSubmissionSerializer,
     RealtimeSubmissionWriteSerializer,
-    STATIC_ENTRY_SOURCE_FIELDS,
     StaticFeedEntrySerializer,
     UserFeedSubmissionListSerializer,
     UserRealtimeSubmissionSerializer,
+    annotate_fetch_health,
+    raise_as_drf_validation_error,
 )
 from data_manager.models import (
     FeedFetchError,
@@ -62,7 +51,16 @@ from data_manager.models import (
     completed_realtime_submission_ids,
     completed_submission_ids,
 )
-from cases.models import TransportOrganization
+from OtwarteDaneTransportowe.auth_roles import (
+    IsFeedParticipant,
+    can_add_feeds,
+    can_confirm_feeds,
+    can_edit_realtime_submission_content,
+    can_edit_static_feed_source,
+    is_admin,
+    is_helper_reviewer,
+    patch_request_includes_submission_content,
+)
 
 
 def _page_url(request, page_number: int) -> str | None:
@@ -1110,6 +1108,7 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
         reason = (request.data.get('reason') or '').strip()
         endpoint.pause_fetch(reason=reason)
         from django.core.cache import cache
+
         from data_manager.tasks import _rt_alive_key
 
         cache.delete(_rt_alive_key(endpoint.id))
@@ -1123,6 +1122,7 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
         endpoint = self.get_object()
         endpoint.resume_fetch()
         from django.core.cache import cache
+
         from data_manager.tasks import _rt_alive_key, schedule_realtime_endpoint_fetches
 
         cache.delete(_rt_alive_key(endpoint.id))

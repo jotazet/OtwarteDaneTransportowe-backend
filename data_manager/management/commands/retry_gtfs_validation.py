@@ -8,7 +8,7 @@ Usage:
 
 from django.core.management.base import BaseCommand
 
-from data_manager.models import FeedSubmission, StaticFeedEntry
+from data_manager.models import StaticFeedEntry
 from data_manager.tasks import validate_gtfs_feed_task
 
 

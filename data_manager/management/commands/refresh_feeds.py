@@ -13,11 +13,11 @@ Użycie:
 """
 
 from django.core.management.base import BaseCommand
-
-from data_manager.scheduler import _fetch_static_entry, _completed_submission_ids
-from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, StaticFeedEntry
 from django.db.models import Q
 from django.utils import timezone
+
+from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, StaticFeedEntry
+from data_manager.scheduler import _completed_submission_ids, _fetch_static_entry
 
 
 class Command(BaseCommand):

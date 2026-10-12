@@ -21,11 +21,10 @@ from django.utils import timezone
 
 from data_manager.models import (
     FeedFetchError,
-    FeedSubmissionHistory,
     RealtimeEndpointRT,
     StaticFeedEntry,
-    completed_submission_ids,
     completed_realtime_submission_ids,
+    completed_submission_ids,
 )
 from data_manager.net_security import OutboundURLBlocked, safe_download
 from data_manager.validators import (

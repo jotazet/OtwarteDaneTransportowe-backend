@@ -1,9 +1,8 @@
+import io
+from contextlib import contextmanager
 from datetime import timedelta
 
 import pytest
-import io
-from contextlib import contextmanager
-
 import requests
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
@@ -26,7 +25,6 @@ from data_manager.models import (
     StaticFeedEntry,
 )
 from data_manager.scheduler import FETCH_OK, _fetch_static_entry
-
 
 pytestmark = pytest.mark.django_db
 

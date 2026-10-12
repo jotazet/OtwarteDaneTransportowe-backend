@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.settings import api_settings
 
+from cases.models import TransportOrganization
 from data_manager.models import (
     FeedFetchError,
     FeedSubmission,
@@ -17,10 +18,8 @@ from data_manager.models import (
     RealtimeSubmissionHistory,
     StaticFeedEntry,
 )
-from cases.models import TransportOrganization
 from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url
 from data_manager.validators import validate_uploaded_gtfs_zip
-
 
 # ---------------------------------------------------------------------------
 # FeedSubmissionHistory

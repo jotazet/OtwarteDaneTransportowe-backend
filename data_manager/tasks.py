@@ -27,8 +27,8 @@ Zalety self-scheduling:
   • Skalowalnosc — wiele endpointow moze pracowac niezaleznie.
 """
 
-import random
 import os
+import random
 import time
 
 from celery import shared_task
@@ -130,10 +130,10 @@ def _mark_rt_alive(endpoint_id: int, interval: int) -> None:
 def _scheduler():
     """Leniwy import — unika circular imports przy starcie Celery."""
     from data_manager.scheduler import (
+        _completed_realtime_submission_ids,
+        _completed_submission_ids,
         _fetch_realtime_endpoint_rt,
         _fetch_static_entry,
-        _completed_submission_ids,
-        _completed_realtime_submission_ids,
     )
 
     return (
@@ -158,8 +158,9 @@ def refresh_static_feeds_task() -> dict:
     """
     from datetime import timedelta
 
-    from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, StaticFeedEntry
     from django.db.models import Q
+
+    from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, StaticFeedEntry
 
     _, _, _completed, _ = _scheduler()
 
@@ -270,8 +271,9 @@ def bootstrap_realtime_tasks() -> dict:
     endpointy z aktywnym markerem, dzieki czemu nie mnozy rownoleglych petli.
     `cache.add` rezerwuje slot atomowo (odporne na rownolegle bootstrapy).
     """
-    from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, RealtimeEndpointRT
     from django.db.models import Q
+
+    from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, RealtimeEndpointRT
 
     _, _, _, _completed_rt = _scheduler()
 
@@ -459,10 +461,11 @@ def validate_gtfs_feed_task(self, entry_id: int):
     """
     import json
     import shutil
-    import logging
+
     import docker
     from django.conf import settings
-    from data_manager.models import StaticFeedEntry, FeedValidationReport, FeedSubmissionHistory
+
+    from data_manager.models import FeedSubmissionHistory, FeedValidationReport, StaticFeedEntry
 
     logger.info(f"Starting GTFS validation for StaticFeedEntry id={entry_id}")
 
@@ -540,6 +543,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             from urllib.parse import urlparse
 
             import requests
+
             from data_manager.net_security import OutboundURLBlocked, safe_download
             from data_manager.scheduler import _build_auth_headers
 
@@ -714,7 +718,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             return
 
         try:
-            with open(report_file, 'r', encoding='utf-8') as f:
+            with open(report_file, encoding='utf-8') as f:
                 report_data = json.load(f)
         except json.JSONDecodeError as e:
             _reject_submission(f"Failed to decode report.json: {e}", validation_error=True)
@@ -854,8 +858,8 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
         RealtimeSubmissionHistory,
         completed_submission_ids,
     )
-    from data_manager.scheduler import _build_auth_headers, _fetch_realtime_endpoint_rt
     from data_manager.net_security import OutboundURLBlocked, safe_get
+    from data_manager.scheduler import _build_auth_headers, _fetch_realtime_endpoint_rt
     from data_manager.validators import InvalidFeedContent, validate_realtime_feed_content
 
     max_link_bytes = settings.MAX_REALTIME_FEED_BYTES

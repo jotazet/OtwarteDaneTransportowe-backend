@@ -1,16 +1,15 @@
+import os
 from datetime import timedelta
 
-from django.db import models
-from django.core.exceptions import ObjectDoesNotExist, ValidationError
-from django.core.files.storage import FileSystemStorage
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.core.files.storage import FileSystemStorage
+from django.db import models
 from django.utils import timezone
-import os
 
 from data_manager.fields import EncryptedCharField
 from data_manager.validators import validate_feed_file_size
-
 
 FETCH_STATUS_ACTIVE = 'active'
 FETCH_STATUS_DELAYED = 'delayed'
@@ -1012,7 +1011,7 @@ def completed_submission_ids() -> list[int]:
 
 def _compute_completed_submission_ids() -> list[int]:
     """PKs of FeedSubmission whose latest history row is stage 4 (published)."""
-    from django.db.models import Subquery, OuterRef
+    from django.db.models import OuterRef, Subquery
 
     latest_history = FeedSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by(
         '-created_at', '-id'
@@ -1042,7 +1041,7 @@ def completed_realtime_submission_ids() -> list[int]:
 
 def _compute_completed_realtime_submission_ids() -> list[int]:
     """PKs of RealtimeSubmission whose latest history row is stage 4 (published)."""
-    from django.db.models import Subquery, OuterRef
+    from django.db.models import OuterRef, Subquery
 
     latest_history = RealtimeSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by(
         '-created_at', '-id'

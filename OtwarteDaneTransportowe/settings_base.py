@@ -3,7 +3,6 @@ from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 INSECURE_SECRET_KEY_PLACEHOLDER = 'django-insecure-dev-placeholder'

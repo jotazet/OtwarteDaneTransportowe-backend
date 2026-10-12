@@ -27,6 +27,7 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 from rest_framework.permissions import AllowAny, IsAdminUser
+
 from data_manager.api.views import PublicFeedDownloadView, RealtimePublicFeedDownloadView
 from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairView, ThrottledTokenRefreshView
 

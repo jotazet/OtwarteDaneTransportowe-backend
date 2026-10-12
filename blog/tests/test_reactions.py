@@ -5,8 +5,8 @@ from django.contrib.auth import get_user_model
 from django.test import RequestFactory
 from rest_framework.test import APIClient
 
-from OtwarteDaneTransportowe.request_ip import get_client_ip
 from blog.models import Post, Reaction
+from OtwarteDaneTransportowe.request_ip import get_client_ip
 
 pytestmark = pytest.mark.django_db
 

@@ -1,26 +1,27 @@
 import json
-import pytest
 import os
 from datetime import time
 from unittest.mock import patch
 
-from django.core.files.base import ContentFile
-from rest_framework.test import APIClient
+import pytest
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
+from django.core.files.base import ContentFile
+from django.test import override_settings
+from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
+
 from cases.models import TransportOrganization
 from data_manager.models import (
     FeedSubmission,
-    StaticFeedEntry,
     FeedSubmissionHistory,
     RealtimeEndpointRT,
     RealtimeSubmission,
     RealtimeSubmissionHistory,
+    StaticFeedEntry,
 )
-from django.test import override_settings
-from django.conf import settings
 from data_manager.tasks import validate_gtfs_feed_task
 
 pytestmark = pytest.mark.django_db

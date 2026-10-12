@@ -1,8 +1,8 @@
 from django.db.models import Count, Q
 from rest_framework import serializers
 
-from OtwarteDaneTransportowe.request_ip import get_client_ip
 from blog.models import Post, Reaction
+from OtwarteDaneTransportowe.request_ip import get_client_ip
 
 
 def reaction_count_annotations() -> dict:

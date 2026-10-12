@@ -3,8 +3,8 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from OtwarteDaneTransportowe.auth_roles import ALLOWED_ROLE_NAMES
 from accounts.services import generate_random_password, set_user_roles, user_role_names
+from OtwarteDaneTransportowe.auth_roles import ALLOWED_ROLE_NAMES
 
 User = get_user_model()
 

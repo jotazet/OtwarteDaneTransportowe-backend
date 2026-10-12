@@ -10,8 +10,8 @@ runtime, hence this check.
 """
 
 from django.conf import settings
-from django.core.checks import Warning as CheckWarning, register
-
+from django.core.checks import Warning as CheckWarning
+from django.core.checks import register
 
 W_NO_TRUSTED_PROXIES = 'blog.W001'
 

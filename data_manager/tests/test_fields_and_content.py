@@ -6,13 +6,12 @@ from contextlib import contextmanager
 
 import pytest
 from cryptography.fernet import Fernet
-from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django.core.files.base import ContentFile
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.core.exceptions import ImproperlyConfigured, ValidationError
+from django.core.files.base import ContentFile
 from django.utils import timezone
 
-from OtwarteDaneTransportowe.settings_base import validate_production_secret_key
 from cases.models import TransportOrganization
 from data_manager.models import (
     FeedFetchError,
@@ -32,6 +31,7 @@ from data_manager.validators import (
     validate_static_feed_content,
     validate_uploaded_gtfs_zip,
 )
+from OtwarteDaneTransportowe.settings_base import validate_production_secret_key
 
 pytestmark = pytest.mark.django_db
 
