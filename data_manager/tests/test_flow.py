@@ -1519,12 +1519,14 @@ def _realtime_with_secret(settings, org, owner, stage):
 
     settings.FEED_AUTH_ENCRYPTION_KEY = Fernet.generate_key().decode()
     rts = _realtime_at_stage_1(org, owner)
-    if stage == 4:
+    if stage > 1:
         RealtimeSubmissionHistory.objects.create(
             submission=rts,
-            event_type=RealtimeSubmissionHistory.EVENT_COMPLETED,
-            stage_before=3,
-            stage_after=4,
+            event_type=RealtimeSubmissionHistory.EVENT_COMPLETED
+            if stage == 4
+            else RealtimeSubmissionHistory.EVENT_STAGE_ADVANCED,
+            stage_before=stage - 1,
+            stage_after=stage,
         )
     RealtimeEndpointRT.objects.create(
         submission=rts,
@@ -1568,6 +1570,31 @@ def test_full_edit_keeps_stored_auth_value(
     assert endpoint.url == 'https://example.org/v2.json'
     assert endpoint.auth_type == sent['auth_type']
     assert (endpoint.auth_value or None) == expected_value
+
+
+@pytest.mark.parametrize(
+    ('auth_value', 'status_code', 'interval'),
+    [('', 200, 120), ('new-secret', 400, 60)],
+)
+def test_restricted_edit_keeps_stored_auth_value(
+    api_client, normal_user, org, settings, public_dns, auth_value, status_code, interval
+):
+    """From stage 2 the secret is locked. An empty auth_value means "not
+    retyped", as on a full edit, so it keeps the secret instead of failing as
+    a change; a new value is still refused."""
+    rts = _realtime_with_secret(settings, org, normal_user, stage=3)
+
+    api_client.force_authenticate(user=normal_user)
+    response = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'endpoints': [{'endpoint_type': 'gbfs', 'interval': 120, 'auth_value': auth_value}]},
+        format='json',
+    )
+
+    assert response.status_code == status_code, response.data
+    endpoint = RealtimeEndpointRT.objects.get(submission=rts)
+    assert endpoint.interval == interval
+    assert endpoint.auth_value == 'old-secret'
 
 
 def test_rejected_resubmission_with_same_url_requeues_validation(

@@ -8,11 +8,11 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ---
 
-## 2026-10: a full realtime edit keeps stored endpoint secrets
+## 2026-10: a realtime edit keeps stored endpoint secrets
 
 Not breaking: the request and response shapes are unchanged.
 
-A full edit of a realtime submission (`PUT/PATCH /api/data_manager/realtime-submissions/{id}/` with `endpoints`, by the owner at stage 1 or after a rejection, or by an Admin) replaces the endpoint rows. `auth_value` is write-only, so the frontend sends it only when the user retypes it, and the stored secret used to be lost while `auth_type` stayed set: the server then fetched the source without credentials. Now, when an endpoint is sent with `auth_type` but without `auth_value` (or with `""`), and the previous endpoint of the same `endpoint_type` had the same `auth_type`, the stored secret is kept. See [Feeds API](feeds.md#realtime-feeds-realtimesubmission).
+A full edit of a realtime submission (`PUT/PATCH /api/data_manager/realtime-submissions/{id}/` with `endpoints`, by the owner at stage 1 or after a rejection, or by an Admin) replaces the endpoint rows. `auth_value` is write-only, so the frontend sends it only when the user retypes it, and the stored secret used to be lost while `auth_type` stayed set: the server then fetched the source without credentials. Now, when an endpoint is sent with `auth_type` but without `auth_value` (or with `""`), and the previous endpoint of the same `endpoint_type` had the same `auth_type`, the stored secret is kept. The owner's restricted edit (from stage 2) follows the same rule: an endpoint sent with `"auth_value": ""` used to return `400` as a change of credentials and now keeps the stored secret; a different `auth_value` is still refused. See [Feeds API](feeds.md#realtime-feeds-realtimesubmission).
 
 ---
 

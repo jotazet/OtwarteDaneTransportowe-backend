@@ -583,28 +583,31 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
         ]
 
     def to_internal_value(self, data):
-        if (
-            self.context.get('restricted_realtime_edit')
-            and self.instance
-            and isinstance(data, dict)
-        ):
-            eps = data.get('endpoints')
-            if isinstance(eps, list):
-                by_type = {e.endpoint_type: e for e in self.instance.endpoints.all()}
-                merged = []
-                for item in eps:
-                    if isinstance(item, dict) and item.get('endpoint_type') in by_type:
-                        ex = by_type[item['endpoint_type']]
-                        row = dict(item)
-                        row.setdefault('url', ex.url)
-                        row.setdefault('hide_original', ex.hide_original)
-                        row.setdefault('is_original', ex.is_original)
-                        row.setdefault('auth_type', ex.auth_type)
-                        row.setdefault('auth_value', ex.auth_value)
-                        merged.append(row)
-                    else:
-                        merged.append(item)
-                data = {**data, 'endpoints': merged}
+        eps = data.get('endpoints') if self.instance and isinstance(data, dict) else None
+        if isinstance(eps, list):
+            restricted = self.context.get('restricted_realtime_edit')
+            by_type = {e.endpoint_type: e for e in self.instance.endpoints.all()}
+            merged = []
+            for item in eps:
+                ex = None
+                if isinstance(item, dict) and isinstance(item.get('endpoint_type'), str):
+                    ex = by_type.get(item['endpoint_type'])
+                if ex is None:
+                    merged.append(item)
+                    continue
+                row = dict(item)
+                if restricted:
+                    # A restricted edit may send a shortened endpoint object.
+                    row.setdefault('url', ex.url)
+                    row.setdefault('hide_original', ex.hide_original)
+                    row.setdefault('is_original', ex.is_original)
+                    row.setdefault('auth_type', ex.auth_type)
+                # auth_value is write-only, so clients send it only when the user
+                # retypes it: keep the stored secret while auth_type is unchanged.
+                if not row.get('auth_value') and row.get('auth_type') == ex.auth_type:
+                    row['auth_value'] = ex.auth_value
+                merged.append(row)
+            data = {**data, 'endpoints': merged}
         return super().to_internal_value(data)
 
     def validate(self, data):
