@@ -20,6 +20,9 @@ Outside `DEBUG`, `/api/schema/`, `/api/schema/swagger-ui/` and `/api/schema/redo
 
 ### 4. Corrected documentation (behaviour unchanged)
 
+- `GET /api/data_manager/feeds/` lists **all** transport organizations, also those without a published feed (empty `static_types` and `dynamic_types`), not only those with published feeds.
+- Helper/Admin `PATCH {"stage": N}` may set any stage 1–4 from any state, skipping stages or moving back; this reviewer override is recorded in `history` as `stage_advanced` (or `completed` for stage 4). See [Static feeds](feeds.md#static-feeds-feedsubmission).
+- A Helper's `PUT`/`PATCH` with any field other than `stage` and `rejection_cause` returns `403`, not a `400` validation error.
 - `POST /api/auth/token/refresh/` returns `{access, refresh}`, not only `access`: refresh tokens rotate and the old one is blacklisted, so a client that keeps the old `refresh` gets `401` on its next refresh. See [JWT authentication](README.md#post-apiauthtokenrefresh).
 - Sending `null` for a text field returns DRF's field error, e.g. `{"name": ["This field may not be null."]}`. The 2026-10 entry below and the API overview promised an error code `null` in the body; there is none until the exception handler of [ADR 0006](../architecture/decisions/0006-api-error-codes.md) exists.
 - Realtime `PATCH` in restricted mode with an `endpoint_type` the submission does not have returns `{"endpoints": ["Unknown endpoint type '...'."]}` (or a field error, see the corrected table in the 2026-07 entry below), not the body documented there before.
