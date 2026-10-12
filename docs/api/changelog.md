@@ -10,6 +10,10 @@ Not breaking: fields are only added, and the corrected docs describe behaviour t
 
 `GET /api/data_manager/feeds/{organization_id}/`: each `feeds[].static_feed` gains **`download_time_1`** and **`download_time_2`**, the daily refresh times of a proxied feed in **UTC** (`"03:00:00"`). Both are `null` when the feed is not proxied (ODT does not fetch it on a schedule). See [Public feed catalogue](feeds.md#public-feed-catalogue).
 
+### 2. Fetch errors link to their submission
+
+Every record of `GET /api/data_manager/fetch-errors/`, `/feed-submissions/{id}/fetch-errors/` and `/realtime-submissions/{id}/fetch-errors/` gains **`submission_id`**: the `FeedSubmission` id when `source` is `static`, the `RealtimeSubmission` id when it is `realtime` (the `#<id>` in `feed_name`). Use it to link an error to its feed. See [Fetch errors](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
 ---
 
 ## 2026-10: empty text fields are `""`, never `null`

@@ -95,6 +95,8 @@ Every error record, and the responses of the `static-feed-entries`, `realtime-en
 
 `#<id>` is the id of the feed submission (`FeedSubmission` for static, `RealtimeSubmission` for realtime) - the same id under which the feed is published at `/feed/{id}/` and `/feed/rt/{id}/`.
 
+Error records and `proxy-feeds` items also return that id as `submission_id`, so the client can link to the feed: `source=static` → `/api/data_manager/feed-submissions/{submission_id}/`, `source=realtime` → `/api/data_manager/realtime-submissions/{submission_id}/`.
+
 Example record from `GET /api/data_manager/fetch-errors/`:
 
 ```json
@@ -104,6 +106,7 @@ Example record from `GET /api/data_manager/fetch-errors/`:
   "static_entry": 12,
   "endpoint_rt": null,
   "endpoint_type": null,
+  "submission_id": 23,
   "organization": "ZTM Warszawa",
   "feed_name": "#23 GTFS ZTM",
   "error_type": "timeout",

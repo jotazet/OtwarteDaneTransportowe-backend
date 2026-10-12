@@ -222,6 +222,7 @@ class ProxyManagedFeedListSerializer(serializers.Serializer):
 class FeedFetchErrorSerializer(serializers.ModelSerializer):
     source = serializers.SerializerMethodField()
     endpoint_type = serializers.SerializerMethodField()
+    submission_id = serializers.SerializerMethodField()
     organization = serializers.SerializerMethodField()
     feed_name = serializers.SerializerMethodField()
 
@@ -233,6 +234,7 @@ class FeedFetchErrorSerializer(serializers.ModelSerializer):
             'static_entry',
             'endpoint_rt',
             'endpoint_type',
+            'submission_id',
             'organization',
             'feed_name',
             'error_type',
@@ -255,6 +257,11 @@ class FeedFetchErrorSerializer(serializers.ModelSerializer):
         if obj.endpoint_rt_id:
             return obj.endpoint_rt.submission
         return None
+
+    def get_submission_id(self, obj):
+        """FeedSubmission id for static errors, RealtimeSubmission id for realtime ones."""
+        submission = self._submission(obj)
+        return submission.id if submission else None
 
     def get_organization(self, obj):
         return feed_organization_name(self._submission(obj))
