@@ -88,10 +88,10 @@ Base endpoint:
 - **Full editing** — only when the submission is **rejected** (`is_rejected=true`, usually `current_stage=1`) or when the history contains only stage **1** (a rare case with no transition to stage 2). In that case all fields can be changed, including `name`, the source (`url` / file), `is_original`, `hide_original`, `auth_type`, `auth_value`.
 - **Editing from stage 2 to 4** — when there is **no** rejection and `current_stage` is **2, 3 or 4**, the owner (`DataProvider`) may change only:
   - on the submission: **`note`** (the **`name` field is locked**);
-  - in `static_entry`: only **`license`**, **`download_time_1`**, **`download_time_2`** (including setting `download_time_2` to `null`).
-- **Forbidden from stage 2 to 4 for the owner and Helper** (an attempt to change them via `PATCH` returns a validation error): **`name`**, **`transport_organization`**, **`data_type`**, link / file (`url`, `file`), **`is_original`**, **`hide_original`**, **`auth_type`**, **`auth_value`** (password / secret). **Only a user in the Django `Admin` group** may change the URL/file at stages 2–4 (`is_superuser` / `is_staff` alone without that group is **not** enough).
+  - in `static_entry`: only **`license`**, **`download_time_1`**, **`download_time_2`** (UTC; including setting `download_time_2` to `null`).
+- **Forbidden from stage 2 to 4 for the owner** (an attempt to change them via `PATCH` returns `400` with a validation error): **`name`**, **`transport_organization`**, **`data_type`**, link / file (`url`, `file`), **`is_original`**, **`hide_original`**, **`auth_type`**, **`auth_value`** (password / secret). **Only a user in the Django `Admin` group** may change the URL/file at stages 2–4 (`is_superuser` / `is_staff` alone without that group is **not** enough).
 - **Published feed (stage 4):** re-running GTFS validation **does not move** the stage back to rejection — the error is logged and the `FeedSubmission` stays at stage 4.
-- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change the URL/file at stages 2–4; other fields according to role.
+- **Helper** does not edit submission content at any stage: a `PUT`/`PATCH` from a Helper with any field other than `stage` and `rejection_cause` returns `403` (`{"detail": "Helper may only confirm or reject submissions ..."}`) and nothing is saved. **Admin** (the `Admin` group) may change the URL/file at stages 2–4; other fields according to role.
 
 **List query params:**
 
@@ -141,16 +141,31 @@ Base endpoint:
   "published_at": null,
   "static_entry": {
     "id": 9,
+    "organization": "ZTM Warszawa",
+    "region": "Mazowieckie",
+    "feed_name": "#37 Rozklad ZTM",
+    "is_proxy_managed": true,
     "url": "https://example.com/gtfs.zip",
     "file": null,
     "is_original": true,
-    "hide_original": false,
+    "hide_original": true,
     "auth_type": "",
     "download_time_1": "03:00:00",
     "download_time_2": null,
     "license": "CC BY 4.0",
-    "cached_at": null,
-    "uploaded_at": "2026-04-27T10:00:00Z"
+    "cached_at": "2026-04-27T10:05:00Z",
+    "uploaded_at": "2026-04-27T10:00:00Z",
+    "validation_status": "valid",
+    "validation_message": "",
+    "fetch_status": "active",
+    "fetch_failure_count": 0,
+    "next_fetch_after": null,
+    "fetch_paused_at": null,
+    "fetch_pause_reason": "",
+    "last_fetch_success_at": "2026-04-27T10:05:00Z",
+    "last_fetch_error_at": null,
+    "last_fetch_error_message": null,
+    "fetch_error_count_7d": 0
   },
   "realtime_submissions": [],
   "history": [
@@ -168,6 +183,14 @@ Base endpoint:
 ```
 
 `auth_value` is write-only and is never returned in a response.
+
+In `static_entry`:
+
+- `download_time_1` and `download_time_2` are daily fetch times in **UTC** (`HH:MM:SS`), not Polish local time. `download_time_1` is required for a URL source and must be empty for an uploaded file; `download_time_2` is optional. ODT fetches on this schedule only when the source is proxied (`is_proxy_managed`).
+- The fetch health fields, from `fetch_status` to `fetch_error_count_7d`, are present only when `is_proxy_managed` is `true` (a URL with `hide_original=true`); for an uploaded file or a non-proxied URL they are left out. They are described in the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+- `validation_status` is `pending`, `valid`, `invalid` or `error`; `validation_message` is a short English status or error text from validation (empty when valid).
+
+For Helper/Admin the detail and the write responses also contain `submitted_by_username`.
 
 **Create - URL:**
 
@@ -207,7 +230,7 @@ Base endpoint:
 }
 ```
 
-If `auth_type` is non-empty (not `null` or `""`), the backend automatically sets `hide_original=True`.
+If `auth_type` is non-empty (anything but `""`), the backend automatically sets `hide_original=True`. `null` is rejected with `400` (see [Empty text fields](README.md#empty-text-fields)).
 
 For a URL source, `hide_original=true` **does not require** authorization to be set — the server can download a public URL and serve a copy without disclosing the original link.
 
@@ -235,6 +258,8 @@ static_entry.license=CC BY 4.0
 ```
 
 `stage` must be a number from 1 to 4. If `stage=4`, the backend creates a `completed` history entry and the feed becomes public.
+
+**Reviewer override:** Helper/Admin may set **any** stage from any state, skipping stages or moving a submission back; the rule and its history entries are in the [feed workflow](../domain/feed-workflow.md#reviewer-override). Sending the current stage changes nothing. A non-empty `rejection_cause` takes precedence over `stage`. The same applies to realtime submissions.
 
 **Rejection by Helper/Admin:**
 
@@ -270,7 +295,7 @@ Base endpoint:
 - **Forbidden from stage 2:** **`name`**, the feed **`url`**, **`auth_type`**, **`auth_value`**, **`is_original`**, **`hide_original`**, adding/removing endpoints, changing `transport_organization` / `static_submission` / `protocol`.
 - With restricted editing, a shortened endpoint object can be sent, e.g. `{"endpoint_type": "gbfs", "interval": 120}` — missing fields are filled in from the database; an attempt to change a locked field returns a validation error.
 - Changing only **`interval`** does **not** re-run the link validation task and does not delete endpoint records.
-- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background. A failure rejects a submission at stage 2 or 3, but **does not unpublish** one at stage 4: no rejection is recorded and the codes go to the server log only.
+- **Helper** does not edit submission content at any stage: a body with any field other than `stage` and `rejection_cause` returns `403`, as for static feeds. **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background. A failure rejects a submission at stage 2 or 3, but **does not unpublish** one at stage 4: no rejection is recorded and the codes go to the server log only.
 
 **List query params:**
 
@@ -386,7 +411,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
 - Two endpoints of the same `endpoint_type` cannot be added to one submission.
 - The endpoint type must match the protocol.
 - `auth_value` is write-only.
-- If `auth_type` is non-empty (not `null` or `""`), the backend automatically sets `hide_original=True`.
+- If `auth_type` is non-empty (anything but `""`), the backend automatically sets `hide_original=True`; `null` is rejected with `400`.
 - `hide_original=true` **does not require** authorization — the endpoint can be fetched by the server from a public URL without `auth_type` / `auth_value`.
 
 **Realtime detail:**
@@ -488,7 +513,7 @@ Base endpoint:
 
 **Permissions:** public.
 
-This is not a list of individual feeds, but a list of transport organizations that have published feeds.
+This is not a list of individual feeds, but a list of **all** transport organizations, sorted by `region` and name. Organizations without a published feed are listed too, with empty `static_types` and `dynamic_types` (and `"feeds": []` in the detail). This is deliberate: the catalogue also shows where data is still missing. The case status (`latest_status`, ODT's request for the data) comes from [`/api/cases/transport-organizations/`](cases.md).
 
 **List (`GET /api/data_manager/feeds/`):**
 
@@ -538,7 +563,9 @@ This is not a list of individual feeds, but a list of transport organizations th
         "download_url": "https://example.com/feed/37/gtfs.zip",
         "license": "CC BY 4.0",
         "cached_at": "2026-04-27T10:00:00Z",
-        "is_original": true
+        "is_original": true,
+        "download_time_1": "03:00:00",
+        "download_time_2": null
       },
       "realtime_feed": {
         "protocol": "gtfs_rt",
@@ -583,6 +610,8 @@ This is not a list of individual feeds, but a list of transport organizations th
 ```
 
 The public catalogue shows only feeds whose latest history entry has `stage_after=4`.
+
+`static_feed.download_time_1` and `download_time_2` are the daily times, in **UTC** (`HH:MM:SS`), at which ODT refreshes a proxied feed (`hide_original=true`). Both are `null` for a feed that is not proxied, because ODT does not fetch it on a schedule; `download_time_2` is also `null` when only one time is set. Convert them to local time for display (Poland is UTC+1, UTC+2 in summer).
 
 ## Public file downloads
 

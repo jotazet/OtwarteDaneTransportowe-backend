@@ -13,8 +13,8 @@ One concept, one name. Code uses the **English term**; the Polish UI uses the **
 | Static feed entry (`StaticFeedEntry`) | Plik statyczny | The source of a static submission: a URL or an uploaded file, never both. |
 | Endpoint (`RealtimeEndpointRT`) | Endpoint | One URL of a realtime submission, typed by `endpoint_type` (e.g. `trip_update`, `sx`, `station_status`). |
 | Stage | Etap | Workflow step 1–4: upload/endpoints → data verification → admin confirmation → published. Derived from history, never stored. See [feed workflow](feed-workflow.md). |
-| History event (`*History`) | Historia zgłoszenia | `uploaded`, `stage_advanced`, `rejected`, `completed`. |
-| Rejection cause | Przyczyna odrzucenia | Why a submission went back to stage 1: a reviewer's free text (`rejection_cause`) or, for automatic realtime rejections, codes (`rejection_reasons`) that the frontend translates. |
+| History event (`*History`) | Historia zgłoszenia | `uploaded`, `stage_advanced`, `rejected`, `completed`; see [History](../api/models.md#history). |
+| Rejection cause | Przyczyna odrzucenia | Why a submission went back to stage 1: a reviewer's or the validator's text in `rejection_cause`, or, for automatic realtime rejections, codes in `rejection_reasons` that the frontend translates. See [History](../api/models.md#history). |
 | Published | Opublikowane | Stage 4: visible in the public catalogue. |
 | Validation report (`FeedValidationReport`) | Raport walidacji *confirm* | Output of the GTFS validator for a static entry. |
 | Hide original URL (`hide_original`), proxy feed | Ukryj oryginalny adres URL; feed proxy | ODT fetches the source itself and serves the file from its own URL. Forced when the source needs authorization. |
@@ -22,7 +22,7 @@ One concept, one name. Code uses the **English term**; the Polish UI uses the **
 | Download time (`download_time_1/2`) | Godzina pobierania (UTC) | Daily fetch times of a proxied static feed, in UTC. |
 | Interval | Interwał / Aktualizacja źródeł | Seconds between fetches of a proxied realtime endpoint. |
 | Fetch status | Status pobierania | `active`, `delayed`, `auto_paused`, `manual_paused`. |
-| Fetch error (`FeedFetchError`) | Błąd pobierania | `timeout`, `connection_error`, `http_error`, `invalid_content`. |
+| Fetch error (`FeedFetchError`) | Błąd pobierania | `timeout`, `connection_error`, `http_error`, `invalid_content`, `auth_error`. `auth_error` is defined but not written yet: a rejected credential (HTTP 401/403) is recorded as `http_error` with `http_status_code`. |
 | Pause | Wstrzymanie / Auto-pauza | Fetching stopped by a person (`manual_paused`) or after repeated failures (`auto_paused`). |
 | Feed catalogue | Katalog feedów | The public list of published feeds by organization. |
 

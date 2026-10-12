@@ -2,6 +2,34 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10-12: catalogue refresh times, fetch error links and contract corrections
+
+Not breaking for API clients: fields are only added, the schema access change (3) affects only operator accounts, and the corrected docs (4) describe behaviour that was already there.
+
+### 1. Refresh times in the public catalogue
+
+`GET /api/data_manager/feeds/{organization_id}/`: each `feeds[].static_feed` gains **`download_time_1`** and **`download_time_2`**, the daily refresh times of a proxied feed in **UTC** (`"03:00:00"`). Both are `null` when the feed is not proxied (ODT does not fetch it on a schedule). See [Public feed catalogue](feeds.md#public-feed-catalogue).
+
+### 2. Fetch errors link to their submission
+
+Every record of `GET /api/data_manager/fetch-errors/`, `/feed-submissions/{id}/fetch-errors/` and `/realtime-submissions/{id}/fetch-errors/` gains **`submission_id`**: the `FeedSubmission` id when `source` is `static`, the `RealtimeSubmission` id when it is `realtime` (the `#<id>` in `feed_name`). Use it to link an error to its feed. See [Fetch errors](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+### 3. API schema for the `Admin` role only
+
+Outside `DEBUG`, `/api/schema/`, `/api/schema/swagger-ui/` and `/api/schema/redoc/` now require the `Admin` group, like user management. They used to require `is_staff`, which grants nothing anywhere else in the API ([ADR 0003](../architecture/decisions/0003-jwt-and-group-based-roles.md)). A staff account or a superuser without the `Admin` group now gets `403`; add the account to the group to keep access. Clients of the public API are not affected.
+
+### 4. Corrected documentation (behaviour unchanged)
+
+- `GET /api/data_manager/feeds/` lists **all** transport organizations, also those without a published feed (empty `static_types` and `dynamic_types`), not only those with published feeds.
+- Helper/Admin `PATCH {"stage": N}` may set any stage 1–4 from any state, skipping stages or moving back; this reviewer override is recorded in `history` as `stage_advanced` (or `completed` for stage 4). See [Static feeds](feeds.md#static-feeds-feedsubmission).
+- A Helper's `PUT`/`PATCH` with any field other than `stage` and `rejection_cause` returns `403`, not a `400` validation error.
+- `POST /api/auth/token/refresh/` returns `{access, refresh}`, not only `access`: refresh tokens rotate and the old one is blacklisted, so a client that keeps the old `refresh` gets `401` on its next refresh. See [JWT authentication](README.md#post-apiauthtokenrefresh).
+- Sending `null` for a text field returns DRF's field error, e.g. `{"name": ["This field may not be null."]}`. The 2026-10 entry below and the API overview promised an error code `null` in the body; there is none until the exception handler of [ADR 0006](../architecture/decisions/0006-api-error-codes.md) exists.
+- Realtime `PATCH` in restricted mode with an `endpoint_type` the submission does not have returns `{"endpoints": ["Unknown endpoint type '...'."]}` (or a field error, see the corrected table in the 2026-07 entry below), not the body documented there before.
+- Two existing routes are now documented: `PUT /api/users/{id}/` (same fields as `PATCH`) and `GET /internal-media/blog/{path}` (public blog images, the URL in a post's `image`).
+
+---
+
 ## 2026-10: `resume-fetch` returns `400` for non-proxied feeds; error code for both
 
 `POST /api/data_manager/static-feed-entries/{id}/resume-fetch/` and `POST /api/data_manager/realtime-endpoints/{id}/resume-fetch/` on a feed without proxying (`is_proxy_managed=false`) used to return `200` and reset fetch fields that such a feed does not use. They now return `400`, as the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds) already documented.
@@ -48,7 +76,7 @@ Affected fields:
 | Realtime `endpoints[]` | `auth_type` |
 
 - **Responses:** these fields return `""` where they used to return `null`. Truthiness checks (`if (x)`, `x || fallback`) keep working; `x ?? fallback` and `x === null` do not. This also applies to the public catalogue (`license`, organization contacts), so external consumers see the change.
-- **Requests:** sending `null` for any of these fields returns `400` with the error code `null`. Send `""` or omit the field. To remove a blog reaction, send `{"reaction": ""}`.
+- **Requests:** sending `null` for any of these fields returns `400` with DRF's field error, e.g. `{"name": ["This field may not be null."]}` (no error code in the body). Send `""` or omit the field. To remove a blog reaction, send `{"reaction": ""}`.
 - **`auth_type`:** "no authorization" is `""` (was `null`), see `docs/api/models.md`.
 - **Unchanged:** computed and non-text fields keep `null` for "none": `rejection_cause`, `published_at`, `your_reaction`, `download_time_2`, `file`, `download_url`, `feed_url`, and the nullable fields of `proxy-feeds`.
 
@@ -256,7 +284,7 @@ after a write.
 |---|---|---|
 | Submission `PATCH` with a non-numeric `stage` | **400** (was 500) | `{"stage": ["Stage must be an integer."]}` |
 | `PATCH` with `stage` outside 1–4 | **400** (was 500) | `{"stage": ["Stage must be between 1 and 4."]}` |
-| Realtime `PATCH` with an unknown `endpoint_type` (restricted mode — only `interval` can change) | **400** (was 500) | `{"endpoints": ["Unknown endpoint_type '...' ..."]}` |
+| Realtime `PATCH` with an unknown `endpoint_type` (restricted mode — only `interval` can change) | **400** (was 500) | `{"endpoints": ["Unknown endpoint type '...'."]}`; a value that is not an endpoint type at all: `{"endpoints": [{"endpoint_type": ["\"...\" is not a valid choice."]}]}`; a different number of endpoints: `{"endpoints": ["Cannot add or remove endpoints after validation."]}` |
 | Upload of a GTFS file that is not a ZIP | **400** | `{"static_entry": {"file": ["Uploaded GTFS file is not a ZIP archive."]}}` |
 | Deactivating (`is_active:false`) the last active Admin | **400** | `["Cannot remove the Admin role from, or deactivate, the last admin user."]` |
 

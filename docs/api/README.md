@@ -55,7 +55,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 - `DataProvider`
 - `Helper`
 
-`Admin` permissions also apply to Django superusers (`is_superuser=True`); `is_staff` alone grants nothing in the API. User management (`/api/users/`) and editing a feed source at stages 2–4 require membership in the `Admin` group itself — a superuser without the group gets `403` there.
+`Admin` permissions also apply to Django superusers (`is_superuser=True`); `is_staff` alone grants nothing in the API. User management (`/api/users/`), editing a feed source at stages 2–4 and, outside `DEBUG`, the API schema (`/api/schema/...`) require membership in the `Admin` group itself — a superuser without the group gets `403` there.
 
 ### Role meanings
 
@@ -138,9 +138,12 @@ Refreshes the access token using the refresh token.
 
 ```json
 {
-  "access": "eyJ..."
+  "access": "eyJ...",
+  "refresh": "eyJ..."
 }
 ```
+
+Refresh tokens rotate (`ROTATE_REFRESH_TOKENS`, `BLACKLIST_AFTER_ROTATION`): every successful refresh returns a **new** `refresh` and blacklists the one that was sent. The client must store the new `refresh` and use it next time; sending the old one again returns `401` (`{"detail": "Token is blacklisted", "code": "token_not_valid"}`).
 
 ### `/api-auth/`
 
@@ -167,10 +170,10 @@ page (max 50); fetch errors and `proxy-feeds` 25 per page (max 100).
 |--------|----------|-------------|------|
 | `GET` | `/admin/` | Django staff/admin | Django admin panel |
 | `POST` | `/api/auth/token/` | public | Obtain JWT `access` and `refresh` |
-| `POST` | `/api/auth/token/refresh/` | public | Refresh JWT `access` |
-| `GET` | `/api/schema/` | public when `DEBUG`, otherwise `is_staff` only | OpenAPI schema |
-| `GET` | `/api/schema/swagger-ui/` | public when `DEBUG`, otherwise `is_staff` only | Swagger UI |
-| `GET` | `/api/schema/redoc/` | public when `DEBUG`, otherwise `is_staff` only | ReDoc |
+| `POST` | `/api/auth/token/refresh/` | public | Refresh JWT `access`; returns a new `refresh` as well |
+| `GET` | `/api/schema/` | public when `DEBUG`, otherwise `Admin` (group) only | OpenAPI schema |
+| `GET` | `/api/schema/swagger-ui/` | public when `DEBUG`, otherwise `Admin` (group) only | Swagger UI |
+| `GET` | `/api/schema/redoc/` | public when `DEBUG`, otherwise `Admin` (group) only | ReDoc |
 | `GET` | `/api-auth/` | public/dev | Browsable API login/logout |
 
 ### Users (`django.contrib.auth.models.User`)
@@ -182,6 +185,7 @@ Requires the Django group **`Admin`** (`has_admin_role`) — `is_staff` / `is_su
 | `GET` | `/api/users/` | `Admin` (group) | List of all users |
 | `POST` | `/api/users/` | `Admin` (group) | Create an account; the server generates the password — returned in `generated_password` |
 | `GET` | `/api/users/{id}/` | `Admin` (group) | User details |
+| `PUT` | `/api/users/{id}/` | `Admin` (group) | Same fields and rules as `PATCH`; none is required, and with a JSON body omitted fields keep their values |
 | `PATCH` | `/api/users/{id}/` | `Admin` (group) | Edit `email`, `first_name`, `last_name`, `is_active`, `roles` |
 | `DELETE` | `/api/users/{id}/` | `Admin` (group) | Permanent deletion (you cannot delete yourself or the last `Admin`) |
 | `POST` | `/api/users/{id}/reset-password/` | `Admin` (group) | New random password in `generated_password` |
@@ -189,7 +193,7 @@ Requires the Django group **`Admin`** (`has_admin_role`) — `is_staff` / `is_su
 | `POST` | `/api/users/me/change-email/` | logged in | `current_password`, `new_email` |
 | `POST` | `/api/users/me/change-password/` | logged in | `current_password`, `new_password` |
 
-Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PATCH` fully replaces the list of groups).
+Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PUT`/`PATCH` fully replace the list of groups).
 
 For `POST /api/users/` the body does **not** contain a password — example `201` response:
 
@@ -220,6 +224,7 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `DELETE` | `/api/blog/posts/{id}/` | own: `Blogger`; any: `Editor`/`Admin` | Delete a post |
 | `POST` | `/api/blog/reactions/{post_id}/` | public | Add/change/remove a reaction per IP |
 | `GET` | `/api/blog/reactions/mine/?post_ids=1,2,3` | public | The caller's own reactions, resolved from their IP; read it from the browser, not during SSR |
+| `GET` | `/internal-media/blog/{path}` | public | Blog post images; a post's `image` field is the URL of this route |
 
 ### Cases
 
@@ -272,7 +277,7 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `GET` | `/api/data_manager/realtime-endpoints/{id}/` | owner or `Helper`/`Admin` | Details of a single realtime endpoint with its fetch status |
 | `POST` | `/api/data_manager/realtime-endpoints/{id}/pause-fetch/` | `Helper`/`Admin` | Manually pause fetching of a realtime endpoint |
 | `POST` | `/api/data_manager/realtime-endpoints/{id}/resume-fetch/` | `Helper`/`Admin` | Resume fetching of a realtime endpoint and cancel the retry block; proxied endpoints only (`400` otherwise, as `pause-fetch`) |
-| `GET` | `/api/data_manager/feeds/` | public | Public catalog of organizations with published feeds |
+| `GET` | `/api/data_manager/feeds/` | public | Public catalog of all transport organizations and their published feeds (organizations without one are listed too) |
 | `GET` | `/api/data_manager/feeds/{id}/` | public | Details of an organization and its published feeds |
 
 In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the feed type.
@@ -294,7 +299,7 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 
 ### Token handling
 
-- Keep `access` short-lived and refresh it via `/api/auth/token/refresh/`.
+- Keep `access` short-lived and refresh it via `/api/auth/token/refresh/`. Replace the stored `refresh` with the one from each refresh response; the old one stops working.
 - After a `401`, try a refresh first and only then log the user out.
 - Public endpoints do not need a token.
 
@@ -308,7 +313,7 @@ Recommended UI logic:
 - `DataProvider`/`Admin` - show the feed submission forms.
 - `Helper`/`Admin` - show the queue of feeds awaiting confirmation and the case/organization panel.
 
-In edit forms for `DataProvider`, **from stage 2 onwards** (static and realtime, without a rejection): lock the **name**, the feed source (URL/file or endpoint URL), **is_original**, **hide_original**, **auth_type** and **auth_value**. Static: `note`, `license` and fetch times are allowed. Realtime: `note`, `license`, `interval` are allowed. After a **rejection**, restore the full edit form.
+In edit forms for `DataProvider`, **from stage 2 onwards** (static and realtime, without a rejection): lock the **name**, the feed source (URL/file or endpoint URL), **is_original**, **hide_original**, **auth_type** and **auth_value**. Static: `note`, `license` and fetch times (`download_time_1/2`, UTC) are allowed. Realtime: `note`, `license`, `interval` are allowed. After a **rejection**, restore the full edit form.
 
 ### HTTP status codes
 
@@ -342,7 +347,7 @@ static_entry.license
 
 ### Empty text fields
 
-Text fields (`name`, `note`, `license`, `url`, `description`, `website`, `contact_email`, `phone_number`, `auth_type`, `cause`, `reaction`, ...) have one empty value: `""`. Responses never contain `null` for them, and a request that sends `null` gets `400` with the error code `null`; send `""` or omit the field. Computed fields and fields that are not text keep `null` for "none", e.g. `rejection_cause`, `published_at`, `download_time_2`, `file`, `download_url`.
+Text fields (`name`, `note`, `license`, `url`, `description`, `website`, `contact_email`, `phone_number`, `auth_type`, `cause`, `reaction`, ...) have one empty value: `""`. Responses never contain `null` for them, and a request that sends `null` gets `400` with DRF's default field error, e.g. `{"name": ["This field may not be null."]}`; send `""` or omit the field. The body carries no machine-readable error code: codes will come with the custom exception handler proposed in [ADR 0006](../architecture/decisions/0006-api-error-codes.md), so match on the status and the field name, not on the message. Computed fields and fields that are not text keep `null` for "none", e.g. `rejection_cause`, `published_at`, `download_time_2`, `file`, `download_url`.
 
 ### Important constraints
 

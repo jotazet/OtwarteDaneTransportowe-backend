@@ -432,7 +432,7 @@ def test_failed_validation_leaves_no_workdirs(settings, tmp_path, monkeypatch, o
         raise docker_module.errors.DockerException('docker down')
 
     monkeypatch.setattr('docker.from_env', failing_from_env)
-    monkeypatch.setenv('HOST_MEDIA_ROOT', str(tmp_path))
+    settings.HOST_MEDIA_ROOT = str(tmp_path)
 
     validate_gtfs_feed_task(entry.id)
 

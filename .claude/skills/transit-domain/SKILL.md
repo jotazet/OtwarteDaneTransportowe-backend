@@ -31,7 +31,7 @@ ODT collects and publishes Polish public transport data: static schedules (GTFS,
 
 - **Public feed URLs are stable.** `/feed/<id>/…` and `/feed/rt/<id>/<endpoint_type>/` must keep working across re-uploads, re-fetches and re-validation; consumers (journey planners, apps) poll them for years. Expired or moved feeds silently drop services from journey planners ([Google](https://support.google.com/transitpartners/answer/6394315), [GTFS best practices](https://gtfs.org/documentation/schedule/schedule-best-practices/)).
 - **The stage is derived from history**, never stored: every transition appends a history event (`uploaded`, `stage_advanced`, `rejected`, `completed`). History is the audit trail, which is why only Admin may delete submissions.
-- **Nothing is published without passing the workflow**: verification (stage 2) and admin confirmation (stage 3).
+- **Publication follows the workflow**: verification (stage 2) and admin confirmation (stage 3) are the normal path. The ODT team (Helper/Admin) can override it explicitly by setting any stage, and every override is recorded in history with the reviewer as actor.
 - **A failed validation of a published feed does not unpublish it**; it is reported instead.
 - **Realtime depends on static:** GTFS-RT needs a published GTFS submission and SIRI a published NeTEx one of the same organization; GBFS stands alone.
 - **ODT serves providers' data, it does not edit it.** Proxying (`hide_original`) changes where a file is served from, never its content.

@@ -3,6 +3,7 @@
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from rest_framework.test import APIClient
 
 from OtwarteDaneTransportowe.auth_roles import (
     ROLE_ADMIN,
@@ -142,3 +143,29 @@ def test_anonymous_user_has_no_roles():
     assert role_names(anon) == frozenset()
     assert not is_admin(anon)
     assert not can_confirm_feeds(anon)
+
+
+def _schema_status(user=None):
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return client.get('/api/schema/swagger-ui/').status_code
+
+
+def test_anonymous_cannot_read_schema(settings):
+    settings.DEBUG = False
+    assert _schema_status() == 401
+
+
+def test_staff_without_admin_role_cannot_read_schema(settings):
+    settings.DEBUG = False
+    assert _schema_status(_user('schema-staff', staff=True)) == 403
+
+
+def test_admin_role_can_read_schema(settings):
+    settings.DEBUG = False
+    assert _schema_status(_user('schema-admin', groups=[ROLE_ADMIN])) == 200
+
+
+def test_debug_opens_schema_to_anonymous(settings):
+    settings.DEBUG = True
+    assert _schema_status() == 200

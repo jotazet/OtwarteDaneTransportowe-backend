@@ -51,6 +51,10 @@ DataProvider
   -> the realtime feed appears publicly in the feed catalogue and /feed/rt/{id}/
 ```
 
+## Reviewer override
+
+The flows above are the normal path. Helper/Admin can override it: `PATCH {"stage": N}` sets any stage 1–4 from any state, so a reviewer can skip a stage (e.g. publish from stage 2) or move a submission back (e.g. 4 → 2, which unpublishes it). Every override is a history entry with the reviewer as `actor` (`completed` for stage 4, otherwise `stage_advanced`, also when moving back), so the audit trail shows who bypassed the workflow and when. See the reviewer override in the [Feeds API](../api/feeds.md#static-feeds-feedsubmission).
+
 ## Fetch errors and pauses of proxied feeds
 
 The pause, retry and background cache mechanism applies **only to proxied feeds** (`hide_original=true`). A feed without proxying (`hide_original=false`) or an uploaded file is **not** periodically fetched or served from the server cache — the original URL (or the uploaded file) is what is publicly visible. For such feeds:
@@ -93,6 +97,8 @@ Every error record, and the responses of the `static-feed-entries`, `realtime-en
 
 `#<id>` is the id of the feed submission (`FeedSubmission` for static, `RealtimeSubmission` for realtime) - the same id under which the feed is published at `/feed/{id}/` and `/feed/rt/{id}/`.
 
+Error records and `proxy-feeds` items also return that id as `submission_id`, so the client can link to the feed: `source=static` → `/api/data_manager/feed-submissions/{submission_id}/`, `source=realtime` → `/api/data_manager/realtime-submissions/{submission_id}/`.
+
 Example record from `GET /api/data_manager/fetch-errors/`:
 
 ```json
@@ -102,6 +108,7 @@ Example record from `GET /api/data_manager/fetch-errors/`:
   "static_entry": 12,
   "endpoint_rt": null,
   "endpoint_type": null,
+  "submission_id": 23,
   "organization": "ZTM Warszawa",
   "feed_name": "#23 GTFS ZTM",
   "error_type": "timeout",

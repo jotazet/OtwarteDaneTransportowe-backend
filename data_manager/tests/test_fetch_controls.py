@@ -373,6 +373,38 @@ def test_global_fetch_errors_endpoint_filters_paginates_and_scopes(
     assert scoped.data['count'] == 4
 
 
+def test_fetch_errors_link_to_their_submission_without_extra_queries(
+    api_client, org, provider_user, helper_user, django_assert_max_num_queries
+):
+    static_entry = _published_static_entry(org, provider_user)
+    rt_endpoint = _published_realtime_endpoint(org, provider_user)
+    for _ in range(5):
+        FeedFetchError.objects.create(
+            static_entry=static_entry,
+            error_type=FeedFetchError.ERROR_TIMEOUT,
+            message='timeout',
+            url_attempted=static_entry.url,
+        )
+        FeedFetchError.objects.create(
+            endpoint_rt=rt_endpoint,
+            error_type=FeedFetchError.ERROR_CONNECTION,
+            message='connection failed',
+            url_attempted=rt_endpoint.url,
+        )
+
+    api_client.force_authenticate(user=helper_user)
+    # Fixed budget: the submission comes from select_related, not one query per row.
+    with django_assert_max_num_queries(4):
+        response = api_client.get('/api/data_manager/fetch-errors/?days=7')
+
+    assert response.status_code == 200
+    assert response.data['count'] == 10
+    assert {(row['source'], row['submission_id']) for row in response.data['results']} == {
+        ('static', static_entry.submission_id),
+        ('realtime', rt_endpoint.submission_id),
+    }
+
+
 def test_pause_and_resume_rejected_for_non_proxied_feeds(
     api_client, org, provider_user, helper_user, monkeypatch, django_capture_on_commit_callbacks
 ):

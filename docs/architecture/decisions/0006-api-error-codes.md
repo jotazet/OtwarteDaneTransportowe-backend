@@ -7,6 +7,8 @@
 
 The API uses DRF's default error responses: `{"detail": "..."}` or field dictionaries with English messages. The frontend shows these strings to users as they are, in a UI that is translated into Polish, English, German and Bulgarian. Some messages are even produced in Polish by the backend (realtime rejection causes in `data_manager/tasks.py`), so users of other languages see Polish. Text produced by the backend cannot be translated, reworded or kept consistent with the UI's terminology.
 
+> **Update 2026-10-12:** automatic realtime rejections no longer write Polish text. Following this decision they are stored as codes in `rejection_reasons` (`data_manager/rejection_reasons.py`; see the [API changelog](../../api/changelog.md)). Automatic static (GTFS) rejections still write English validator text to `rejection_cause`.
+
 ## Decision
 
 - New domain errors are returned as a stable code plus data:

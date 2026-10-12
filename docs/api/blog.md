@@ -25,7 +25,7 @@ List of blog posts (paginated DRF envelope, like all lists).
       "author": 3,
       "author_username": "admin",
       "tags": ["gtfs", "transport"],
-      "content": "Skrocona tresc do 150 znakow...",
+      "content": "Skrocona tresc do 400 znakow...",
       "image": null,
       "date": "2026-04-27T10:00:00Z",
       "updated_at": "2026-04-27T10:00:00Z",
@@ -43,6 +43,8 @@ List of blog posts (paginated DRF envelope, like all lists).
   ]
 }
 ```
+
+In the list, `content` is a preview: a text longer than 400 characters is cut to its first 400 characters followed by `...`.
 
 ## `GET /api/blog/posts/{id}/`
 
@@ -71,7 +73,11 @@ Creates a blog post. The author is set automatically to the logged-in user.
 - `title` - required, max. 24 characters.
 - `tags` - list of max. 5 tags, each max. 16 characters.
 - `content` - required.
-- `image` - optional image file.
+- `image` - optional image file. In responses, `image` is the absolute URL of the file (see below) or `null`.
+
+## `GET /internal-media/blog/{path}`
+
+Serves blog post images, without a token. Use the URL from the post's `image` field rather than building it. Only the `blog/` part of the media directory is served; feed files are available only through the feed download endpoints.
 
 ## `PUT/PATCH/DELETE /api/blog/posts/{id}/`
 
