@@ -145,3 +145,101 @@ GET /api/planner/admin/status/
 ```
 
 `maintenance` is `true` while a build has the serving OTP stopped. `otp_healthy` comes from OTP's health check (graph loaded, realtime polled once) and is cached for 15 seconds.
+
+## Public API settings
+
+```http
+GET   /api/planner/admin/settings/
+PATCH /api/planner/admin/settings/
+```
+
+```json
+{
+  "public_api_enabled": false,
+  "anonymous_plan_per_minute": 20, "anonymous_realtime_per_minute": 120, "anonymous_lookup_per_minute": 300,
+  "key_plan_per_minute": 120, "key_realtime_per_minute": 600, "key_lookup_per_minute": 1200,
+  "global_plan_per_minute": 300, "global_realtime_per_minute": 3000, "global_lookup_per_minute": 6000,
+  "updated_at": "2026-10-13T10:00:00Z"
+}
+```
+
+- `public_api_enabled` is the kill switch of `/api/planner/v1/`: when `false`, every public endpoint except `status/` answers `503 planner.disabled`. It is `false` until an admin turns it on.
+- Limits are requests per minute: `anonymous_*` per IP address (per `/64` for IPv6), `key_*` per API key, and `global_*` for all clients together. Groups are explained in [Journey planner API](planner.md#limits).
+- Changes apply immediately.
+
+## API keys
+
+```http
+GET   /api/planner/admin/api-keys/
+POST  /api/planner/admin/api-keys/
+GET   /api/planner/admin/api-keys/{id}/
+PATCH /api/planner/admin/api-keys/{id}/
+```
+
+```json
+{
+  "id": 3, "name": "Gmina Wieliczka — tablica odjazdów", "contact_email": "it@example.org", "note": "",
+  "prefix": "odt_Q2mS8xk", "is_active": true,
+  "plan_per_minute": null, "realtime_per_minute": 1200, "lookup_per_minute": null,
+  "created_by": "admin", "created_at": "2026-10-13T10:00:00Z", "last_used_at": "2026-10-13T11:25:00Z"
+}
+```
+
+- `POST` returns the plain key **once**, in `key` (`odt_…`); only its SHA-256 is stored, so it cannot be shown again. Give it to the developer over a private channel.
+- `*_per_minute` override the `key_*` limits for this key; `null` uses the defaults.
+- Revoke a key with `PATCH {"is_active": false}`; keys are not deleted, because the request log refers to them.
+- `last_used_at` is updated at most every 5 minutes.
+- `contact_email` is personal data: show it to admins only.
+
+## IP bans
+
+```http
+GET    /api/planner/admin/ip-bans/
+POST   /api/planner/admin/ip-bans/
+PATCH  /api/planner/admin/ip-bans/{id}/
+DELETE /api/planner/admin/ip-bans/{id}/
+```
+
+```json
+{ "id": 1, "network": "203.0.113.0/24", "reason": "scraping", "expires_at": null, "created_by": "admin", "created_at": "2026-10-13T10:00:00Z" }
+```
+
+`network` takes an address or a network (IPv4 or IPv6) and is stored normalised (`203.0.113.7` becomes `203.0.113.7/32`); an invalid one returns the field code `planner.invalid_network`. Bans apply within seconds; banned clients get `403 planner.client_banned`. An IPv6 client rotates addresses within its `/64`, so ban the `/64`.
+
+## Request log
+
+```http
+GET /api/planner/admin/requests/?since=&until=&endpoint=&status=&ip=&api_key=
+```
+
+Requests to `/api/planner/v1/` of the last 30 days, newest first (default: the last 24 hours). Paginated.
+
+```json
+{ "id": 9, "created_at": "2026-10-13T11:25:00Z", "endpoint": "planner-v1-status", "status_code": 200, "latency_ms": 12,
+  "client_ip": "198.51.100.7", "api_key": null, "api_key_name": null, "user_agent": "Mozilla/5.0 …" }
+```
+
+- No query parameters are stored, so trip origins and destinations never reach the log.
+- Rejected requests (`403`, `429`) are logged at most once a minute per client.
+- Rows are deleted after `PLANNER_REQUEST_LOG_RETENTION_DAYS` (30) days, once each day has been summarised (see below). The log contains IP addresses, which are personal data; it is for the `Admin` group only.
+
+## Statistics
+
+```http
+GET /api/planner/admin/stats/daily/?date_from=&date_to=&endpoint=&api_key=
+GET /api/planner/admin/stats/top-clients/?days=7&endpoint=
+```
+
+`stats/daily/` (default: the last 30 days) counts requests per day from the daily summaries, which keep no IP addresses and are kept indefinitely, plus today from the live log:
+
+```json
+{ "date_from": "2026-09-14", "date_to": "2026-10-13",
+  "days": [ { "date": "2026-10-12", "requests": 1520, "ok": 1490, "client_errors": 12, "rate_limited": 3,
+              "server_errors": 15, "avg_latency_ms": 41, "max_latency_ms": 2310 } ] }
+```
+
+`rate_limited` counts logged rejections, which are sampled once a minute per client, so it is a lower bound.
+
+`stats/top-clients/` lists the 20 busiest clients of the last `days` days (1–30, from the raw log): `{"days": 7, "clients": [{"client_ip": "198.51.100.7", "api_key": {"id": 3, "name": "…", "prefix": "odt_Q2mS8xk"}, "requests": 812}]}`.
+
+Error codes on these routes: field codes `planner.invalid_network`, `planner.invalid_range`, and DRF's defaults.

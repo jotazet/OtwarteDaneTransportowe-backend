@@ -745,6 +745,13 @@ Then, in the admin panel (or the admin API under `/api/planner/admin/`):
 
 The first build also builds the street graph. Until then `otp` waits for a graph instead of restarting.
 
+### Public API
+
+- **Off by default.** The public API (`/api/planner/v1/`) ships switched off. Turn it on with `PATCH /api/planner/admin/settings/ {"public_api_enabled": true}` once a graph is served; limits are edited there too.
+- **CORS.** Any origin may call `/api/planner/v1/` (configured in code, not through `CORS_ALLOWED_ORIGINS`).
+- **Client IPs.** Rate limits, bans and the request log rely on correct client IPs: `TRUSTED_PROXY_CIDRS` must list every proxy hop (see section 5).
+- **Request log retention.** The request log keeps raw rows, which include IP addresses, for `PLANNER_REQUEST_LOG_RETENTION_DAYS` (default 30). The beat task `planner.maintain_request_logs` (00:30 UTC) summarises each finished day without IPs and then deletes expired rows.
+
 ### Operations
 
 - **Status and logs.** Build status, per-feed outcomes and OTP's log excerpts are in `GET /api/planner/admin/builds/{id}/`; worker logs are in `./scripts/deploy.sh logs celery_planner_worker`.

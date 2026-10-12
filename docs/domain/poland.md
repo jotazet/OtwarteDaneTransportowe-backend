@@ -44,3 +44,13 @@ Researched 2026-10-06 for the sister project Solitable and copied here. Laws and
 
   Extrapolated total: **about 700–1,000 organizers (unverified)**.
 - **Data requirements:** FRPA imposes no data-publication requirement today.
+
+## Privacy: request logs of the journey planner
+
+Researched 2026-10-12 for [ADR 0010](../architecture/decisions/0010-public-planner-api-access.md). Not legal advice; confirm with ODT's data protection officer (IOD).
+
+- **IP addresses are personal data in most cases.** GDPR Recital 30 names IP addresses among online identifiers ([GDPR, EUR-Lex](https://eur-lex.europa.eu/eli/reg/2016/679/oj)). The CJEU held that a dynamic IP address stored by a website operator is personal data when the operator has legal means to identify the person through the access provider ([C-582/14 *Breyer*, 19 Oct 2016](https://curia.europa.eu/juris/document/document.jsf?docid=184668&doclang=EN)).
+- **Security as a purpose.** Recital 49 recognises processing strictly necessary for network and information security, e.g. preventing denial-of-service attacks, as a legitimate interest.
+- **Legal basis.** Art. 6(1)(f) (legitimate interests) does not apply to processing by public authorities in the performance of their tasks (Art. 6(1), second subparagraph). If ODT's operator is a public body, the basis is likely Art. 6(1)(e) (public task). **(to confirm with the IOD)**
+- **Minimisation and storage limitation.** Art. 5(1)(c) and (e) apply. ODT therefore logs no query parameters (no trip coordinates), keeps raw rows with IPs for 30 days and keeps only aggregates without IPs afterwards. No regulation found sets a specific retention period for API access logs **(unverified that none exists)**.
+- **Open item.** The privacy notice of the website and the API terms must describe this log: purpose, retention, legal basis, recipients. Wording belongs to the frontend and the legal review.

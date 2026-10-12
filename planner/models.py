@@ -4,9 +4,11 @@ See docs/architecture/decisions/0008 and 0009 and docs/domain/journey-planner.md
 """
 
 from django.conf import settings
+from django.contrib.postgres.indexes import BrinIndex
 from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 
 class PlannerFeed(models.Model):
@@ -114,3 +116,143 @@ class GraphBuild(models.Model):
 
     def __str__(self):
         return f'GraphBuild(id={self.id}, {self.status})'
+
+
+# ---------------------------------------------------------------------------
+# Public API access: settings, keys, bans, request log (ADR 0010)
+# ---------------------------------------------------------------------------
+
+LIMIT_GROUPS = ('plan', 'realtime', 'lookup')
+
+
+class PlannerSettings(models.Model):
+    """The single row of runtime settings for the public planner API (pk is always 1).
+
+    Limits are requests per minute, per client (an IP, or an IPv6 /64) or per
+    API key, and for all clients together. The defaults are starting values,
+    to be tuned with the request statistics.
+    """
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    public_api_enabled = models.BooleanField(default=False)
+
+    anonymous_plan_per_minute = models.PositiveIntegerField(default=20)
+    anonymous_realtime_per_minute = models.PositiveIntegerField(default=120)
+    anonymous_lookup_per_minute = models.PositiveIntegerField(default=300)
+    key_plan_per_minute = models.PositiveIntegerField(default=120)
+    key_realtime_per_minute = models.PositiveIntegerField(default=600)
+    key_lookup_per_minute = models.PositiveIntegerField(default=1200)
+    global_plan_per_minute = models.PositiveIntegerField(default=300)
+    global_realtime_per_minute = models.PositiveIntegerField(default=3000)
+    global_lookup_per_minute = models.PositiveIntegerField(default=6000)
+
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=Q(id=1), name='planner_settings_single_row'),
+        ]
+
+    def __str__(self):
+        return 'PlannerSettings'
+
+    @classmethod
+    def load(cls) -> 'PlannerSettings':
+        return cls.objects.get_or_create(pk=1)[0]
+
+    def limit(self, client_class: str, group: str) -> int:
+        return getattr(self, f'{client_class}_{group}_per_minute')
+
+
+class ApiKey(models.Model):
+    """A key an admin issued to a developer; only its SHA-256 is stored."""
+
+    name = models.CharField(max_length=100)
+    contact_email = models.EmailField(blank=True)
+    note = models.TextField(blank=True)
+    # The first characters of the key, shown so admins can tell keys apart.
+    prefix = models.CharField(max_length=12, unique=True)
+    key_hash = models.CharField(max_length=64, unique=True)
+    is_active = models.BooleanField(default=True)
+    # Per-key limits; null means the key limits in PlannerSettings.
+    plan_per_minute = models.PositiveIntegerField(null=True, blank=True)
+    realtime_per_minute = models.PositiveIntegerField(null=True, blank=True)
+    lookup_per_minute = models.PositiveIntegerField(null=True, blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['name', 'id']
+
+    def __str__(self):
+        return f'ApiKey({self.prefix}…, {self.name})'
+
+
+class IpBan(models.Model):
+    """A blocked address or network, e.g. 203.0.113.7/32 or 2001:db8:1:2::/64."""
+
+    network = models.CharField(max_length=49, unique=True)
+    reason = models.CharField(max_length=255, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f'IpBan({self.network})'
+
+
+class PlannerRequestLog(models.Model):
+    """One request to the public planner API. Kept 30 days; never the query string."""
+
+    created_at = models.DateTimeField(default=timezone.now)
+    endpoint = models.CharField(max_length=64)
+    status_code = models.PositiveSmallIntegerField()
+    latency_ms = models.PositiveIntegerField()
+    client_ip = models.GenericIPAddressField(null=True, blank=True)
+    api_key = models.ForeignKey(ApiKey, on_delete=models.SET_NULL, null=True, blank=True)
+    user_agent = models.CharField(max_length=256, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [BrinIndex(fields=['created_at'], name='planner_request_log_time')]
+
+    def __str__(self):
+        return f'PlannerRequestLog({self.endpoint}, {self.status_code})'
+
+
+class PlannerDailyStat(models.Model):
+    """Requests per day, endpoint, key and status: what remains after the logs expire."""
+
+    date = models.DateField()
+    endpoint = models.CharField(max_length=64)
+    api_key = models.ForeignKey(ApiKey, on_delete=models.SET_NULL, null=True, blank=True)
+    status_code = models.PositiveSmallIntegerField()
+    requests = models.PositiveIntegerField()
+    latency_ms_sum = models.BigIntegerField()
+    latency_ms_max = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ['-date', 'endpoint']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['date', 'endpoint', 'api_key', 'status_code'],
+                name='planner_daily_stat_unique',
+                nulls_distinct=False,
+            ),
+        ]
+        indexes = [models.Index(fields=['date'], name='planner_daily_stat_date')]
+
+    def __str__(self):
+        return f'PlannerDailyStat({self.date}, {self.endpoint}, {self.status_code})'

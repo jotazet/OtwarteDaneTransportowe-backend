@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from corsheaders.defaults import default_headers
 from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -297,6 +298,11 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': crontab(minute='*/5'),
         'options': {'queue': 'default'},
     },
+    'planner-request-logs': {
+        'task': 'planner.maintain_request_logs',
+        'schedule': crontab(minute=30, hour=0),
+        'options': {'queue': 'default'},
+    },
 }
 
 CELERY_TASK_QUEUES = {
@@ -348,6 +354,10 @@ TRUSTED_PROXY_CIDRS = _env_list('TRUSTED_PROXY_CIDRS', default=[])
 
 CORS_ALLOWED_ORIGINS = _env_list('CORS_ALLOWED_ORIGINS', default=[])
 CORS_URLS_REGEX = os.getenv('CORS_URLS_REGEX', r'^/(api|feed)/.*$')
+# The public planner API is open to any origin (planner/apps.py); its clients
+# send an optional API key and read Retry-After when rate limited.
+CORS_ALLOW_HEADERS = (*default_headers, 'x-api-key')
+CORS_EXPOSE_HEADERS = ['Retry-After']
 
 # Permissive localhost origins are only enabled in development. In production
 # rely solely on the explicit CORS_ALLOWED_ORIGINS allowlist.
@@ -389,6 +399,9 @@ PLANNER_OTP_BUILD_MEM_LIMIT = os.getenv('PLANNER_OTP_BUILD_MEM_LIMIT') or '8g'
 PLANNER_OTP_BUILD_MEMSWAP_LIMIT = os.getenv('PLANNER_OTP_BUILD_MEMSWAP_LIMIT') or '22g'
 PLANNER_OTP_FEED_TEST_HEAP = os.getenv('PLANNER_OTP_FEED_TEST_HEAP') or '6g'
 PLANNER_OTP_FEED_TEST_MEM_LIMIT = os.getenv('PLANNER_OTP_FEED_TEST_MEM_LIMIT') or '7g'
+# Raw request logs of the public planner API (with IP addresses) are deleted
+# after this many days; daily statistics without IPs stay (ADR 0010).
+PLANNER_REQUEST_LOG_RETENTION_DAYS = int(os.getenv('PLANNER_REQUEST_LOG_RETENTION_DAYS') or 30)
 # Build containers write into planner_data as the app's own user.
 PLANNER_CONTAINER_USER = f'{GTFS_VALIDATOR_UID}:{GTFS_VALIDATOR_GID}'
 # OTP polls realtime files with the internal host name in the Host header

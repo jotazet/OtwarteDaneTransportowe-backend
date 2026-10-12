@@ -1,4 +1,8 @@
+import secrets
+from datetime import timedelta
+
 from django.core.cache import cache
+from django.utils import timezone
 from rest_framework import generics, mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -6,15 +10,29 @@ from rest_framework.views import APIView
 
 from data_manager.models import FeedSubmission, completed_submission_ids
 from OtwarteDaneTransportowe.auth_roles import RequiresAdminGroup
-from planner import otp_runtime, services
+from planner import access, otp_runtime, request_logs, services
 from planner.api.serializers import (
+    ApiKeySerializer,
     BuildScheduleSerializer,
+    DailyStatsFilterSerializer,
     FeedCandidateSerializer,
     GraphBuildDetailSerializer,
     GraphBuildSerializer,
+    IpBanSerializer,
     PlannerFeedSerializer,
+    PlannerRequestLogSerializer,
+    PlannerSettingsSerializer,
+    RequestLogFilterSerializer,
+    TopClientsFilterSerializer,
 )
-from planner.models import GraphBuild, PlannerFeed
+from planner.models import (
+    ApiKey,
+    GraphBuild,
+    IpBan,
+    PlannerFeed,
+    PlannerRequestLog,
+    PlannerSettings,
+)
 
 OTP_HEALTH_CACHE_KEY = 'planner:otp-healthy'
 OTP_HEALTH_CACHE_SECONDS = 15
@@ -122,5 +140,147 @@ class PlannerStatusView(APIView):
                 'running_build': GraphBuildSerializer(running).data if running else None,
                 'maintenance': services.maintenance_active(),
                 'otp_healthy': healthy,
+            }
+        )
+
+
+# ---------------------------------------------------------------------------
+# Public API access: settings, keys, bans, request log, statistics
+# ---------------------------------------------------------------------------
+
+
+class PlannerSettingsView(APIView):
+    """Kill switch and rate limits of the public planner API."""
+
+    permission_classes = [RequiresAdminGroup]
+
+    def get(self, request):
+        return Response(PlannerSettingsSerializer(PlannerSettings.load()).data)
+
+    def patch(self, request):
+        serializer = PlannerSettingsSerializer(
+            PlannerSettings.load(), data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user)
+        access.forget_cached_access()
+        return Response(serializer.data)
+
+
+class ApiKeyViewSet(
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Keys for developers. Revoke with is_active=false; the plain key is shown once."""
+
+    permission_classes = [RequiresAdminGroup]
+    serializer_class = ApiKeySerializer
+    queryset = ApiKey.objects.select_related('created_by')
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        raw = f'odt_{secrets.token_urlsafe(32)}'
+        key = serializer.save(
+            prefix=raw[:12], key_hash=access.hash_key(raw), created_by=request.user
+        )
+        return Response({**ApiKeySerializer(key).data, 'key': raw}, status=status.HTTP_201_CREATED)
+
+
+class IpBanViewSet(viewsets.ModelViewSet):
+    permission_classes = [RequiresAdminGroup]
+    serializer_class = IpBanSerializer
+    queryset = IpBan.objects.select_related('created_by')
+    http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+        access.forget_cached_access()
+
+    def perform_update(self, serializer):
+        serializer.save()
+        access.forget_cached_access()
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        access.forget_cached_access()
+
+
+class PlannerRequestLogListView(generics.ListAPIView):
+    """Requests of the last 30 days (default: the last 24 hours), newest first."""
+
+    permission_classes = [RequiresAdminGroup]
+    serializer_class = PlannerRequestLogSerializer
+
+    def get_queryset(self):
+        filters = RequestLogFilterSerializer(data=self.request.query_params)
+        filters.is_valid(raise_exception=True)
+        params = filters.validated_data
+        rows = PlannerRequestLog.objects.select_related('api_key').filter(
+            created_at__gte=params.get('since', timezone.now() - timedelta(days=1))
+        )
+        if 'until' in params:
+            rows = rows.filter(created_at__lt=params['until'])
+        for param, lookup in (
+            ('endpoint', 'endpoint'),
+            ('status', 'status_code'),
+            ('ip', 'client_ip'),
+            ('api_key', 'api_key_id'),
+        ):
+            if param in params:
+                rows = rows.filter(**{lookup: params[param]})
+        return rows
+
+
+class DailyStatsView(APIView):
+    """Requests per day by status class (no IPs); default: the last 30 days."""
+
+    permission_classes = [RequiresAdminGroup]
+
+    def get(self, request):
+        filters = DailyStatsFilterSerializer(data=request.query_params)
+        filters.is_valid(raise_exception=True)
+        params = filters.validated_data
+        date_to = params.get('date_to', timezone.now().date())
+        date_from = params.get('date_from', date_to - timedelta(days=29))
+        days = request_logs.daily_stats(
+            date_from, date_to, endpoint=params.get('endpoint'), api_key=params.get('api_key')
+        )
+        return Response({'date_from': date_from, 'date_to': date_to, 'days': days})
+
+
+class TopClientsView(APIView):
+    """The busiest IPs and keys of the last days (from the 30-day raw log)."""
+
+    permission_classes = [RequiresAdminGroup]
+
+    def get(self, request):
+        filters = TopClientsFilterSerializer(data=request.query_params)
+        filters.is_valid(raise_exception=True)
+        params = filters.validated_data
+        clients = request_logs.top_clients(params['days'], endpoint=params.get('endpoint'))
+        return Response(
+            {
+                'days': params['days'],
+                'clients': [
+                    {
+                        'client_ip': row['client_ip'],
+                        'api_key': (
+                            {
+                                'id': row['api_key'],
+                                'name': row['api_key__name'],
+                                'prefix': row['api_key__prefix'],
+                            }
+                            if row['api_key']
+                            else None
+                        ),
+                        'requests': row['requests'],
+                    }
+                    for row in clients
+                ],
             }
         )

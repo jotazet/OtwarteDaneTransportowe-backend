@@ -12,6 +12,7 @@ This documentation describes the REST API of the OtwarteDaneTransportowe (Open T
 - [Blog API](blog.md)
 - [Organizations and cases API](cases.md)
 - [Feeds API and public file downloads](feeds.md)
+- [Journey planner API (public)](planner.md)
 - [Journey planner: admin API](planner-admin.md)
 - [Models and enums](models.md)
 - [Changelog for client developers](changelog.md)
@@ -82,6 +83,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 | Realtime submissions | No | `DataProvider` creates; `Helper`/`Admin` confirms |
 | Published feeds catalog | Yes | No writes through the public API |
 | Public feed files | Yes, published only | No writes |
+| Journey planner API (`/api/planner/v1/`) | Yes, any origin (CORS), optional API key | No writes |
 | Journey planner administration | No | `Admin` only |
 
 ---
@@ -296,6 +298,24 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 | `POST` | `/api/planner/admin/builds/{id}/activate/` | `Admin` | Serve an earlier build's graph again (rollback) |
 | `GET/PUT` | `/api/planner/admin/schedule/` | `Admin` | Build schedule: weekdays and time in UTC |
 | `GET` | `/api/planner/admin/status/` | `Admin` | Served build, running build, maintenance window, OTP health |
+| `GET/PATCH` | `/api/planner/admin/settings/` | `Admin` | Kill switch and rate limits of the public planner API |
+| `GET/POST` | `/api/planner/admin/api-keys/` | `Admin` | API keys; `POST` returns the plain key once |
+| `GET/PATCH` | `/api/planner/admin/api-keys/{id}/` | `Admin` | One key (revoke with `is_active: false`) |
+| `GET/POST` | `/api/planner/admin/ip-bans/` | `Admin` | Banned addresses and networks |
+| `PATCH/DELETE` | `/api/planner/admin/ip-bans/{id}/` | `Admin` | One ban |
+| `GET` | `/api/planner/admin/requests/` | `Admin` | Request log of the public planner API (30 days, no query strings) |
+| `GET` | `/api/planner/admin/stats/daily/` | `Admin` | Requests per day by status class |
+| `GET` | `/api/planner/admin/stats/top-clients/` | `Admin` | Busiest IPs and keys of the last days |
+
+### Journey planner (public)
+
+| Method | Endpoint | Permissions | Description |
+|--------|----------|-------------|------|
+| `GET` | `/api/planner/v1/status/` | public | Availability, served graph, feeds with licences, attribution |
+| `GET` | `/api/planner/v1/schema/` | public | OpenAPI document of the public planner API |
+| `GET` | `/api/planner/v1/docs/` | public | ReDoc for the public planner API |
+
+Details: [Journey planner API](planner.md).
 
 Details: [Journey planner: admin API](planner-admin.md).
 

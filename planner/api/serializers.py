@@ -1,7 +1,16 @@
+import ipaddress
+
 from rest_framework import serializers
 
 from data_manager.models import FeedSubmission, completed_submission_ids
-from planner.models import GraphBuild, PlannerFeed
+from planner.models import (
+    ApiKey,
+    GraphBuild,
+    IpBan,
+    PlannerFeed,
+    PlannerRequestLog,
+    PlannerSettings,
+)
 
 
 def _organization(submission: FeedSubmission) -> dict:
@@ -120,3 +129,100 @@ class BuildScheduleSerializer(serializers.Serializer):
         max_length=7,
     )
     time_utc = serializers.RegexField(r'^([01]\d|2[0-3]):[0-5]\d$')
+
+
+class PlannerSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlannerSettings
+        exclude = ['id', 'updated_by']
+        read_only_fields = ['updated_at']
+
+
+class ApiKeySerializer(serializers.ModelSerializer):
+    created_by = serializers.CharField(source='created_by.username', default=None, read_only=True)
+
+    class Meta:
+        model = ApiKey
+        fields = [
+            'id',
+            'name',
+            'contact_email',
+            'note',
+            'prefix',
+            'is_active',
+            'plan_per_minute',
+            'realtime_per_minute',
+            'lookup_per_minute',
+            'created_by',
+            'created_at',
+            'last_used_at',
+        ]
+        read_only_fields = ['prefix', 'created_at', 'last_used_at']
+
+
+class IpBanSerializer(serializers.ModelSerializer):
+    created_by = serializers.CharField(source='created_by.username', default=None, read_only=True)
+
+    class Meta:
+        model = IpBan
+        fields = ['id', 'network', 'reason', 'expires_at', 'created_by', 'created_at']
+        read_only_fields = ['created_at']
+
+    def validate_network(self, value):
+        try:
+            return str(ipaddress.ip_network(value.strip(), strict=False))
+        except ValueError:
+            raise serializers.ValidationError(
+                'Not an IP address or network.', code='planner.invalid_network'
+            ) from None
+
+
+class PlannerRequestLogSerializer(serializers.ModelSerializer):
+    api_key_name = serializers.CharField(source='api_key.name', default=None)
+
+    class Meta:
+        model = PlannerRequestLog
+        fields = [
+            'id',
+            'created_at',
+            'endpoint',
+            'status_code',
+            'latency_ms',
+            'client_ip',
+            'api_key',
+            'api_key_name',
+            'user_agent',
+        ]
+        read_only_fields = fields
+
+
+class RequestLogFilterSerializer(serializers.Serializer):
+    since = serializers.DateTimeField(required=False)
+    until = serializers.DateTimeField(required=False)
+    endpoint = serializers.CharField(required=False)
+    status = serializers.IntegerField(required=False, min_value=100, max_value=599)
+    ip = serializers.IPAddressField(required=False)
+    api_key = serializers.IntegerField(required=False)
+
+
+class DailyStatsFilterSerializer(serializers.Serializer):
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
+    endpoint = serializers.CharField(required=False)
+    api_key = serializers.IntegerField(required=False)
+
+    def validate(self, attrs):
+        if (
+            attrs.get('date_from')
+            and attrs.get('date_to')
+            and attrs['date_from'] > attrs['date_to']
+        ):
+            raise serializers.ValidationError(
+                'date_from is after date_to.', code='planner.invalid_range'
+            )
+        return attrs
+
+
+class TopClientsFilterSerializer(serializers.Serializer):
+    days = serializers.IntegerField(required=False, default=7, min_value=1, max_value=30)
+    endpoint = serializers.CharField(required=False)

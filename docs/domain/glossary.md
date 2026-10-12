@@ -43,6 +43,11 @@ One concept, one name. Code uses the **English term**; the Polish UI uses the **
 | Fresh / stale / excluded | Aktualny / nieaktualny / wykluczony *confirm* | A feed's outcome in a build: newest version, last good version instead, or left out. |
 | Block (`block_id`) | Brygada | The sequence of trips one vehicle runs in a day (GTFS `block_id`). |
 | Rollback | Przywrócenie poprzedniego grafu *confirm* | Serving an earlier build's graph again. |
+| Kill switch (`public_api_enabled`) | Wyłącznik publicznego API *confirm* | Turns the public planner API off without a deploy. |
+| API key (`ApiKey`) | Klucz API | Issued by an admin to a developer; raises the rate limits. Only its hash is stored. |
+| Rate limit | Limit zapytań | Requests per minute per client, per key and for all clients, in the groups `plan`, `realtime`, `lookup`. |
+| IP ban (`IpBan`) | Blokada IP | A blocked address or network, optionally until a date. |
+| Request log (`PlannerRequestLog`) | Log zapytań | One row per public planner request, without parameters, kept 30 days. |
 
 ## Organizations and cases
 

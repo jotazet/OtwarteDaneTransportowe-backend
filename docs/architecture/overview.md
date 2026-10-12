@@ -26,9 +26,9 @@
 ```
 
 - Consumers find published feeds in the catalogue (`/api/data_manager/feeds/`). Uploaded files and copies of proxied sources (`hide_original`) are served by the API host under `/feed/...`; sources that are not proxied are listed with their original URL.
-- Decisions: [0001 two repositories](decisions/0001-separate-backend-and-frontend-repositories.md), [0002 Django + DRF + PostgreSQL](decisions/0002-django-drf-and-postgresql.md), [0003 JWT and roles](decisions/0003-jwt-and-group-based-roles.md), [0004 Celery + Redis](decisions/0004-celery-and-redis-for-background-work.md), [0005 feed validation](decisions/0005-feed-validation.md), [0006 error codes](decisions/0006-api-error-codes.md) (proposed), [0007 uv and ruff](decisions/0007-uv-and-ruff.md), [0008 journey planner on private OTP](decisions/0008-journey-planner-on-private-opentripplanner.md) (proposed), [0009 planner graph builds](decisions/0009-planner-graph-build-pipeline.md) (proposed).
+- Decisions: [0001 two repositories](decisions/0001-separate-backend-and-frontend-repositories.md), [0002 Django + DRF + PostgreSQL](decisions/0002-django-drf-and-postgresql.md), [0003 JWT and roles](decisions/0003-jwt-and-group-based-roles.md), [0004 Celery + Redis](decisions/0004-celery-and-redis-for-background-work.md), [0005 feed validation](decisions/0005-feed-validation.md), [0006 error codes](decisions/0006-api-error-codes.md) (proposed), [0007 uv and ruff](decisions/0007-uv-and-ruff.md), [0008 journey planner on private OTP](decisions/0008-journey-planner-on-private-opentripplanner.md) (proposed), [0009 planner graph builds](decisions/0009-planner-graph-build-pipeline.md) (proposed), [0010 public planner API access](decisions/0010-public-planner-api-access.md) (proposed).
 - Workflow of a submission: [feed workflow](../domain/feed-workflow.md). Operations: [deployment](../deployment.md).
-- **Journey planner** (compose profile `planner`): a private OpenTripPlanner container (`otp`) with no published port, on a network shared only with `web` and the planner worker, built and switched by `celery_planner_worker` (queue `planner`, Docker via `docker-socket-proxy`). Admin API under `/api/planner/admin/`. See [journey planner](../domain/journey-planner.md), [ADR 0008](decisions/0008-journey-planner-on-private-opentripplanner.md) and [ADR 0009](decisions/0009-planner-graph-build-pipeline.md).
+- **Journey planner** (compose profile `planner`): a private OpenTripPlanner container (`otp`) with no published port, on a network shared only with `web` and the planner worker, built and switched by `celery_planner_worker` (queue `planner`, Docker via `docker-socket-proxy`). Admin API under `/api/planner/admin/`, public API under `/api/planner/v1/` (keys, limits, bans, request log: [ADR 0010](decisions/0010-public-planner-api-access.md)). See [journey planner](../domain/journey-planner.md), [ADR 0008](decisions/0008-journey-planner-on-private-opentripplanner.md) and [ADR 0009](decisions/0009-planner-graph-build-pipeline.md).
 
 ## Backend structure
 
@@ -82,8 +82,10 @@ OtwarteDaneTransportowe/
     ├── otp_runtime.py         # Docker (build containers, serving OTP) and OTP HTTP
     ├── otp_config.py          # generated build-config/otp-config/router-config
     ├── osm.py                 # OSM filtering and cropping to the feeds' area (osmium)
-    ├── tasks.py               # Celery tasks: builds, scheduled builds, watchdog
-    └── api/                   # /api/planner/admin/
+    ├── access.py              # public API access: API keys, bans, rate limits, request log, error codes
+    ├── request_logs.py        # request log retention and statistics
+    ├── tasks.py               # Celery tasks: builds, scheduled builds, watchdog, log retention
+    └── api/                   # /api/planner/admin/ and the public /api/planner/v1/
 ```
 
 Main DRF routers:

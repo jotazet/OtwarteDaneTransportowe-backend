@@ -2,11 +2,13 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
-## 2026-10-13: journey planner administration
+## 2026-10-13: journey planner (administration and public API access)
 
-Not breaking: new routes only, all restricted to the `Admin` group.
+Not breaking: new routes only. Admin routes require the `Admin` group.
 
 - `/api/planner/admin/` adds what the team needs to run the journey planner: choosing published GTFS feeds for the OpenTripPlanner graph, building it on a schedule or on demand, per-feed build outcomes (`fresh`, `stale`, `excluded` with error codes), rollback to the previous graph and a status endpoint. See [Journey planner: admin API](planner-admin.md).
+- A public journey planner API starts under `/api/planner/v1/` (switched off until an admin enables it): `status/`, an OpenAPI document (`schema/`) and ReDoc (`docs/`). It is open to any origin (CORS), works without a key, limits requests per minute and returns errors as `{code, details}`. See [Journey planner API](planner.md).
+- Admin routes for its access: `settings/` (kill switch, limits), `api-keys/`, `ip-bans/`, `requests/` (30-day log without query strings), `stats/daily/` and `stats/top-clients/`. See [planner-admin](planner-admin.md).
 - `GET /feed/rt/{realtime_submission_id}/{endpoint_type}/` is not throttled for requests carrying the planner's internal token (`X-ODT-Internal-Token`), which OTP sends when it polls proxied realtime files over the internal network. Nothing changes for other clients.
 
 ---

@@ -4,7 +4,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from data_manager.tasks import enqueue
-from planner import pipeline, services
+from planner import pipeline, request_logs, services
 from planner.models import GraphBuild
 
 logger = get_task_logger(__name__)
@@ -50,3 +50,8 @@ def watchdog_task():
 @shared_task(name='planner.ensure_serving', soft_time_limit=300, time_limit=360)
 def ensure_serving_task():
     pipeline.ensure_serving()
+
+
+@shared_task(name='planner.maintain_request_logs', soft_time_limit=1800, time_limit=1900)
+def maintain_request_logs_task():
+    request_logs.roll_up_and_purge()
