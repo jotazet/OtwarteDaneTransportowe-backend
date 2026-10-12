@@ -834,6 +834,13 @@ class RealtimeSubmission(models.Model):
         return latest.cause
 
     @property
+    def rejection_reasons(self):
+        latest = self._latest_history_entry
+        if latest is None or latest.event_type != RealtimeSubmissionHistory.EVENT_REJECTED:
+            return None
+        return latest.reasons
+
+    @property
     def published_at(self):
         rows = self._prefetched_history()
         if rows is not None:
@@ -878,7 +885,10 @@ class RealtimeSubmissionHistory(models.Model):
         blank=True,
         related_name='realtime_history_actions',
     )
+    # Free text written by a reviewer (or, before codes, by validation).
     cause = models.TextField(blank=True, null=True)
+    # Automatic rejections: [{"code": ..., "details": {...}}], see rejection_reasons.py.
+    reasons = models.JSONField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
