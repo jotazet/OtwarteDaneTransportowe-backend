@@ -1076,7 +1076,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
         submission.save()
 
         if static_entry_data:
-            if static_entry_data.get('auth_type') is not None:
+            if static_entry_data.get('auth_type'):
                 static_entry_data['hide_original'] = True
             entry = StaticFeedEntry(submission=submission, **static_entry_data)
             try:
@@ -1115,7 +1115,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     update_fields = set(static_entry_data.keys())
                     for attr, value in static_entry_data.items():
                         setattr(entry, attr, value)
-                    if static_entry_data.get('auth_type') is not None:
+                    if static_entry_data.get('auth_type'):
                         entry.hide_original = True
                         update_fields.add('hide_original')
                     try:
@@ -1136,7 +1136,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     ):
                         self._schedule_source_refresh(entry)
                 else:
-                    if static_entry_data.get('auth_type') is not None:
+                    if static_entry_data.get('auth_type'):
                         static_entry_data['hide_original'] = True
                     new_entry = StaticFeedEntry(submission=instance, **static_entry_data)
                     try:

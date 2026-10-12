@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10: an empty `auth_type` no longer forces `hide_original`
+
+In `static_entry`, `"auth_type": ""` used to set `hide_original=true` as if a credential had been given, while `null` did not. Both now mean "no authorization" and keep the `hide_original` the client sent. Realtime endpoints already behaved this way. Not breaking: clients may send `""` for "no authorization" from now on, which the next change (empty text fields become `""`) requires.
+
+---
+
 ## 2026-07: paginated lists, canonical realtime file routes and other breaking changes
 
 Applies to the backend deployment of July 2026 (hardening + DRF unification).
