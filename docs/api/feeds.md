@@ -145,7 +145,7 @@ Base endpoint:
     "file": null,
     "is_original": true,
     "hide_original": false,
-    "auth_type": null,
+    "auth_type": "",
     "download_time_1": "03:00:00",
     "download_time_2": null,
     "license": "CC BY 4.0",
@@ -160,7 +160,7 @@ Base endpoint:
       "stage_before": 1,
       "stage_after": 2,
       "actor": "provider",
-      "cause": null,
+      "cause": "",
       "created_at": "2026-04-27T10:00:00Z"
     }
   ]
@@ -181,7 +181,7 @@ Base endpoint:
     "url": "https://example.com/gtfs.zip",
     "is_original": true,
     "hide_original": false,
-    "auth_type": null,
+    "auth_type": "",
     "download_time_1": "03:00:00",
     "download_time_2": null,
     "license": "CC BY 4.0"
@@ -338,7 +338,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
       "endpoint_type": "trip_update",
       "url": "https://example.com/trip-updates.pb",
       "is_original": true,
-      "auth_type": null,
+      "auth_type": "",
       "interval": 30
     },
     {
@@ -366,7 +366,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
       "endpoint_type": "gbfs",
       "url": "https://example.com/gbfs.json",
       "is_original": true,
-      "auth_type": null,
+      "auth_type": "",
       "interval": 60
     }
   ]
@@ -414,7 +414,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
       "url": "https://example.com/trip-updates.pb",
       "is_original": true,
       "hide_original": false,
-      "auth_type": null,
+      "auth_type": "",
       "interval": 30,
       "cached_at": null
     }

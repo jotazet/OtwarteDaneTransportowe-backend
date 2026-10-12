@@ -28,7 +28,7 @@
 
 | Value | Meaning |
 |-------|---------|
-| `null` | No authorization |
+| `""` | No authorization |
 | `api_key` | API key |
 | `bearer_token` | Bearer token |
 | `basic_auth` | Basic auth, `auth_value` in the format `username:password` |

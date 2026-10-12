@@ -60,7 +60,8 @@ class PostSerializer(serializers.ModelSerializer):
         # Fallback for callers that serialize a bare instance (e.g. write
         # responses), where the queryset annotations are not present.
         rows = (
-            Reaction.objects.filter(post=obj, reaction__isnull=False)
+            Reaction.objects.filter(post=obj)
+            .exclude(reaction='')
             .values('reaction')
             .annotate(count=Count('id'))
         )
@@ -119,10 +120,10 @@ class ReactionSerializer(serializers.ModelSerializer):
     # ip_address is read-only: it will always be set from request.META in the view
     ip_address = serializers.IPAddressField(read_only=True)
     post = serializers.PrimaryKeyRelatedField(read_only=True)
-    # Allow sending empty/nullable reaction to indicate "remove/hide" action.
+    # Allow sending an empty reaction to indicate "remove/hide" action.
     # Use ChoiceField to show available options in API
     reaction = serializers.ChoiceField(
-        choices=Reaction.REACTION_CHOICES, allow_null=True, allow_blank=True, required=False
+        choices=Reaction.REACTION_CHOICES, allow_blank=True, required=False
     )
 
     class Meta:

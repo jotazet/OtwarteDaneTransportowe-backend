@@ -1702,7 +1702,7 @@ def test_static_url_with_public_credentials_is_accepted_and_stays_public(
     entry = StaticFeedEntry.objects.get(submission_id=response.data['id'])
     assert entry.url == url_with_creds  # stored verbatim
     assert entry.hide_original is False  # NOT forced into proxy mode
-    assert entry.auth_type is None
+    assert entry.auth_type == ''
     validate_mock.assert_called_once_with(entry.id)  # validation still queued
 
 
@@ -1776,6 +1776,29 @@ def test_empty_auth_type_on_update_keeps_entry_public(
     entry = StaticFeedEntry.objects.get(submission_id=submission_id)
     assert entry.auth_type == ''
     assert entry.hide_original is False
+
+
+def test_null_string_fields_are_rejected(api_client, normal_user, org):
+    """String fields have one empty value, ''; null is a 400, not a second one."""
+    api_client.force_authenticate(user=normal_user)
+    response = api_client.post(
+        '/api/data_manager/feed-submissions/',
+        {
+            'transport_organization': org.id,
+            'data_type': 'gtfs',
+            'name': 'Feed',
+            'note': None,
+            'static_entry': {
+                'url': 'https://example.org/gtfs.zip',
+                'download_time_1': '03:00:00',
+                'license': None,
+            },
+        },
+        format='json',
+    )
+    assert response.status_code == 400
+    assert response.data['note'][0].code == 'null'
+    assert response.data['static_entry']['license'][0].code == 'null'
 
 
 def test_upload_succeeds_when_broker_is_down(api_client, normal_user, org):

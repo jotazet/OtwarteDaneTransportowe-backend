@@ -2,6 +2,32 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10: empty text fields are `""`, never `null`
+
+⚠️ **Breaking for writes.** Text fields have one empty value, `""` (Django convention, ruff `DJ001`). Existing `NULL`s are converted to `""` by migrations `blog.0003`, `cases.0005` and `data_manager.0010`.
+
+**Deploy order:** first the `auth_type` fix below, then the frontend that sends `""`, then this backend version. The backend before this one already accepts `""` for all these fields.
+
+Affected fields:
+
+| Resource | Fields |
+|----------|--------|
+| Blog reactions | `reaction` |
+| Case statuses | `description` |
+| Data providers (also nested in organizations) | `website`, `contact_email` |
+| Transport organizations (also in the public feed catalogue) | `website`, `contact_email`, `phone_number` |
+| Static feed submissions | `name`, `note`, `history[].cause` |
+| `static_entry` | `license`, `url`, `validation_message`, `auth_type` |
+| Realtime submissions | `name`, `note`, `license`, `history[].cause` |
+| Realtime `endpoints[]` | `auth_type` |
+
+- **Responses:** these fields return `""` where they used to return `null`. Truthiness checks (`if (x)`, `x || fallback`) keep working; `x ?? fallback` and `x === null` do not. This also applies to the public catalogue (`license`, organization contacts), so external consumers see the change.
+- **Requests:** sending `null` for any of these fields returns `400` with the error code `null`. Send `""` or omit the field. To remove a blog reaction, send `{"reaction": ""}`.
+- **`auth_type`:** "no authorization" is `""` (was `null`), see `docs/api/models.md`.
+- **Unchanged:** computed and non-text fields keep `null` for "none": `rejection_cause`, `published_at`, `your_reaction`, `download_time_2`, `file`, `download_url`, `feed_url`, and the nullable fields of `proxy-feeds`.
+
+---
+
 ## 2026-10: an empty `auth_type` no longer forces `hide_original`
 
 In `static_entry`, `"auth_type": ""` used to set `hide_original=true` as if a credential had been given, while `null` did not. Both now mean "no authorization" and keep the `hide_original` the client sent. Realtime endpoints already behaved this way. Not breaking: clients may send `""` for "no authorization" from now on.
