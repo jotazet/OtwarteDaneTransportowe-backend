@@ -833,7 +833,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):
-        from data_manager.tasks import enqueue, validate_realtime_submission_task
+        from data_manager.tasks import enqueue_on_commit, validate_realtime_submission_task
 
         serializer = self.get_serializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -860,7 +860,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                 stage_after=1,
                 actor=request.user,
             )
-            transaction.on_commit(lambda: enqueue(validate_realtime_submission_task, rts.id))
+            enqueue_on_commit(validate_realtime_submission_task, rts.id)
         out = self._read_serializer(request, rts)
         return Response(out.data, status=status.HTTP_201_CREATED)
 
@@ -875,7 +875,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         from data_manager.tasks import (
-            enqueue,
+            enqueue_on_commit,
             schedule_realtime_endpoint_fetches,
             validate_realtime_submission_task,
         )
@@ -963,9 +963,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                     # not be silently unpublished by an endpoint tweak. The
                     # re-validation rejects (with an audit trail) a submission
                     # that is not published yet if the new endpoints are broken.
-                    transaction.on_commit(
-                        lambda: enqueue(validate_realtime_submission_task, instance.id)
-                    )
+                    enqueue_on_commit(validate_realtime_submission_task, instance.id)
                     if instance.current_stage == 4:
                         # Endpoints were replaced (old fetch loops died with their
                         # rows); re-seed the self-scheduling loops for the new ones

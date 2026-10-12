@@ -34,6 +34,7 @@ import time
 from celery import shared_task
 from celery.utils.log import get_task_logger
 from django.core.cache import cache
+from django.db import transaction
 from django.utils import timezone
 
 logger = get_task_logger(__name__)
@@ -80,6 +81,12 @@ def enqueue(task, *args, **kwargs) -> bool:
             ', '.join(map(repr, args)),
         )
         return False
+
+
+def enqueue_on_commit(task, *args, **kwargs) -> None:
+    """enqueue() once the current transaction commits, so the worker never reads
+    uncommitted rows (runs at once outside a transaction)."""
+    transaction.on_commit(lambda: enqueue(task, *args, **kwargs))
 
 
 def _rt_alive_key(endpoint_id: int) -> str:
