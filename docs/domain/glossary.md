@@ -22,7 +22,7 @@ One concept, one name. Code uses the **English term**; the Polish UI uses the **
 | Download time (`download_time_1/2`) | Godzina pobierania (UTC) | Daily fetch times of a proxied static feed, in UTC. |
 | Interval | Interwał / Aktualizacja źródeł | Seconds between fetches of a proxied realtime endpoint. |
 | Fetch status | Status pobierania | `active`, `delayed`, `auto_paused`, `manual_paused`. |
-| Fetch error (`FeedFetchError`) | Błąd pobierania | `timeout`, `connection_error`, `http_error`, `invalid_content`. |
+| Fetch error (`FeedFetchError`) | Błąd pobierania | `timeout`, `connection_error`, `http_error`, `invalid_content`, `auth_error`. `auth_error` is defined but not written yet: a rejected credential (HTTP 401/403) is recorded as `http_error` with `http_status_code`. |
 | Pause | Wstrzymanie / Auto-pauza | Fetching stopped by a person (`manual_paused`) or after repeated failures (`auto_paused`). |
 | Feed catalogue | Katalog feedów | The public list of published feeds by organization. |
 
