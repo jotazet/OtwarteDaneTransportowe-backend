@@ -137,7 +137,7 @@ services:
   # privileged flag, so a compromised worker remains dangerous — the proxy
   # removes exec/volumes/images-tampering and shrinks the surface, it does not
   # eliminate it. Full closure = rootless Docker or a separate validator
-  # microservice (see DEPLOYMENT.md).
+  # microservice (see docs/deployment.md).
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
     container_name: odt-docker-socket-proxy

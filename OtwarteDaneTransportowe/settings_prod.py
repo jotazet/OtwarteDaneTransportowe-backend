@@ -41,7 +41,7 @@ SECURE_HSTS_SECONDS = int(os.getenv('DJANGO_SECURE_HSTS_SECONDS', '31536000'))
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
 
-# TLS is terminated by the external reverse-proxy (see DEPLOYMENT.md). Enabling
+# TLS is terminated by the external reverse-proxy (see docs/deployment.md). Enabling
 # redirect here breaks in-container HTTP healthchecks and is redundant when the
 # proxy already upgrades HTTP→HTTPS. Set DJANGO_SECURE_SSL_REDIRECT=True only if
 # the app is exposed directly to clients without a TLS-terminating proxy.

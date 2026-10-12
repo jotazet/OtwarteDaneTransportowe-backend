@@ -11,8 +11,8 @@ This README intentionally stays **high-level**. Detailed API docs and deployment
 
 ## Documentation
 
-- **Product / API documentation**: `Documentation.md`
-- **Deployment**: `DEPLOYMENT.md` (production: `./scripts/deploy.sh up -d --build`)
+- **API reference**: [`docs/api/`](docs/api/README.md), with breaking changes in [`docs/api/changelog.md`](docs/api/changelog.md)
+- **Deployment**: [`docs/deployment.md`](docs/deployment.md) (production: `./scripts/deploy.sh up -d --build`)
 
 ## Quick start (local development)
 
