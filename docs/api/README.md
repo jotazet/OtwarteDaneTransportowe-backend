@@ -272,7 +272,7 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `GET` | `/api/data_manager/realtime-endpoints/{id}/` | owner or `Helper`/`Admin` | Details of a single realtime endpoint with its fetch status |
 | `POST` | `/api/data_manager/realtime-endpoints/{id}/pause-fetch/` | `Helper`/`Admin` | Manually pause fetching of a realtime endpoint |
 | `POST` | `/api/data_manager/realtime-endpoints/{id}/resume-fetch/` | `Helper`/`Admin` | Resume fetching of a realtime endpoint and cancel the retry block |
-| `GET` | `/api/data_manager/feeds/` | public | Public catalog of organizations with published feeds |
+| `GET` | `/api/data_manager/feeds/` | public | Public catalog of all transport organizations and their published feeds (organizations without one are listed too) |
 | `GET` | `/api/data_manager/feeds/{id}/` | public | Details of an organization and its published feeds |
 
 In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the feed type.

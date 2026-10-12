@@ -487,7 +487,7 @@ Base endpoint:
 
 **Permissions:** public.
 
-This is not a list of individual feeds, but a list of transport organizations that have published feeds.
+This is not a list of individual feeds, but a list of **all** transport organizations, sorted by `region` and name. Organizations without a published feed are listed too, with empty `static_types` and `dynamic_types` (and `"feeds": []` in the detail). This is deliberate: the catalogue also shows where data is still missing. The case status (`latest_status`, ODT's request for the data) comes from [`/api/cases/transport-organizations/`](cases.md).
 
 **List (`GET /api/data_manager/feeds/`):**
 
