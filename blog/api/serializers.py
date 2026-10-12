@@ -1,8 +1,8 @@
 from django.db.models import Count, Q
 from rest_framework import serializers
 
-from OtwarteDaneTransportowe.request_ip import get_client_ip
 from blog.models import Post, Reaction
+from OtwarteDaneTransportowe.request_ip import get_client_ip
 
 
 def reaction_count_annotations() -> dict:
@@ -38,7 +38,14 @@ class PostSerializer(serializers.ModelSerializer):
             'reactions_summary',
             'your_reaction',
         ]
-        read_only_fields = ['author', 'author_username', 'date', 'updated_at', 'reactions_summary', 'your_reaction']
+        read_only_fields = [
+            'author',
+            'author_username',
+            'date',
+            'updated_at',
+            'reactions_summary',
+            'your_reaction',
+        ]
 
     def get_reactions_summary(self, obj: Post):
         # Always return all possible reaction keys, even if count is 0.
@@ -115,10 +122,7 @@ class ReactionSerializer(serializers.ModelSerializer):
     # Allow sending empty/nullable reaction to indicate "remove/hide" action.
     # Use ChoiceField to show available options in API
     reaction = serializers.ChoiceField(
-        choices=Reaction.REACTION_CHOICES,
-        allow_null=True,
-        allow_blank=True,
-        required=False
+        choices=Reaction.REACTION_CHOICES, allow_null=True, allow_blank=True, required=False
     )
 
     class Meta:

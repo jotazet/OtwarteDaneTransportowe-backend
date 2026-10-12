@@ -1,9 +1,10 @@
-from django.db import models
+from django.conf import settings
 from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
-from django.conf import settings
+from django.db import models
 
 from blog.validators import validate_image_file_size
+
 
 def validate_tags(value):
     if len(value) > 5:
@@ -12,13 +13,24 @@ def validate_tags(value):
         if len(tag) > 16:
             raise ValidationError(f"Tag '{tag}' is too long (max 16 characters).")
 
+
 class Post(models.Model):
     title = models.CharField(max_length=24)
-    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='posts')
-    tags = ArrayField(models.CharField(max_length=16), size=5, validators=[validate_tags], blank=True, default=list)
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='posts'
+    )
+    tags = ArrayField(
+        models.CharField(max_length=16),
+        size=5,
+        validators=[validate_tags],
+        blank=True,
+        default=list,
+    )
     content = models.TextField()
     image = models.ImageField(
-        upload_to='blog/images/', blank=True, null=True,
+        upload_to='blog/images/',
+        blank=True,
+        null=True,
         validators=[validate_image_file_size],
     )
     date = models.DateTimeField(auto_now_add=True)
@@ -38,6 +50,7 @@ class Post(models.Model):
     # DataManagerConfig.ready()), which also cover bulk and cascade deletes —
     # no delete() override needed.
 
+
 class Reaction(models.Model):
     REACTION_CHOICES = [
         ('like', 'Like'),
@@ -46,7 +59,7 @@ class Reaction(models.Model):
         ('haha', 'Haha'),
         ('wow', 'Wow'),
         ('sad', 'Sad'),
-        ('angry', 'Angry')
+        ('angry', 'Angry'),
     ]
     post = models.ForeignKey(Post, on_delete=models.CASCADE)
     ip_address = models.GenericIPAddressField()
@@ -57,7 +70,9 @@ class Reaction(models.Model):
     class Meta:
         ordering = ['-date']
         constraints = [
-            models.UniqueConstraint(fields=['post', 'ip_address'], name='unique_reaction_per_post_ip'),
+            models.UniqueConstraint(
+                fields=['post', 'ip_address'], name='unique_reaction_per_post_ip'
+            ),
         ]
 
     def __str__(self):

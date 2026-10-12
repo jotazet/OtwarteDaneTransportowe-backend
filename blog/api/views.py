@@ -1,17 +1,14 @@
 from datetime import timedelta
 
 from django.db.models import Prefetch
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework import status
-from django.shortcuts import get_object_or_404
 
-from OtwarteDaneTransportowe.auth_roles import IsEditorOrOwnBloggerOrReadOnly
-from OtwarteDaneTransportowe.request_ip import get_client_ip
 from blog.api.serializers import (
     PostListSerializer,
     PostSerializer,
@@ -19,6 +16,8 @@ from blog.api.serializers import (
     reaction_count_annotations,
 )
 from blog.models import Post, Reaction
+from OtwarteDaneTransportowe.auth_roles import IsEditorOrOwnBloggerOrReadOnly
+from OtwarteDaneTransportowe.request_ip import get_client_ip
 
 
 class PostDefaultPagination(PageNumberPagination):

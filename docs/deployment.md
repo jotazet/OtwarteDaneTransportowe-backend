@@ -526,7 +526,7 @@ git pull
 ./scripts/deploy.sh exec web python manage.py migrate
 ```
 
-After changing dependencies (`requirements.txt`) or the `Dockerfile`, a build is required.
+After changing dependencies (`pyproject.toml` and `uv.lock`) or the `Dockerfile`, a build is required.
 
 ---
 

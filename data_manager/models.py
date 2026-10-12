@@ -1,16 +1,15 @@
+import os
 from datetime import timedelta
 
-from django.db import models
-from django.core.exceptions import ObjectDoesNotExist, ValidationError
-from django.core.files.storage import FileSystemStorage
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.core.files.storage import FileSystemStorage
+from django.db import models
 from django.utils import timezone
-import os
 
 from data_manager.fields import EncryptedCharField
 from data_manager.validators import validate_feed_file_size
-
 
 FETCH_STATUS_ACTIVE = 'active'
 FETCH_STATUS_DELAYED = 'delayed'
@@ -40,14 +39,16 @@ class FetchControlMixin:
         self.fetch_paused_at = None
         self.fetch_pause_reason = ''
         self.last_fetch_success_at = now
-        self.save(update_fields=[
-            'fetch_status',
-            'fetch_failure_count',
-            'next_fetch_after',
-            'fetch_paused_at',
-            'fetch_pause_reason',
-            'last_fetch_success_at',
-        ])
+        self.save(
+            update_fields=[
+                'fetch_status',
+                'fetch_failure_count',
+                'next_fetch_after',
+                'fetch_paused_at',
+                'fetch_pause_reason',
+                'last_fetch_success_at',
+            ]
+        )
 
     def mark_fetch_failure(self, reason: str = '', now=None) -> None:
         now = now or timezone.now()
@@ -62,14 +63,16 @@ class FetchControlMixin:
             self.fetch_status = FETCH_STATUS_AUTO_PAUSED
             self.next_fetch_after = None
             self.fetch_paused_at = now
-        self.save(update_fields=[
-            'fetch_status',
-            'fetch_failure_count',
-            'next_fetch_after',
-            'fetch_paused_at',
-            'fetch_pause_reason',
-            'last_fetch_error_at',
-        ])
+        self.save(
+            update_fields=[
+                'fetch_status',
+                'fetch_failure_count',
+                'next_fetch_after',
+                'fetch_paused_at',
+                'fetch_pause_reason',
+                'last_fetch_error_at',
+            ]
+        )
 
     def pause_fetch(self, reason: str = '', now=None) -> None:
         now = now or timezone.now()
@@ -77,12 +80,14 @@ class FetchControlMixin:
         self.next_fetch_after = None
         self.fetch_paused_at = now
         self.fetch_pause_reason = (reason or '')[:500]
-        self.save(update_fields=[
-            'fetch_status',
-            'next_fetch_after',
-            'fetch_paused_at',
-            'fetch_pause_reason',
-        ])
+        self.save(
+            update_fields=[
+                'fetch_status',
+                'next_fetch_after',
+                'fetch_paused_at',
+                'fetch_pause_reason',
+            ]
+        )
 
     def resume_fetch(self, now=None) -> None:
         now = now or timezone.now()
@@ -91,13 +96,15 @@ class FetchControlMixin:
         self.next_fetch_after = None
         self.fetch_paused_at = None
         self.fetch_pause_reason = ''
-        self.save(update_fields=[
-            'fetch_status',
-            'fetch_failure_count',
-            'next_fetch_after',
-            'fetch_paused_at',
-            'fetch_pause_reason',
-        ])
+        self.save(
+            update_fields=[
+                'fetch_status',
+                'fetch_failure_count',
+                'next_fetch_after',
+                'fetch_paused_at',
+                'fetch_pause_reason',
+            ]
+        )
 
     def fetch_is_due(self, now=None) -> bool:
         now = now or timezone.now()
@@ -174,9 +181,11 @@ def validation_file_path(instance, filename):
     submission_id = getattr(getattr(entry, 'submission', None), 'id', 'unknown')
     return f'{submission_id}/validation/{filename}'
 
+
 # ---------------------------------------------------------------------------
 # FeedSubmission – top-level submission by a user
 # ---------------------------------------------------------------------------
+
 
 class FeedSubmission(models.Model):
     """Static schedule feeds only. Realtime uses :class:`RealtimeSubmission`."""
@@ -220,6 +229,10 @@ class FeedSubmission(models.Model):
     # ------------------------------------------------------------------
     # Computed properties – derived from FeedSubmissionHistory
     # ------------------------------------------------------------------
+
+    def __str__(self):
+        label = self.name or f"org_id={self.transport_organization_id}"
+        return f"FeedSubmission(id={self.id}, {self.data_type}, {label})"
 
     def _prefetched_history(self):
         """Prefetched history rows (newest first, via the history model's
@@ -282,22 +295,21 @@ class FeedSubmission(models.Model):
                 None,
             )
         else:
-            completed = self.history.filter(
-                event_type=FeedSubmissionHistory.EVENT_COMPLETED
-            ).order_by('-created_at', '-id').first()
+            completed = (
+                self.history.filter(event_type=FeedSubmissionHistory.EVENT_COMPLETED)
+                .order_by('-created_at', '-id')
+                .first()
+            )
         return completed.created_at if completed else None
 
     # NOTE: realtime is handled via separate RealtimeSubmission flow
     # (see data_manager.models.RealtimeSubmission).
 
-    def __str__(self):
-        label = self.name or f"org_id={self.transport_organization_id}"
-        return f"FeedSubmission(id={self.id}, {self.data_type}, {label})"
-
 
 # ---------------------------------------------------------------------------
 # FeedSubmissionHistory – audit trail, sole source of truth for stages
 # ---------------------------------------------------------------------------
+
 
 class FeedSubmissionHistory(models.Model):
     EVENT_UPLOADED = 'uploaded'
@@ -351,6 +363,7 @@ class FeedSubmissionHistory(models.Model):
 # ---------------------------------------------------------------------------
 # StaticFeedEntry – for static feeds (GTFS, NeTEx, other)
 # ---------------------------------------------------------------------------
+
 
 class StaticFeedEntry(FetchControlMixin, models.Model):
     AUTH_TYPE_CHOICES = [
@@ -408,7 +421,8 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         help_text='Server-cached copy of the feed (set automatically, never by the user).',
     )
     cached_at = models.DateTimeField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text='When the cached copy was last downloaded by the server.',
     )
     fetch_status = models.CharField(
@@ -448,11 +462,7 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
     )
 
     # Authentication (used by the server when fetching the URL)
-    auth_type = models.CharField(
-        max_length=20,
-        choices=AUTH_TYPE_CHOICES,
-        null=True, blank=True
-    )
+    auth_type = models.CharField(max_length=20, choices=AUTH_TYPE_CHOICES, null=True, blank=True)
     auth_value = EncryptedCharField(
         blank=True,
         null=True,
@@ -476,8 +486,14 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
     class Meta:
         ordering = ['-uploaded_at']
         indexes = [
-            models.Index(fields=['fetch_status', 'next_fetch_after'], name='data_manage_static_fetch_idx'),
+            models.Index(
+                fields=['fetch_status', 'next_fetch_after'], name='data_manage_static_fetch_idx'
+            ),
         ]
+
+    def __str__(self):
+        source = self.url or getattr(self.file, 'name', '')
+        return f"StaticFeedEntry(id={self.id}, submission={self.submission_id}, source='{source}')"
 
     def clean(self):
         super().clean()
@@ -493,14 +509,24 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         # download_time_1 required if url, forbidden if file
         if has_url:
             if self.download_time_1 is None:
-                raise ValidationError({'download_time_1': 'This field is required when a URL is provided.'})
+                raise ValidationError(
+                    {'download_time_1': 'This field is required when a URL is provided.'}
+                )
             if self.download_time_2 is not None and self.download_time_1 is None:
-                raise ValidationError({'download_time_2': 'download_time_2 can only be set if download_time_1 is set.'})
+                raise ValidationError(
+                    {
+                        'download_time_2': 'download_time_2 can only be set if download_time_1 is set.'
+                    }
+                )
         if has_file:
             if self.download_time_1 is not None:
-                raise ValidationError({'download_time_1': 'This field must be empty when a file is provided.'})
+                raise ValidationError(
+                    {'download_time_1': 'This field must be empty when a file is provided.'}
+                )
             if self.download_time_2 is not None:
-                raise ValidationError({'download_time_2': 'This field must be empty when a file is provided.'})
+                raise ValidationError(
+                    {'download_time_2': 'This field must be empty when a file is provided.'}
+                )
 
         # Auto-set hide_original when auth_type is set
         if self.auth_type:
@@ -521,10 +547,6 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
                 raise ValidationError(
                     'Server-downloaded static file fields cannot be used for a manual file upload.'
                 )
-
-    def __str__(self):
-        source = self.url or getattr(self.file, 'name', '')
-        return f"StaticFeedEntry(id={self.id}, submission={self.submission_id}, source='{source}')"
 
     @property
     def validation_source_file(self):
@@ -550,6 +572,7 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
 # FeedValidationReport – stores output of the GTFS validator
 # ---------------------------------------------------------------------------
 
+
 class FeedValidationReport(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     report_file = models.FileField(
@@ -557,7 +580,7 @@ class FeedValidationReport(models.Model):
         storage=OverwriteStorage(),
         blank=True,
         null=True,
-        help_text='Full JSON output from the validator, stored as a file.'
+        help_text='Full JSON output from the validator, stored as a file.',
     )
     error_count = models.PositiveIntegerField(default=0)
     warning_count = models.PositiveIntegerField(default=0)
@@ -569,6 +592,7 @@ class FeedValidationReport(models.Model):
 # ---------------------------------------------------------------------------
 # FeedFetchError – immutable error log for feed download failures
 # ---------------------------------------------------------------------------
+
 
 class FeedFetchError(models.Model):
     ERROR_HTTP = 'http_error'
@@ -601,7 +625,8 @@ class FeedFetchError(models.Model):
     )
     error_type = models.CharField(max_length=20, choices=ERROR_TYPE_CHOICES)
     http_status_code = models.IntegerField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text='HTTP response code — filled only for error_type=http_error',
     )
     message = models.TextField(help_text='Detailed error message or exception description.')
@@ -612,6 +637,14 @@ class FeedFetchError(models.Model):
         ordering = ['-occurred_at']
         verbose_name = 'Feed Fetch Error'
         verbose_name_plural = 'Feed Fetch Errors'
+
+    def __str__(self):
+        source = (
+            f'static_entry={self.static_entry_id}'
+            if self.static_entry_id
+            else f'endpoint_rt={self.endpoint_rt_id}'
+        )
+        return f"FeedFetchError(id={self.id}, {source}, {self.error_type}, {self.occurred_at})"
 
     def clean(self):
         super().clean()
@@ -626,14 +659,11 @@ class FeedFetchError(models.Model):
                 'A FeedFetchError must be linked to either a StaticFeedEntry or a RealtimeEndpointRT.'
             )
 
-    def __str__(self):
-        source = f'static_entry={self.static_entry_id}' if self.static_entry_id else f'endpoint_rt={self.endpoint_rt_id}'
-        return f"FeedFetchError(id={self.id}, {source}, {self.error_type}, {self.occurred_at})"
-
 
 # ---------------------------------------------------------------------------
 # RealtimeSubmission – realtime flow attached to a published static submission
 # ---------------------------------------------------------------------------
+
 
 class RealtimeSubmission(models.Model):
     """
@@ -697,6 +727,9 @@ class RealtimeSubmission(models.Model):
             )
         ]
 
+    def __str__(self):
+        return f"RealtimeSubmission(id={self.id}, protocol={self.protocol}, org={self.transport_organization_id})"
+
     def allowed_endpoint_types(self) -> set:
         if self.protocol == self.PROTOCOL_GTFS_RT:
             return {'trip_update', 'vehicle_position', 'service_alert'}
@@ -704,9 +737,15 @@ class RealtimeSubmission(models.Model):
             return {'sx', 'sm', 'vm', 'et', 'gm'}
         if self.protocol == self.PROTOCOL_GBFS:
             return {
-                'gbfs', 'gbfs_versions', 'system_information', 'vehicle_types',
-                'station_information', 'station_status', 'free_bike_status',
-                'system_hours', 'system_alerts',
+                'gbfs',
+                'gbfs_versions',
+                'system_information',
+                'vehicle_types',
+                'station_information',
+                'station_status',
+                'free_bike_status',
+                'system_hours',
+                'system_alerts',
             }
         return set()
 
@@ -721,12 +760,21 @@ class RealtimeSubmission(models.Model):
     def clean(self):
         super().clean()
         errors = {}
-        if self.protocol in {self.PROTOCOL_GTFS_RT, self.PROTOCOL_SIRI} and not self.static_submission_id:
-            errors.setdefault('static_submission', []).append('This field is required for GTFS-RT and SIRI.')
+        if (
+            self.protocol in {self.PROTOCOL_GTFS_RT, self.PROTOCOL_SIRI}
+            and not self.static_submission_id
+        ):
+            errors.setdefault('static_submission', []).append(
+                'This field is required for GTFS-RT and SIRI.'
+            )
         if self.protocol == self.PROTOCOL_GBFS and self.static_submission_id:
-            errors.setdefault('static_submission', []).append('GBFS must not be linked to a static submission.')
+            errors.setdefault('static_submission', []).append(
+                'GBFS must not be linked to a static submission.'
+            )
         elif self.static_submission_id:
-            allowed_protocols = self.allowed_protocols_for_static_data_type(self.static_submission.data_type)
+            allowed_protocols = self.allowed_protocols_for_static_data_type(
+                self.static_submission.data_type
+            )
             if self.protocol not in allowed_protocols:
                 errors.setdefault('static_submission', []).append(
                     f"Protocol '{self.protocol}' cannot be linked to static feed type "
@@ -794,13 +842,12 @@ class RealtimeSubmission(models.Model):
                 None,
             )
         else:
-            completed = self.history.filter(
-                event_type=RealtimeSubmissionHistory.EVENT_COMPLETED
-            ).order_by('-created_at', '-id').first()
+            completed = (
+                self.history.filter(event_type=RealtimeSubmissionHistory.EVENT_COMPLETED)
+                .order_by('-created_at', '-id')
+                .first()
+            )
         return completed.created_at if completed else None
-
-    def __str__(self):
-        return f"RealtimeSubmission(id={self.id}, protocol={self.protocol}, org={self.transport_organization_id})"
 
 
 class RealtimeSubmissionHistory(models.Model):
@@ -909,8 +956,13 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
         unique_together = [('submission', 'endpoint_type')]
         ordering = ['submission', 'endpoint_type']
         indexes = [
-            models.Index(fields=['fetch_status', 'next_fetch_after'], name='data_manage_rt_fetch_idx'),
+            models.Index(
+                fields=['fetch_status', 'next_fetch_after'], name='data_manage_rt_fetch_idx'
+            ),
         ]
+
+    def __str__(self):
+        return f"RealtimeEndpointRT(id={self.id}, type={self.endpoint_type}, submission={self.submission_id})"
 
     def clean(self):
         super().clean()
@@ -929,8 +981,6 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
         """True when the server periodically caches and serves this endpoint URL."""
         return self.hide_original
 
-    def __str__(self):
-        return f"RealtimeEndpointRT(id={self.id}, type={self.endpoint_type}, submission={self.submission_id})"
 
 # ---------------------------------------------------------------------------
 # Scheduler helpers
@@ -961,19 +1011,19 @@ def completed_submission_ids() -> list[int]:
 
 def _compute_completed_submission_ids() -> list[int]:
     """PKs of FeedSubmission whose latest history row is stage 4 (published)."""
-    from django.db.models import Subquery, OuterRef
+    from django.db.models import OuterRef, Subquery
 
-    latest_history = FeedSubmissionHistory.objects.filter(
-        submission=OuterRef('pk')
-    ).order_by('-created_at', '-id')
+    latest_history = FeedSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by(
+        '-created_at', '-id'
+    )
 
     # This filters submissions where the *very last* history entry is stage 4.
     return list(
         FeedSubmission.objects.annotate(
             current_stage_val=Subquery(latest_history.values('stage_after')[:1])
-        ).filter(
-            current_stage_val=4
-        ).values_list('id', flat=True)
+        )
+        .filter(current_stage_val=4)
+        .values_list('id', flat=True)
     )
 
 
@@ -991,16 +1041,16 @@ def completed_realtime_submission_ids() -> list[int]:
 
 def _compute_completed_realtime_submission_ids() -> list[int]:
     """PKs of RealtimeSubmission whose latest history row is stage 4 (published)."""
-    from django.db.models import Subquery, OuterRef
+    from django.db.models import OuterRef, Subquery
 
-    latest_history = RealtimeSubmissionHistory.objects.filter(
-        submission=OuterRef('pk')
-    ).order_by('-created_at', '-id')
+    latest_history = RealtimeSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by(
+        '-created_at', '-id'
+    )
 
     return list(
         RealtimeSubmission.objects.annotate(
             current_stage_val=Subquery(latest_history.values('stage_after')[:1])
-        ).filter(
-            current_stage_val=4
-        ).values_list('id', flat=True)
+        )
+        .filter(current_stage_val=4)
+        .values_list('id', flat=True)
     )

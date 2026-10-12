@@ -6,4 +6,3 @@ from .celery import app as celery_app  # noqa: F401
 # AppRegistryNotReady (models cannot be imported before the app registry is
 # populated) — the previous try/except silently swallowed exactly that, so the
 # receivers were never registered at all.
-

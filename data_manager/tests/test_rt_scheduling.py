@@ -3,6 +3,7 @@
 Guards against the previous behaviour where the periodic ``bootstrap_realtime_tasks``
 re-queued every active endpoint on each run, accumulating duplicate fetch chains.
 """
+
 import pytest
 
 from cases.models import TransportOrganization
@@ -19,9 +20,7 @@ pytestmark = pytest.mark.django_db
 @pytest.fixture
 def published_gbfs_endpoint(settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
-    org = TransportOrganization.objects.create(
-        region='R', transport_organization='Org'
-    )
+    org = TransportOrganization.objects.create(region='R', transport_organization='Org')
     rts = RealtimeSubmission.objects.create(
         transport_organization=org,
         protocol=RealtimeSubmission.PROTOCOL_GBFS,

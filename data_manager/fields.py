@@ -9,6 +9,7 @@ plaintext to the application. Design goals:
   as plaintext (no hard dependency on a key for local work). Production should
   always set the key.
 """
+
 from django.conf import settings
 from django.db import models
 
@@ -23,6 +24,7 @@ class EncryptedCharField(models.TextField):
         if not key:
             return None
         from cryptography.fernet import Fernet
+
         return Fernet(key if isinstance(key, bytes) else key.encode())
 
     def get_prep_value(self, value):
@@ -52,7 +54,8 @@ class EncryptedCharField(models.TextField):
         if fernet is None:
             return value  # cannot decrypt without the key
         from cryptography.fernet import Fernet, InvalidToken  # noqa: F401
+
         try:
-            return fernet.decrypt(value[len(self.PREFIX):].encode()).decode()
+            return fernet.decrypt(value[len(self.PREFIX) :].encode()).decode()
         except InvalidToken:
             return value

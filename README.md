@@ -41,11 +41,15 @@ Then open:
 docker compose exec web python manage.py createsuperuser
 ```
 
-### Run tests
+### Run checks and tests
 
 ```bash
-docker compose exec -T web python -m pytest
+uv sync                                         # local virtualenv with dev tools
+uv run ruff check . && uv run ruff format --check .
+docker compose exec -T web python -m pytest     # tests in the container
 ```
+
+Dependencies are managed with [uv](https://docs.astral.sh/uv/): `uv add <package>` (or `uv add --dev`), then rebuild the image.
 
 ## Configuration notes
 

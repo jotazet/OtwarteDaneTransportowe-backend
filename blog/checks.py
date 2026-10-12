@@ -8,9 +8,10 @@ into a single identity: one shared reaction per post (each visitor overwriting
 the previous one) and one shared daily limit. That failure is invisible at
 runtime, hence this check.
 """
-from django.conf import settings
-from django.core.checks import Warning as CheckWarning, register
 
+from django.conf import settings
+from django.core.checks import Warning as CheckWarning
+from django.core.checks import register
 
 W_NO_TRUSTED_PROXIES = 'blog.W001'
 

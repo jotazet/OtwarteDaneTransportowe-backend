@@ -78,13 +78,17 @@ docs/deployment.md        production deployment and operations
 
 ```sh
 docker compose up --build                                  # http://localhost:8000 (/admin, /api/schema/swagger-ui/ in DEBUG)
-docker compose exec -T web python -m pytest                # tests
+uv run ruff check . && uv run ruff format --check .        # lint and format check (uv run ruff format . to fix)
+docker compose exec -T web python -m pytest                # tests in the container
+docker compose up -d --wait postgres && POSTGRES_PASSWORD=change-me uv run pytest   # or on the host (password from .env.example)
 docker compose exec web python manage.py makemigrations    # after model changes
 ```
 
+Dependencies: `uv add <pkg>` / `uv add --dev <pkg>` only, never pip, never edit `uv.lock` by hand ([ADR 0007](docs/architecture/decisions/0007-uv-and-ruff.md)). Before adding one, check whether the stdlib or an existing dependency covers the need, and justify it in the PR. Don't silence ruff (`# noqa`) without a comment that explains why.
+
 ## Definition of done
 
-- The tests pass for everything you touched.
+- `ruff check`, `ruff format --check` and the tests pass; CI runs them on every PR.
 - New logic has tests. Workflow and permission logic has tests for every role and stage it affects; outbound fetches and Docker are mocked.
 - No user-facing prose from the backend; new errors use codes.
 - `docs/` is updated: API reference and changelog, ADR, glossary, deployment.

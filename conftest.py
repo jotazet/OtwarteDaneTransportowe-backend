@@ -4,6 +4,7 @@ Throttling and the shared cache are production concerns; during tests we disable
 DRF throttling and clear the cache between tests so rate limits never cause
 flaky failures.
 """
+
 import pytest
 
 
@@ -20,6 +21,7 @@ def _disable_throttling(settings):
 @pytest.fixture(autouse=True)
 def _clear_cache():
     from django.core.cache import cache
+
     cache.clear()
     yield
     cache.clear()

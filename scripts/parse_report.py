@@ -2,10 +2,19 @@
 """
 Quick test script: parse a GTFS validator report.json and print error/warning counts
 """
+
 import json
 from pathlib import Path
 
-REPORT = Path(__file__).resolve().parents[1] / 'uploaded_data' / '1' / '1' / 'static' / 'validation_report_67_6167' / 'report.json'
+REPORT = (
+    Path(__file__).resolve().parents[1]
+    / 'uploaded_data'
+    / '1'
+    / '1'
+    / 'static'
+    / 'validation_report_67_6167'
+    / 'report.json'
+)
 
 
 def extract_notice_counts(payload: dict):
@@ -53,4 +62,3 @@ if __name__ == '__main__':
     print('Errors:', e)
     print('Warnings:', w)
     print('Codes:', codes)
-

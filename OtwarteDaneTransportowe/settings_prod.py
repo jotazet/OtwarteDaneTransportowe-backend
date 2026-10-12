@@ -2,9 +2,9 @@ from django.core.exceptions import ImproperlyConfigured
 
 from .settings_base import *  # noqa
 from .settings_base import (  # noqa: F401
+    INSECURE_SECRET_KEY_PLACEHOLDER,
     _env_bool,
     _env_list,
-    INSECURE_SECRET_KEY_PLACEHOLDER,
     validate_production_secret_key,
 )
 
@@ -115,4 +115,3 @@ LOGGING = {
         },
     },
 }
-

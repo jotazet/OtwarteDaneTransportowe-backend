@@ -42,7 +42,7 @@ Applies to both ODT repositories: this backend and [the frontend](https://github
   - docs are updated, and a change to the API contract has an entry in [`docs/api/changelog.md`](../api/changelog.md);
   - `/simplify` and `/code-review` have been run.
 - A change that needs both repositories gets a PR in each, linked to each other. Merge and deploy the backend first when the frontend depends on it.
-- Squash-merge, using the PR title as a Conventional Commit summary.
+- Squash-merge, using the PR title as a Conventional Commit summary. Exception: a PR whose commits are listed in `.git-blame-ignore-revs` is merged with a merge commit, so the hashes survive.
 - Delete the branch after merging.
 
 ## Enforcement

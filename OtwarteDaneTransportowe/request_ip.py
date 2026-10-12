@@ -7,6 +7,7 @@ otherwise the socket peer address is used. Every consumer of a client IP
 (blog reaction limits, ``your_reaction`` lookups) must go through this helper
 so reads and writes agree on the same identity.
 """
+
 from ipaddress import ip_address, ip_network
 
 from django.conf import settings

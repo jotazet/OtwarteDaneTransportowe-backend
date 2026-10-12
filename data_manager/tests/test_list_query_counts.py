@@ -1,4 +1,5 @@
 """Ad-hoc N+1 verification: query count for the feed-submissions list must not grow with N."""
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
@@ -22,8 +23,11 @@ def test_list_query_count_constant(django_assert_max_num_queries):
         )
         for stage in (2, 3, 4):
             FeedSubmissionHistory.objects.create(
-                submission=sub, event_type='stage_advanced',
-                stage_before=stage - 1, stage_after=stage, actor=admin,
+                submission=sub,
+                event_type='stage_advanced',
+                stage_before=stage - 1,
+                stage_after=stage,
+                actor=admin,
             )
 
     client = APIClient()

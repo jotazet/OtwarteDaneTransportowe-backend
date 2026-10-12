@@ -12,6 +12,7 @@ Usage:
     python manage.py cleanup_validation_artifacts --delete
     python manage.py cleanup_validation_artifacts --delete --min-age-hours 24
 """
+
 import os
 import shutil
 import time
