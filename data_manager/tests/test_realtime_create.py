@@ -304,16 +304,6 @@ def test_second_realtime_of_same_protocol_for_one_static_is_rejected(
     assert _validation_queued_for(celery_send_task) == [first.data['id']]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        'Bug: the GBFS create request documented in docs/api/feeds.md (and sent by '
-        'the frontend) omits static_submission. DRF derives a UniqueTogetherValidator '
-        'from the (static_submission, protocol) constraint, which makes the field '
-        'required on create, so the request gets 400 "static_submission: This field '
-        'is required." instead of 201.'
-    ),
-)
 def test_documented_gbfs_payload_without_static_submission_is_accepted(provider, org):
     payload = _gbfs_payload(org)
     del payload['static_submission']
