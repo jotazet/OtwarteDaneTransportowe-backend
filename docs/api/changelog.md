@@ -4,11 +4,11 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ## 2026-10: empty text fields are `""`, never `null`
 
-⚠️ **Breaking for writes.** Text fields have one empty value, `""` (Django convention, ruff `DJ001`). Existing `NULL`s are converted to `""` by migrations `blog.0003`, `cases.0005` and `data_manager.0010`.
+⚠️ **Breaking for writes.** Text fields have one empty value, `""` (Django convention, ruff `DJ001`). Existing `NULL`s are converted to `""` by migrations `blog.0003`, `cases.0005` and `data_manager.0012`.
 
 **Deploy order:** first the `auth_type` fix below, then the frontend that sends `""`, then this backend version. The backend before this one already accepts `""` for all these fields.
 
-**Deploy and rollback:** the previous backend writes `NULL` into these columns, which fails once the migrations have run. Stop the services that write before deploying (`./scripts/deploy.sh stop web celery_worker celery_validator_worker celery_beat`; a short downtime) so no old container writes between the migration and its own restart. To roll back, reverse the migrations **before** starting the old image: `migrate data_manager 0009`, `migrate cases 0004`, `migrate blog 0002`.
+**Deploy and rollback:** the previous backend writes `NULL` into these columns, which fails once the migrations have run. Stop the services that write before deploying (`./scripts/deploy.sh stop web celery_worker celery_validator_worker celery_beat`; a short downtime) so no old container writes between the migration and its own restart. To roll back, reverse the migrations **before** starting the old image: `migrate data_manager 0011`, `migrate cases 0004`, `migrate blog 0002`.
 
 Affected fields:
 
@@ -33,6 +33,22 @@ Affected fields:
 ## 2026-10: an empty `auth_type` no longer forces `hide_original`
 
 In `static_entry`, `"auth_type": ""` used to set `hide_original=true` as if a credential had been given, while `null` did not. Both now mean "no authorization" and keep the `hide_original` the client sent. Realtime endpoints already behaved this way. Not breaking: clients may send `""` for "no authorization" from now on.
+
+---
+
+## 2026-10: coded reasons for automatic realtime rejections
+
+Not breaking: fields are only added.
+
+- `GET /api/data_manager/realtime-submissions/{id}/` (and the write responses of the same resource) gain **`rejection_reasons`**: a list of `{code, details}` or `null`. Each `history` entry gains **`reasons`** with the same shape.
+- Automatic realtime validation no longer writes Polish text to `rejection_cause`; it stays `null` for these rejections. `rejection_cause` now carries only a reviewer's free text.
+- Existing rejections whose text was fully recognised got codes by a data migration and keep their old text in `rejection_cause`; when `rejection_reasons` is not `null`, show it and ignore `rejection_cause`.
+- `has_rejection_cause` in `GET /api/data_manager/submissions/` is also `true` when only `rejection_reasons` is set.
+- The codes and their `details` are listed in [Realtime rejection reasons](feeds.md#realtime-rejection-reasons). The frontend translates them and shows a generic message for unknown codes.
+
+**Frontend:** until the frontend reads `rejection_reasons`, automatic realtime rejections show no reason text.
+
+**Not changed yet:** static (GTFS) rejection causes are still English text in `rejection_cause`; they move to codes in a separate change ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
 
 ---
 

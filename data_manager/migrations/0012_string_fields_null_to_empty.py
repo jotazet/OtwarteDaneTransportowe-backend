@@ -28,7 +28,7 @@ def null_to_empty(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('data_manager', '0009_alter_feedsubmissionhistory_options_and_more'),
+        ('data_manager', '0011_realtime_rejection_codes_from_text'),
     ]
 
     operations = [

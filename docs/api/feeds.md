@@ -406,6 +406,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
   "current_stage_label": "Step 3: Admin confirmation",
   "is_rejected": false,
   "rejection_cause": null,
+  "rejection_reasons": null,
   "published_at": null,
   "endpoints": [
     {
@@ -436,6 +437,45 @@ or:
 ```json
 { "rejection_cause": "Endpoint nie odpowiada." }
 ```
+
+### Realtime rejection reasons
+
+A realtime submission can be rejected in two ways, and the detail carries one field for each:
+
+- **Automatic validation** (`validate_realtime_submission_task`, stage 2): `rejection_reasons` is a list of `{code, details}` objects, one per problem; `rejection_cause` is `null`. The frontend translates each code ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
+- **A reviewer's rejection** (Helper/Admin `PATCH {"rejection_cause": "..."}`): `rejection_cause` holds their free text; `rejection_reasons` is `null`.
+
+Both are `null` unless the submission is currently rejected. History entries carry the same pair as `cause` and `reasons`.
+
+```json
+{
+  "is_rejected": true,
+  "rejection_cause": null,
+  "rejection_reasons": [
+    { "code": "realtime.endpoint_http_error", "details": { "endpoint_type": "trip_update", "status": 404 } },
+    { "code": "realtime.endpoint_content_empty", "details": { "endpoint_type": "vehicle_position" } }
+  ]
+}
+```
+
+Rejections recorded before codes existed were converted when every part of their text was recognised; those rows keep the old text in `rejection_cause` as well. **When `rejection_reasons` is not `null`, show it and ignore `rejection_cause`.** Older texts that could not be recognised stay in `rejection_cause` only.
+
+| Code | `details` | Meaning |
+|------|-----------|---------|
+| `realtime.static_submission_missing` | – | A GTFS-RT or SIRI submission is not linked to a static submission. |
+| `realtime.static_submission_not_published` | – | The linked static submission is not published (stage 4). |
+| `realtime.no_endpoints` | – | The submission has no endpoints. |
+| `realtime.endpoint_http_error` | `endpoint_type`, `status` | The endpoint answered with HTTP `status` (400 or higher). |
+| `realtime.endpoint_content_empty` | `endpoint_type` | The endpoint answered with an empty body. |
+| `realtime.endpoint_content_invalid` | `endpoint_type`, `protocol` | The body is not a valid feed of `protocol` (`gtfs_rt`: not a parsable protobuf or no `header.gtfs_realtime_version`; `gbfs`: not JSON; `siri`: an HTML page). |
+| `realtime.endpoint_too_large` | `endpoint_type`, `limit_bytes` | The response exceeded the size limit for realtime feeds (`MAX_REALTIME_FEED_BYTES`, 32 MiB by default). |
+| `realtime.endpoint_url_blocked` | `endpoint_type` | The URL was refused by the outbound security rules: its host does not resolve or resolves to a non-public address, or a redirect was refused. |
+| `realtime.endpoint_timeout` | `endpoint_type` | The endpoint did not answer in time. |
+| `realtime.endpoint_unreachable` | `endpoint_type` | No connection could be made (refused, reset, TLS error). |
+| `realtime.endpoint_fetch_failed` | `endpoint_type` | Any other error while fetching; details are in the server log. |
+| `realtime.endpoint_cache_failed` | `endpoint_type` | Verification passed, but the first fetch into the server cache (`hide_original`) stored nothing. |
+
+`endpoint_type` and `protocol` take the values listed in [Models and enums](models.md). Codes never change once released; new ones may be added, so clients fall back to a generic message for an unknown code.
 
 ## Public feed catalogue
 

@@ -59,5 +59,5 @@ A static feed has `FeedSubmissionHistory`, a realtime feed has `RealtimeSubmissi
 |--------------|---------|
 | `uploaded` | Creation or re-upload of data |
 | `stage_advanced` | Transition to the next stage |
-| `rejected` | Rejection; `cause` contains the reason |
+| `rejected` | Rejection; `cause` contains a reviewer's text, and for realtime feeds `reasons` holds coded automatic reasons (see [Realtime rejection reasons](feeds.md#realtime-rejection-reasons)) |
 | `completed` | Publication, stage 4 |

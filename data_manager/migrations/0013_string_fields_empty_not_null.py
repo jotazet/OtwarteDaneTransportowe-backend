@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('data_manager', '0010_string_fields_null_to_empty'),
+        ('data_manager', '0012_string_fields_null_to_empty'),
     ]
 
     operations = [
