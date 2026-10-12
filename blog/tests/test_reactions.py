@@ -72,6 +72,26 @@ def test_invalid_xff_entry_stops_the_walk(settings):
     assert get_client_ip(request) == '10.1.2.3'
 
 
+def test_hops_with_ports_are_parsed(settings):
+    settings.TRUSTED_PROXY_CIDRS = ['10.0.0.0/8']
+    request = _request('10.1.2.3', xff='6.6.6.6, 198.51.100.1:51234')
+    assert get_client_ip(request) == '198.51.100.1'
+    request = _request('10.1.2.3', xff='[2001:DB8::1]:443')
+    assert get_client_ip(request) == '2001:db8::1'
+
+
+def test_ipv6_chain_resolved_and_canonicalised(settings):
+    settings.TRUSTED_PROXY_CIDRS = ['fd00::/8']
+    request = _request('fd00::1', xff='2001:db8::66, 2001:DB8::7, fd00::2')
+    assert get_client_ip(request) == '2001:db8::7'
+
+
+def test_all_trusted_hops_fall_back_to_the_leftmost(settings):
+    settings.TRUSTED_PROXY_CIDRS = ['10.0.0.0/8']
+    request = _request('10.1.2.3', xff='10.5.5.5, 10.9.9.9')
+    assert get_client_ip(request) == '10.5.5.5'
+
+
 def test_malformed_cidr_entries_are_skipped(settings):
     settings.TRUSTED_PROXY_CIDRS = ['not-a-cidr', '10.0.0.0/8']
     request = _request('10.1.2.3', xff='198.51.100.1')

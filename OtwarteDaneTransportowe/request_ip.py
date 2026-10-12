@@ -27,11 +27,17 @@ def _trusted_networks():
     return networks
 
 
-def _is_trusted(address: str, networks) -> bool:
-    try:
-        ip = ip_address(address)
-    except ValueError:
-        return False
+def _parse_hop(hop: str):
+    """Parse one X-Forwarded-For entry; some load balancers append a port."""
+    hop = hop.strip()
+    if hop.startswith('[') and ']' in hop:
+        hop = hop[1 : hop.index(']')]
+    elif hop.count(':') == 1:
+        hop = hop.split(':', 1)[0]
+    return ip_address(hop)
+
+
+def _is_trusted(ip, networks) -> bool:
     return any(ip in network for network in networks)
 
 
@@ -39,19 +45,24 @@ def get_client_ip(request) -> str | None:
     remote = request.META.get('REMOTE_ADDR')
     xff = request.META.get('HTTP_X_FORWARDED_FOR')
 
+    if not remote or not xff:
+        return remote
+    try:
+        remote_ip = ip_address(remote)
+    except ValueError:
+        return remote
     networks = _trusted_networks()
-    if not remote or not xff or not _is_trusted(remote, networks):
+    if not _is_trusted(remote_ip, networks):
         return remote
 
     # Walk from the right, skipping our own proxies. An unparseable hop means
     # the chain can't be followed further, so the last trusted hop is used.
-    client = remote
-    for hop in reversed([part.strip() for part in xff.split(',')]):
+    client = remote_ip
+    for hop in reversed(xff.split(',')):
         try:
-            ip_address(hop)
+            client = _parse_hop(hop)
         except ValueError:
-            return client
-        client = hop
-        if not _is_trusted(hop, networks):
-            return hop
-    return client
+            break
+        if not _is_trusted(client, networks):
+            break
+    return str(client)
