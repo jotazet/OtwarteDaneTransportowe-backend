@@ -270,8 +270,7 @@ Base endpoint:
 - **Forbidden from stage 2:** **`name`**, the feed **`url`**, **`auth_type`**, **`auth_value`**, **`is_original`**, **`hide_original`**, adding/removing endpoints, changing `transport_organization` / `static_submission` / `protocol`.
 - With restricted editing, a shortened endpoint object can be sent, e.g. `{"endpoint_type": "gbfs", "interval": 120}` — missing fields are filled in from the database; an attempt to change a locked field returns a validation error.
 - Changing only **`interval`** does **not** re-run the link validation task and does not delete endpoint records.
-- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background. A failure rejects a submission at stage 2 or 3.
-- **Published feed (stage 4):** a failed re-validation **does not unpublish** it — the submission stays at stage 4, no rejection is recorded and the codes are written to the server log only.
+- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background. A failure rejects a submission at stage 2 or 3, but **does not unpublish** one at stage 4: no rejection is recorded and the codes go to the server log only.
 
 **List query params:**
 
