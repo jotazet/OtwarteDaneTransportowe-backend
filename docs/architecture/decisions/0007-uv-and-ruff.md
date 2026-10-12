@@ -20,7 +20,7 @@ Dependencies were installed with `pip install -r requirements.txt`. Half of the 
 - Builds are reproducible; upgrading is an explicit `uv lock --upgrade-package <name>` in a pull request.
 - The production image no longer contains test tooling.
 - The first format pass touched about half the files. Its commits are listed in `.git-blame-ignore-revs`, so the pull request that introduced them is merged with a merge commit (squashing would change the hashes).
-- `DJ001` (`null=True` on string fields) is ignored until those fields are migrated, because the change alters the API contract.
+- `DJ001` (`null=True` on string fields) was ignored at first because fixing it alters the API contract; the fields have since been migrated to `""` and the rule is enforced.
 
 ## Alternatives considered
 

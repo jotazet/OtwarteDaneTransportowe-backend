@@ -340,6 +340,10 @@ static_entry.is_original
 static_entry.license
 ```
 
+### Empty text fields
+
+Text fields (`name`, `note`, `license`, `url`, `description`, `website`, `contact_email`, `phone_number`, `auth_type`, `cause`, `reaction`, ...) have one empty value: `""`. Responses never contain `null` for them, and a request that sends `null` gets `400` with the error code `null`; send `""` or omit the field. Computed fields and fields that are not text keep `null` for "none", e.g. `rejection_cause`, `published_at`, `download_time_2`, `file`, `download_url`.
+
 ### Important constraints
 
 - `auth_value` is never returned by the API.

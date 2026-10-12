@@ -145,7 +145,7 @@ Base endpoint:
     "file": null,
     "is_original": true,
     "hide_original": false,
-    "auth_type": null,
+    "auth_type": "",
     "download_time_1": "03:00:00",
     "download_time_2": null,
     "license": "CC BY 4.0",
@@ -160,7 +160,7 @@ Base endpoint:
       "stage_before": 1,
       "stage_after": 2,
       "actor": "provider",
-      "cause": null,
+      "cause": "",
       "created_at": "2026-04-27T10:00:00Z"
     }
   ]
@@ -181,7 +181,7 @@ Base endpoint:
     "url": "https://example.com/gtfs.zip",
     "is_original": true,
     "hide_original": false,
-    "auth_type": null,
+    "auth_type": "",
     "download_time_1": "03:00:00",
     "download_time_2": null,
     "license": "CC BY 4.0"
@@ -207,7 +207,7 @@ Base endpoint:
 }
 ```
 
-If `auth_type` is set, the backend automatically sets `hide_original=True`.
+If `auth_type` is non-empty (not `null` or `""`), the backend automatically sets `hide_original=True`.
 
 For a URL source, `hide_original=true` **does not require** authorization to be set — the server can download a public URL and serve a copy without disclosing the original link.
 
@@ -338,7 +338,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
       "endpoint_type": "trip_update",
       "url": "https://example.com/trip-updates.pb",
       "is_original": true,
-      "auth_type": null,
+      "auth_type": "",
       "interval": 30
     },
     {
@@ -366,7 +366,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
       "endpoint_type": "gbfs",
       "url": "https://example.com/gbfs.json",
       "is_original": true,
-      "auth_type": null,
+      "auth_type": "",
       "interval": 60
     }
   ]
@@ -385,7 +385,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
 - Two endpoints of the same `endpoint_type` cannot be added to one submission.
 - The endpoint type must match the protocol.
 - `auth_value` is write-only.
-- If `auth_type` is set, the backend automatically sets `hide_original=True`.
+- If `auth_type` is non-empty (not `null` or `""`), the backend automatically sets `hide_original=True`.
 - `hide_original=true` **does not require** authorization — the endpoint can be fetched by the server from a public URL without `auth_type` / `auth_value`.
 
 **Realtime detail:**
@@ -415,7 +415,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
       "url": "https://example.com/trip-updates.pb",
       "is_original": true,
       "hide_original": false,
-      "auth_type": null,
+      "auth_type": "",
       "interval": 30,
       "cached_at": null
     }

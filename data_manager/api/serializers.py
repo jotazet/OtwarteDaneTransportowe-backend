@@ -365,7 +365,7 @@ class StaticFeedEntrySerializer(FetchHealthSerializerMixin, serializers.ModelSer
             'auth_value': {'write_only': True},
             'file': {'required': False},
             'url': {'required': False},
-            'auth_type': {'required': False, 'allow_null': True},
+            'auth_type': {'required': False},
         }
 
     def __init__(self, *args, **kwargs):
@@ -489,7 +489,7 @@ class RealtimeEndpointRTWriteSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {
             'auth_value': {'write_only': True, 'required': False},
-            'auth_type': {'required': False, 'allow_null': True},
+            'auth_type': {'required': False},
         }
 
     def validate_url(self, value: str):
@@ -1080,7 +1080,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
         submission.save()
 
         if static_entry_data:
-            if static_entry_data.get('auth_type') is not None:
+            if static_entry_data.get('auth_type'):
                 static_entry_data['hide_original'] = True
             entry = StaticFeedEntry(submission=submission, **static_entry_data)
             try:
@@ -1119,7 +1119,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     update_fields = set(static_entry_data.keys())
                     for attr, value in static_entry_data.items():
                         setattr(entry, attr, value)
-                    if static_entry_data.get('auth_type') is not None:
+                    if static_entry_data.get('auth_type'):
                         entry.hide_original = True
                         update_fields.add('hide_original')
                     try:
@@ -1140,7 +1140,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     ):
                         self._schedule_source_refresh(entry)
                 else:
-                    if static_entry_data.get('auth_type') is not None:
+                    if static_entry_data.get('auth_type'):
                         static_entry_data['hide_original'] = True
                     new_entry = StaticFeedEntry(submission=instance, **static_entry_data)
                     try:

@@ -191,9 +191,9 @@ def refresh_static_feeds_task() -> dict:
     entry_ids = list(
         StaticFeedEntry.objects.filter(
             hide_original=True,
-            url__isnull=False,
             submission_id__in=completed_ids,
         )
+        .exclude(url='')
         .filter(scheduled_due | retry_due)
         .values_list('id', flat=True)
     )
@@ -483,7 +483,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
         )
         return
 
-    def _set_validation_status(status: str, message: str | None = None) -> None:
+    def _set_validation_status(status: str, message: str = '') -> None:
         entry.validation_status = status
         entry.validation_message = message
         entry.save(update_fields=['validation_status', 'validation_message'])
@@ -815,7 +815,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 cause = f"Validation failed with {error_count} errors."
             _reject_submission(cause)
         else:
-            _set_validation_status(StaticFeedEntry.VALIDATION_VALID, None)
+            _set_validation_status(StaticFeedEntry.VALIDATION_VALID)
             # Re-fetch submission fresh state in case it changed
             submission.refresh_from_db()
             current_stage = submission.current_stage

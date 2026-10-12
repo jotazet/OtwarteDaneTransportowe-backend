@@ -212,8 +212,8 @@ class FeedSubmission(models.Model):
 
     # Feed metadata
     data_type = models.CharField(max_length=10, choices=DATA_TYPE_CHOICES)
-    name = models.CharField(max_length=255, blank=True, null=True)
-    note = models.TextField(max_length=2048, blank=True, null=True)
+    name = models.CharField(max_length=255, blank=True)
+    note = models.TextField(max_length=2048, blank=True)
 
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
@@ -279,11 +279,11 @@ class FeedSubmission(models.Model):
 
     @property
     def rejection_cause(self):
-        """Returns cause from last rejected history entry, or None."""
+        """Cause text of the latest rejection; None if not rejected or no text."""
         latest = self._latest_history_entry
         if latest is None or latest.event_type != FeedSubmissionHistory.EVENT_REJECTED:
             return None
-        return latest.cause
+        return latest.cause or None
 
     @property
     def published_at(self):
@@ -341,7 +341,6 @@ class FeedSubmissionHistory(models.Model):
     )
     cause = models.TextField(
         blank=True,
-        null=True,
         help_text='Reason for rejection — only filled for event_type=rejected',
     )
     created_at = models.DateTimeField(auto_now_add=True)
@@ -389,11 +388,11 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         related_name='static_entry',
     )
 
-    license = models.CharField(max_length=255, blank=True, null=True)
+    license = models.CharField(max_length=255, blank=True)
 
     # Source A: URL – server fetches periodically when hide_original=True,
     #           or exposed directly when hide_original=False.
-    url = models.URLField(blank=True, null=True, help_text='URL to the static feed file.')
+    url = models.URLField(blank=True, help_text='URL to the static feed file.')
 
     # Source B: file uploaded manually by the user.
     file = models.FileField(
@@ -443,7 +442,7 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         choices=VALIDATION_STATUS_CHOICES,
         default=VALIDATION_PENDING,
     )
-    validation_message = models.TextField(blank=True, null=True)
+    validation_message = models.TextField(blank=True)
 
     # Validation Report
     # Stores the last validation result (if any).
@@ -462,7 +461,7 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
     )
 
     # Authentication (used by the server when fetching the URL)
-    auth_type = models.CharField(max_length=20, choices=AUTH_TYPE_CHOICES, null=True, blank=True)
+    auth_type = models.CharField(max_length=20, choices=AUTH_TYPE_CHOICES, blank=True)
     auth_value = EncryptedCharField(
         blank=True,
         null=True,
@@ -707,9 +706,9 @@ class RealtimeSubmission(models.Model):
         help_text='Published static submission this realtime depends on (required for GTFS-RT and SIRI).',
     )
 
-    name = models.CharField(max_length=255, blank=True, null=True)
-    note = models.TextField(max_length=2048, blank=True, null=True)
-    license = models.CharField(max_length=255, blank=True, null=True)
+    name = models.CharField(max_length=255, blank=True)
+    note = models.TextField(max_length=2048, blank=True)
+    license = models.CharField(max_length=255, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -836,8 +835,9 @@ class RealtimeSubmission(models.Model):
 
     @property
     def rejection_cause(self):
+        # None, not '', when there is no text (automatic rejections carry reasons).
         rejection = self._latest_rejection
-        return rejection.cause if rejection else None
+        return (rejection.cause or None) if rejection else None
 
     @property
     def rejection_reasons(self):
@@ -890,7 +890,7 @@ class RealtimeSubmissionHistory(models.Model):
         related_name='realtime_history_actions',
     )
     # Free text written by a reviewer (or, before codes, by validation).
-    cause = models.TextField(blank=True, null=True)
+    cause = models.TextField(blank=True)
     # Automatic rejections: [{"code": ..., "details": {...}}], see rejection_reasons.py.
     reasons = models.JSONField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -943,7 +943,7 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
     hide_original = models.BooleanField(default=False)
     is_original = models.BooleanField(default=False)
     interval = models.PositiveIntegerField(help_text='Refresh interval in seconds.', default=60)
-    auth_type = models.CharField(max_length=20, choices=AUTH_TYPE_CHOICES, null=True, blank=True)
+    auth_type = models.CharField(max_length=20, choices=AUTH_TYPE_CHOICES, blank=True)
     auth_value = EncryptedCharField(blank=True, null=True)
     cached_file = models.FileField(
         upload_to=realtime_feed_cached_file_path,
