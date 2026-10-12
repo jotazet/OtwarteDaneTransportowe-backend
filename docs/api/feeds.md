@@ -539,7 +539,9 @@ This is not a list of individual feeds, but a list of **all** transport organiza
         "download_url": "https://example.com/feed/37/gtfs.zip",
         "license": "CC BY 4.0",
         "cached_at": "2026-04-27T10:00:00Z",
-        "is_original": true
+        "is_original": true,
+        "download_time_1": "03:00:00",
+        "download_time_2": null
       },
       "realtime_feed": {
         "protocol": "gtfs_rt",
@@ -584,6 +586,8 @@ This is not a list of individual feeds, but a list of **all** transport organiza
 ```
 
 The public catalogue shows only feeds whose latest history entry has `stage_after=4`.
+
+`static_feed.download_time_1` and `download_time_2` are the daily times, in **UTC** (`HH:MM:SS`), at which ODT refreshes a proxied feed (`hide_original=true`). Both are `null` for a feed that is not proxied, because ODT does not fetch it on a schedule; `download_time_2` is also `null` when only one time is set. Convert them to local time for display (Poland is UTC+1, UTC+2 in summer).
 
 ## Public file downloads
 

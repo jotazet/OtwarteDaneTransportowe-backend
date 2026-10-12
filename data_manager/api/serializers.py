@@ -1183,7 +1183,23 @@ class PublishedStaticEntrySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StaticFeedEntry
-        fields = ['download_url', 'license', 'cached_at', 'is_original']
+        fields = [
+            'download_url',
+            'license',
+            'cached_at',
+            'is_original',
+            'download_time_1',
+            'download_time_2',
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Only proxied sources are refreshed on this schedule; for the others
+        # the stored times are never used, so publishing them would mislead.
+        if not instance.is_proxy_managed:
+            data['download_time_1'] = None
+            data['download_time_2'] = None
+        return data
 
     def get_download_url(self, obj):
         request = self.context.get('request')

@@ -1,5 +1,8 @@
 """Public download views: publication gating, filename matching and the
-deterministic /feed/rt/<pk>/<endpoint_type>/ route."""
+deterministic /feed/rt/<pk>/<endpoint_type>/ route; static entries in the
+public catalogue."""
+
+from datetime import time
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -203,3 +206,38 @@ def test_rt_unknown_endpoint_type_is_404(api_client, org, provider_user):
 def test_rt_unpublished_is_404(api_client, org, provider_user):
     rts = _make_rt_submission(org, provider_user, published=False)
     assert api_client.get(f'/feed/rt/{rts.id}/').status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Public catalogue: /api/data_manager/feeds/<org>/
+# ---------------------------------------------------------------------------
+
+
+def test_catalogue_shows_refresh_times_only_for_proxied_static_feeds(
+    api_client, org, provider_user
+):
+    proxied = _make_submission(org, provider_user)
+    StaticFeedEntry.objects.create(
+        submission=proxied,
+        url='https://example.org/proxied.zip',
+        hide_original=True,
+        download_time_1=time(3, 0),
+        download_time_2=time(15, 30),
+    )
+    direct = _make_submission(org, provider_user)
+    StaticFeedEntry.objects.create(
+        submission=direct,
+        url='https://example.org/direct.zip',
+        hide_original=False,
+        download_time_1=time(4, 0),
+    )
+
+    response = api_client.get(f'/api/data_manager/feeds/{org.id}/')
+
+    assert response.status_code == 200
+    static_feeds = {feed['id']: feed['static_feed'] for feed in response.data['feeds']}
+    assert static_feeds[proxied.id]['download_time_1'] == '03:00:00'
+    assert static_feeds[proxied.id]['download_time_2'] == '15:30:00'
+    # Not proxied: ODT never fetches it, so the stored times are not published.
+    assert static_feeds[direct.id]['download_time_1'] is None
+    assert static_feeds[direct.id]['download_time_2'] is None

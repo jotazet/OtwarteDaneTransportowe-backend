@@ -2,6 +2,16 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10-12: catalogue refresh times, fetch error links and contract corrections
+
+Not breaking: fields are only added, and the corrected docs describe behaviour that was already there.
+
+### 1. Refresh times in the public catalogue
+
+`GET /api/data_manager/feeds/{organization_id}/`: each `feeds[].static_feed` gains **`download_time_1`** and **`download_time_2`**, the daily refresh times of a proxied feed in **UTC** (`"03:00:00"`). Both are `null` when the feed is not proxied (ODT does not fetch it on a schedule). See [Public feed catalogue](feeds.md#public-feed-catalogue).
+
+---
+
 ## 2026-10: empty text fields are `""`, never `null`
 
 ⚠️ **Breaking for writes.** Text fields have one empty value, `""` (Django convention, ruff `DJ001`). Existing `NULL`s are converted to `""` by migrations `blog.0003`, `cases.0005` and `data_manager.0012`.
