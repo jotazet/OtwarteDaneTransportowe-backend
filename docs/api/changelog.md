@@ -2,9 +2,11 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
-## 2026-10: `resume-fetch` returns `400` for non-proxied feeds
+## 2026-10: `resume-fetch` returns `400` for non-proxied feeds; error code for both
 
-`POST /api/data_manager/static-feed-entries/{id}/resume-fetch/` and `POST /api/data_manager/realtime-endpoints/{id}/resume-fetch/` on a feed without proxying (`is_proxy_managed=false`) used to return `200` and reset fetch fields that such a feed does not use. They now return `400` with the same body as `pause-fetch` (`{"detail": ...}`), as the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds) already documented. Not breaking for clients that offer pause/resume only for proxied feeds (the `proxy-feeds` list), as the ODT frontend does.
+`POST /api/data_manager/static-feed-entries/{id}/resume-fetch/` and `POST /api/data_manager/realtime-endpoints/{id}/resume-fetch/` on a feed without proxying (`is_proxy_managed=false`) used to return `200` and reset fetch fields that such a feed does not use. They now return `400`, as the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds) already documented.
+
+The `400` of `pause-fetch` and `resume-fetch` for a non-proxied feed now carries an error code ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)) instead of English prose: `{"code": "feeds.not_proxy_managed", "details": {}}` (it used to be `{"detail": "Pause/resume applies only to proxy-managed ..."}`). Not breaking for clients that offer pause/resume only for proxied feeds (the `proxy-feeds` list), as the ODT frontend does.
 
 ---
 

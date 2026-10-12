@@ -55,7 +55,7 @@ DataProvider
 
 The pause, retry and background cache mechanism applies **only to proxied feeds** (`hide_original=true`). A feed without proxying (`hide_original=false`) or an uploaded file is **not** periodically fetched or served from the server cache — the original URL (or the uploaded file) is what is publicly visible. For such feeds:
 
-- `pause-fetch` / `resume-fetch` return `400 Bad Request`
+- `pause-fetch` / `resume-fetch` return `400 Bad Request` with `{"code": "feeds.not_proxy_managed", "details": {}}`
 - the fields `fetch_status`, `fetch_failure_count`, `next_fetch_after` etc. are **not returned** by the API (`is_proxy_managed=false`)
 - the Celery schedule and the realtime loop **skip** these feeds
 

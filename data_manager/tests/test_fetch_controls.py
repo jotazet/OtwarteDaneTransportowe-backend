@@ -401,9 +401,9 @@ def test_pause_and_resume_rejected_for_non_proxied_feeds(
         with django_capture_on_commit_callbacks(execute=True):
             resumed = api_client.post(f'{path}/resume-fetch/')
 
-        assert paused.status_code == 400
-        assert resumed.status_code == 400
-        assert resumed.data == paused.data
+        for response in (paused, resumed):
+            assert response.status_code == 400
+            assert response.data == {'code': 'feeds.not_proxy_managed', 'details': {}}
 
     assert calls == []
 

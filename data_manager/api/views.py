@@ -267,6 +267,20 @@ def _validate_stage_value(raw):
     return value
 
 
+def _require_proxy_managed(source):
+    """400 with an error code (ADR 0006) when a feed source is not proxied.
+
+    Pause/resume only applies to sources the server fetches and caches
+    (hide_original=true).
+    """
+    if source.is_proxy_managed:
+        return None
+    return Response(
+        {'code': 'feeds.not_proxy_managed', 'details': {}},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def _apply_stage_transition(request, submission, *, history_model, on_publish=None):
     """Shared admin/helper stage transition for static and realtime submissions.
 
@@ -1037,26 +1051,13 @@ class StaticFeedEntryViewSet(viewsets.ReadOnlyModelViewSet):
             )
         return None
 
-    def _require_proxy_managed(self, entry):
-        if not entry.is_proxy_managed:
-            return Response(
-                {
-                    'detail': (
-                        'Pause/resume applies only to proxy-managed feeds '
-                        '(hide_original=true). Non-proxied feeds are not cached by the server.'
-                    ),
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        return None
-
     @action(detail=True, methods=['post'], url_path='pause-fetch')
     def pause_fetch(self, request, pk=None):
         denied = self._require_operator(request)
         if denied:
             return denied
         entry = self.get_object()
-        denied = self._require_proxy_managed(entry)
+        denied = _require_proxy_managed(entry)
         if denied:
             return denied
         reason = (request.data.get('reason') or '').strip()
@@ -1069,7 +1070,7 @@ class StaticFeedEntryViewSet(viewsets.ReadOnlyModelViewSet):
         if denied:
             return denied
         entry = self.get_object()
-        denied = self._require_proxy_managed(entry)
+        denied = _require_proxy_managed(entry)
         if denied:
             return denied
         entry.resume_fetch()
@@ -1099,26 +1100,13 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
             )
         return None
 
-    def _require_proxy_managed(self, endpoint):
-        if not endpoint.is_proxy_managed:
-            return Response(
-                {
-                    'detail': (
-                        'Pause/resume applies only to proxy-managed endpoints '
-                        '(hide_original=true). Non-proxied endpoints are not cached by the server.'
-                    ),
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        return None
-
     @action(detail=True, methods=['post'], url_path='pause-fetch')
     def pause_fetch(self, request, pk=None):
         denied = self._require_operator(request)
         if denied:
             return denied
         endpoint = self.get_object()
-        denied = self._require_proxy_managed(endpoint)
+        denied = _require_proxy_managed(endpoint)
         if denied:
             return denied
         reason = (request.data.get('reason') or '').strip()
@@ -1136,7 +1124,7 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
         if denied:
             return denied
         endpoint = self.get_object()
-        denied = self._require_proxy_managed(endpoint)
+        denied = _require_proxy_managed(endpoint)
         if denied:
             return denied
         endpoint.resume_fetch()
