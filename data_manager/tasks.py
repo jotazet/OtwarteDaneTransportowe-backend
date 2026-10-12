@@ -597,14 +597,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
             container_input_dir = os.path.dirname(container_file_path)
 
         relative_dir = os.path.relpath(container_input_dir, settings.MEDIA_ROOT)
-        # HOST_PROJECT_PATH is the absolute path to project root on the host machine
-        host_project_path = os.environ.get('HOST_PROJECT_PATH', str(settings.BASE_DIR))
-        host_media_root = os.environ.get(
-            'HOST_MEDIA_ROOT', os.path.join(host_project_path, 'uploaded_data')
-        )
 
         # Host paths for Docker bind mounts
-        host_input_dir = os.path.join(host_media_root, relative_dir)
+        host_input_dir = os.path.join(settings.HOST_MEDIA_ROOT, relative_dir)
 
         report_dir_name = f"validation_report_{entry.id}_{random.randint(1000, 9999)}"
         container_output_dir = os.path.join(container_input_dir, report_dir_name)
@@ -656,28 +651,23 @@ def validate_gtfs_feed_task(self, entry_id: int):
             }
 
             command = ["-i", f"/input/{filename}", "-o", "/output"]
-            validator_uid = os.environ.get('UID', '1000')
-            validator_gid = os.environ.get('GID', '1000')
 
             # Bound resource usage so a malicious/zip-bomb feed cannot exhaust the host.
-            mem_limit = os.environ.get('GTFS_VALIDATOR_MEM_LIMIT', '2g')
-            pids_limit = int(os.environ.get('GTFS_VALIDATOR_PIDS_LIMIT', '512'))
             run_kwargs = dict(
                 image=settings.GTFS_VALIDATOR_IMAGE,
                 command=command,
                 volumes=volumes,
                 remove=True,
                 detach=False,
-                user=f"{validator_uid}:{validator_gid}",
+                user=f"{settings.GTFS_VALIDATOR_UID}:{settings.GTFS_VALIDATOR_GID}",
                 network_disabled=True,
-                mem_limit=mem_limit,
-                pids_limit=pids_limit,
+                mem_limit=settings.GTFS_VALIDATOR_MEM_LIMIT,
+                pids_limit=settings.GTFS_VALIDATOR_PIDS_LIMIT,
                 cap_drop=['ALL'],
                 security_opt=['no-new-privileges:true'],
             )
-            nano_cpus = os.environ.get('GTFS_VALIDATOR_NANO_CPUS')
-            if nano_cpus:
-                run_kwargs['nano_cpus'] = int(nano_cpus)
+            if settings.GTFS_VALIDATOR_NANO_CPUS is not None:
+                run_kwargs['nano_cpus'] = settings.GTFS_VALIDATOR_NANO_CPUS
 
             client.containers.run(**run_kwargs)
 

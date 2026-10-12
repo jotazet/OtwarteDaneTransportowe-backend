@@ -233,6 +233,15 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one), one shared daily limit, and one shared anonymous throttling bucket. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
 | `ALLOW_UNTRUSTED_PROXY_IPS` | Default `False`. Set to `True` only when the app is served directly to clients without a reverse proxy: it disables the startup check for an empty `TRUSTED_PROXY_CIDRS`, and the client IP is then taken from the socket address (`REMOTE_ADDR`). |
 | `PUBLIC_BASE_URL` | Currently unused (defined in settings, not read by any code). |
+| `UID` / `GID` | User the application containers run as, and the user of the GTFS validator container, so it can write its report into `uploaded_data/`. Default `1000`. |
+| `HOST_PROJECT_PATH` / `HOST_MEDIA_ROOT` | Host paths of the project and of `uploaded_data/`. The validator is started by the host's Docker daemon, so its bind mounts need host paths. Compose passes `${PWD}` and `${PWD}/uploaded_data` when unset; outside compose `HOST_MEDIA_ROOT` defaults to `HOST_PROJECT_PATH/uploaded_data`. |
+| `GTFS_VALIDATOR_MEM_LIMIT`, `GTFS_VALIDATOR_PIDS_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS` | Resource limits of the validator container. Defaults `2g`, `512` and no CPU cap (`1000000000` = one core). |
+| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis databases of the Celery broker and result backend. `docker-compose.yml` sets them to `redis://redis:6379/0` and `/1`, which overrides `.env`; the defaults (`redis://localhost:6379/0`, `/1`) are for running outside Docker. |
+| `POSTGRES_HOST` / `POSTGRES_PORT` | Database address. `docker-compose.yml` sets `postgres` and `5432`; the defaults `127.0.0.1` and `5420` (the port published on the host) are for running on the host. |
+| `DJANGO_MEDIA_ROOT` | Directory of uploaded and cached feed files and blog images inside the containers. Default `uploaded_data/` in the project directory; if you change it, `HOST_MEDIA_ROOT` must still point to the same directory on the host. |
+| `DJANGO_SECURE_REFERRER_POLICY` | `Referrer-Policy` header in `settings_prod`. Default `same-origin`. |
+| `DJANGO_SECURE_COOP` | `Cross-Origin-Opener-Policy` header in `settings_prod`. Default `same-origin`. |
+| `DJANGO_DEBUG` | Does **not** switch debug mode: `settings_dev` always sets `DEBUG=True` and `settings_prod` `DEBUG=False`. It is read only in `settings_base.py`, where `true` lets every `http://localhost:<port>` and `http://127.0.0.1:<port>` origin pass CORS and ignores `CORS_ALLOWED_ORIGIN_REGEXES`, under `settings_prod` too. Never set it in production. |
 
 ---
 

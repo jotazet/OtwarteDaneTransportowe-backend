@@ -151,9 +151,11 @@ def test_gtfs_upload_flow_correct(api_client, admin_user, normal_user, org):
     static_entry = StaticFeedEntry.objects.get(submission=submission)
 
     # 2. Run actual validation using Celery and Docker
-    os.environ['HOST_MEDIA_ROOT'] = str(settings.MEDIA_ROOT)
-
-    with override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True):
+    with override_settings(
+        CELERY_TASK_ALWAYS_EAGER=True,
+        CELERY_TASK_EAGER_PROPAGATES=True,
+        HOST_MEDIA_ROOT=str(settings.MEDIA_ROOT),
+    ):
         with patch('docker.from_env', _mock_docker_from_env(0)):
             validate_gtfs_feed_task.delay(static_entry.id)
         static_entry.refresh_from_db()
@@ -201,9 +203,9 @@ def test_gtfs_upload_flow_correct(api_client, admin_user, normal_user, org):
     )
 
 
-def test_validation_runs_configured_image(normal_user, org, settings, monkeypatch):
+def test_validation_runs_configured_image(normal_user, org, settings):
     settings.GTFS_VALIDATOR_IMAGE = 'registry.example.org/gtfs-validator:9.9.9'
-    monkeypatch.setenv('HOST_MEDIA_ROOT', str(settings.MEDIA_ROOT))
+    settings.HOST_MEDIA_ROOT = str(settings.MEDIA_ROOT)
     submission = FeedSubmission.objects.create(
         transport_organization=org,
         submitted_by=normal_user,
@@ -221,6 +223,45 @@ def test_validation_runs_configured_image(normal_user, org, settings, monkeypatc
         validate_gtfs_feed_task(entry.id)
 
     assert runs == ['registry.example.org/gtfs-validator:9.9.9']
+
+
+def test_validation_container_uses_configured_user_and_limits(normal_user, org, settings):
+    settings.HOST_MEDIA_ROOT = str(settings.MEDIA_ROOT)
+    settings.GTFS_VALIDATOR_UID = '1234'
+    settings.GTFS_VALIDATOR_GID = '5678'
+    settings.GTFS_VALIDATOR_MEM_LIMIT = '1g'
+    settings.GTFS_VALIDATOR_PIDS_LIMIT = 64
+    settings.GTFS_VALIDATOR_NANO_CPUS = 500_000_000
+    submission = FeedSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=normal_user,
+        data_type='gtfs',
+        name='Configured validator limits',
+    )
+    with patch('data_manager.signals.validate_gtfs_feed_task.delay'):
+        entry = StaticFeedEntry.objects.create(
+            submission=submission,
+            file=ContentFile(b'PK\x03\x04data', name='feed.zip'),
+        )
+
+    calls = []
+
+    class _Containers:
+        def run(self, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError('stop after recording the call')
+
+    class _DockerClient:
+        containers = _Containers()
+
+    with patch('docker.from_env', lambda: _DockerClient()):
+        validate_gtfs_feed_task(entry.id)
+
+    assert len(calls) == 1
+    assert calls[0]['user'] == '1234:5678'
+    assert calls[0]['mem_limit'] == '1g'
+    assert calls[0]['pids_limit'] == 64
+    assert calls[0]['nano_cpus'] == 500_000_000
 
 
 def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
@@ -248,9 +289,11 @@ def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
     static_entry = StaticFeedEntry.objects.get(submission=submission)
 
     # 2. Run validation which should fail and move back to step 1 (needs changes)
-    os.environ['HOST_MEDIA_ROOT'] = str(settings.MEDIA_ROOT)
-
-    with override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True):
+    with override_settings(
+        CELERY_TASK_ALWAYS_EAGER=True,
+        CELERY_TASK_EAGER_PROPAGATES=True,
+        HOST_MEDIA_ROOT=str(settings.MEDIA_ROOT),
+    ):
         with patch('docker.from_env', _mock_docker_from_env(3)):
             validate_gtfs_feed_task.delay(static_entry.id)
         static_entry.refresh_from_db()

@@ -234,6 +234,19 @@ REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS = int(os.getenv('REALTIME_FETCH_TOTAL_TIMEO
 GTFS_VALIDATOR_IMAGE = (
     os.getenv('GTFS_VALIDATOR_IMAGE') or 'ghcr.io/mobilitydata/gtfs-validator:8.0.1'
 )
+# The validator container is started by the HOST's Docker daemon, so its bind
+# mounts need the host path of MEDIA_ROOT, not the path inside this container.
+HOST_MEDIA_ROOT = os.getenv('HOST_MEDIA_ROOT', os.path.join(HOST_PROJECT_PATH, 'uploaded_data'))
+# The validator runs as the app's UID:GID so it can write its report into the
+# shared upload directory. The variables are named UID/GID in .env and compose.
+GTFS_VALIDATOR_UID = os.getenv('UID', '1000')
+GTFS_VALIDATOR_GID = os.getenv('GID', '1000')
+# Resource limits of the validator container (a zip bomb must not exhaust the
+# host). NANO_CPUS is in 1e-9 CPUs (1000000000 = one core); unset = no CPU cap.
+GTFS_VALIDATOR_MEM_LIMIT = os.getenv('GTFS_VALIDATOR_MEM_LIMIT', '2g')
+GTFS_VALIDATOR_PIDS_LIMIT = int(os.getenv('GTFS_VALIDATOR_PIDS_LIMIT', '512'))
+_gtfs_validator_nano_cpus = os.getenv('GTFS_VALIDATOR_NANO_CPUS')
+GTFS_VALIDATOR_NANO_CPUS = int(_gtfs_validator_nano_cpus) if _gtfs_validator_nano_cpus else None
 # Hard cap (bytes) for blog post images.
 MAX_IMAGE_FILE_SIZE_BYTES = int(os.getenv('MAX_IMAGE_FILE_SIZE_BYTES', str(10 * 1024 * 1024)))
 
