@@ -12,6 +12,7 @@ This documentation describes the REST API of the OtwarteDaneTransportowe (Open T
 - [Blog API](blog.md)
 - [Organizations and cases API](cases.md)
 - [Feeds API and public file downloads](feeds.md)
+- [Journey planner: admin API](planner-admin.md)
 - [Models and enums](models.md)
 - [Changelog for client developers](changelog.md)
 - [Feed workflow](../domain/feed-workflow.md)
@@ -81,6 +82,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 | Realtime submissions | No | `DataProvider` creates; `Helper`/`Admin` confirms |
 | Published feeds catalog | Yes | No writes through the public API |
 | Public feed files | Yes, published only | No writes |
+| Journey planner administration | No | `Admin` only |
 
 ---
 
@@ -281,6 +283,21 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `GET` | `/api/data_manager/feeds/{id}/` | public | Details of an organization and its published feeds |
 
 In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the feed type.
+
+### Journey planner (admin)
+
+| Method | Endpoint | Permissions | Description |
+|--------|----------|-------------|------|
+| `GET` | `/api/planner/admin/feed-candidates/` | `Admin` | Published GTFS feeds that can be added to the planner |
+| `GET/POST` | `/api/planner/admin/feeds/` | `Admin` | Feeds included in the planner graph |
+| `GET/PATCH/DELETE` | `/api/planner/admin/feeds/{id}/` | `Admin` | One planner feed (`feed_id` cannot change) |
+| `GET/POST` | `/api/planner/admin/builds/` | `Admin` | Graph builds; `POST` builds now (`202`, `409` while one runs) |
+| `GET` | `/api/planner/admin/builds/{id}/` | `Admin` | Build with per-feed outcomes and log excerpt |
+| `POST` | `/api/planner/admin/builds/{id}/activate/` | `Admin` | Serve an earlier build's graph again (rollback) |
+| `GET/PUT` | `/api/planner/admin/schedule/` | `Admin` | Build schedule: weekdays and time in UTC |
+| `GET` | `/api/planner/admin/status/` | `Admin` | Served build, running build, maintenance window, OTP health |
+
+Details: [Journey planner: admin API](planner-admin.md).
 
 ### Public feed files
 

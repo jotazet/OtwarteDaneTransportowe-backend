@@ -32,6 +32,7 @@ external reverse proxy (nginx/Caddy). The application listens locally on
 16. [Backups and restore](#16-backups-and-restore)
 17. [Security checklist](#17-security-checklist)
 18. [Troubleshooting](#18-troubleshooting)
+19. [Journey planner (OpenTripPlanner)](#19-journey-planner-opentripplanner)
 
 ---
 
@@ -49,6 +50,8 @@ define the following services:
 | `celery_validator_worker` | `feeds` queue + GTFS validator (via socket-proxy) | — |
 | `docker-socket-proxy` | Least-privilege access to the host's Docker API | — |
 | `celery_beat` | Scheduler (django-celery-beat) | — |
+| `celery_planner_worker` | `planner` queue: journey planner graph builds (profile `planner`) | — |
+| `otp` | OpenTripPlanner serving the planner graph (profile `planner`) | none (internal only) |
 | `migrate` / `init_uploads` | Startup jobs (one-off) | — |
 
 ```mermaid
@@ -693,3 +696,63 @@ needed; only the proxy mounts the socket (read-only).
 This applies to GTFS feeds only (NeTEx/other are not validated automatically and stay at stage 2
 until a Helper/Admin sets the stage). After successful validation the stage moves to **3**; after GTFS
 errors — rejection (`is_rejected`, stage 1).
+
+---
+
+## 19. Journey planner (OpenTripPlanner)
+
+The journey planner ([ADR 0008](architecture/decisions/0008-journey-planner-on-private-opentripplanner.md), [ADR 0009](architecture/decisions/0009-planner-graph-build-pipeline.md)) adds two services in the compose profile `planner`:
+
+- `otp`: OpenTripPlanner serving the active graph. It has no published port and sits on the `planner` network with `web` and the planner worker only (not with Postgres, Redis or the Docker proxy). It needs outbound internet for the realtime URLs of feeds that ODT does not proxy.
+- `celery_planner_worker`: the `planner` queue. It builds graphs in short-lived OTP containers through `docker-socket-proxy` (no network, the app's UID:GID, memory limits) and stops/starts `odt-otp`.
+
+Without the profile, nothing of the planner runs and the rest of ODT is unchanged.
+
+### Sizing (measured 2026-10-12, OTP 2.10.0, all of Poland)
+
+| Step | Memory | Time (swap in RAM) |
+| --- | --- | --- |
+| Serving, 36 feeds, OSM cropped to stops (`-Xmx6g`) | ~7 GB container (5 GB heap ran out under load) | starts in ~45 s |
+| Graph build (`--loadStreet`) | ~15 GB (8 GB RAM + 7 GB swap) | ~13 min |
+| Street graph (only when OSM, OTP image or feed area change) | ~13 GB (8 GB RAM + 5 GB swap) | ~8 min |
+| Single-feed test (largest: Warsaw) | ~6 GB | ≤ 30 s |
+
+- **Builds and the planner never use memory at the same time.** A build stops the serving OTP first (maintenance window; the OTP-backed endpoints answer `503`), so the server needs RAM for the app stack plus ~7 GB, and swap for the rest of a build.
+- **Production VPS.** It has 11 GB RAM, so it needs **at least 10 GB of swap**. Build times on disk swap are longer than in the table and should be measured on the first build.
+- **Disk.** Two graphs (~2 GB each), the street graph (~1.3 GB), the OSM extract (~2 GB for Poland) and snapshots of every feed's last good version (~0.5 GB).
+
+### First run
+
+```bash
+# 1. Secrets and settings in .env (see .env.example, "Journey planner")
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # -> PLANNER_INTERNAL_TOKEN
+# COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/opt/odt/planner_data
+
+# 2. The OSM extract the street graph is built from (Geofabrik, ~2 GB for Poland)
+mkdir -p planner_data/osm
+curl -L -o planner_data/osm/region.osm.pbf.tmp https://download.geofabrik.de/europe/poland-latest.osm.pbf
+mv planner_data/osm/region.osm.pbf.tmp planner_data/osm/region.osm.pbf
+
+# 3. Start the services
+./scripts/deploy.sh up -d --build
+```
+
+Then, in the admin panel (or the admin API under `/api/planner/admin/`):
+
+1. Add the feeds: one feed per service, because duplicates double the trips.
+2. Set the schedule.
+3. Build now.
+
+The first build also builds the street graph. Until then `otp` waits for a graph instead of restarting.
+
+### Operations
+
+- **Status and logs.** Build status, per-feed outcomes and OTP's log excerpts are in `GET /api/planner/admin/builds/{id}/`; worker logs are in `./scripts/deploy.sh logs celery_planner_worker`.
+- **Failed builds.** A failed build leaves the previous graph serving. `POST /api/planner/admin/builds/{id}/activate/` serves an earlier graph again (only the served one and the newest other one are kept).
+- **Deploys.** Do not deploy during the build window: `up -d` would start `otp` next to the build. If a worker dies mid-build anyway, the watchdog marks the build `build_interrupted` within ~15 minutes and restarts the active graph.
+- **New OSM.** Replace `planner_data/osm/region.osm.pbf` atomically (download to a temporary name, then `mv`); the next build rebuilds the street graph.
+- **New OTP version.**
+  1. Change `PLANNER_OTP_IMAGE` in `.env`.
+  2. Run `up -d` so the serving container uses the new image too.
+  3. Build now: the next build re-tests every feed and rebuilds the street graph, and graphs built with the old image can no longer be activated.
+- **Backups.** Back up `planner_data/snapshots/` (the last good version of each feed cannot be recreated). Graphs, the street graph and the OSM extract can be rebuilt or downloaded again.

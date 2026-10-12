@@ -2,6 +2,15 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10-13: journey planner administration
+
+Not breaking: new routes only, all restricted to the `Admin` group.
+
+- `/api/planner/admin/` adds what the team needs to run the journey planner: choosing published GTFS feeds for the OpenTripPlanner graph, building it on a schedule or on demand, per-feed build outcomes (`fresh`, `stale`, `excluded` with error codes), rollback to the previous graph and a status endpoint. See [Journey planner: admin API](planner-admin.md).
+- `GET /feed/rt/{realtime_submission_id}/{endpoint_type}/` is not throttled for requests carrying the planner's internal token (`X-ODT-Internal-Token`), which OTP sends when it polls proxied realtime files over the internal network. Nothing changes for other clients.
+
+---
+
 ## 2026-10-12: catalogue refresh times, fetch error links and contract corrections
 
 Not breaking for API clients: fields are only added, the schema access change (3) affects only operator accounts, and the corrected docs (4) describe behaviour that was already there.

@@ -26,8 +26,9 @@
 ```
 
 - Consumers find published feeds in the catalogue (`/api/data_manager/feeds/`). Uploaded files and copies of proxied sources (`hide_original`) are served by the API host under `/feed/...`; sources that are not proxied are listed with their original URL.
-- Decisions: [0001 two repositories](decisions/0001-separate-backend-and-frontend-repositories.md), [0002 Django + DRF + PostgreSQL](decisions/0002-django-drf-and-postgresql.md), [0003 JWT and roles](decisions/0003-jwt-and-group-based-roles.md), [0004 Celery + Redis](decisions/0004-celery-and-redis-for-background-work.md), [0005 feed validation](decisions/0005-feed-validation.md), [0006 error codes](decisions/0006-api-error-codes.md) (proposed), [0007 uv and ruff](decisions/0007-uv-and-ruff.md).
+- Decisions: [0001 two repositories](decisions/0001-separate-backend-and-frontend-repositories.md), [0002 Django + DRF + PostgreSQL](decisions/0002-django-drf-and-postgresql.md), [0003 JWT and roles](decisions/0003-jwt-and-group-based-roles.md), [0004 Celery + Redis](decisions/0004-celery-and-redis-for-background-work.md), [0005 feed validation](decisions/0005-feed-validation.md), [0006 error codes](decisions/0006-api-error-codes.md) (proposed), [0007 uv and ruff](decisions/0007-uv-and-ruff.md), [0008 journey planner on private OTP](decisions/0008-journey-planner-on-private-opentripplanner.md) (proposed), [0009 planner graph builds](decisions/0009-planner-graph-build-pipeline.md) (proposed).
 - Workflow of a submission: [feed workflow](../domain/feed-workflow.md). Operations: [deployment](../deployment.md).
+- **Journey planner** (compose profile `planner`): a private OpenTripPlanner container (`otp`) with no published port, on a network shared only with `web` and the planner worker, built and switched by `celery_planner_worker` (queue `planner`, Docker via `docker-socket-proxy`). Admin API under `/api/planner/admin/`. See [journey planner](../domain/journey-planner.md), [ADR 0008](decisions/0008-journey-planner-on-private-opentripplanner.md) and [ADR 0009](decisions/0009-planner-graph-build-pipeline.md).
 
 ## Backend structure
 
@@ -65,15 +66,24 @@ OtwarteDaneTransportowe/
 │       ├── urls.py
 │       ├── views.py
 │       └── serializers.py
-└── data_manager/
-    ├── models.py              # FeedSubmission, StaticFeedEntry, RealtimeSubmission, ...
-    ├── tasks.py               # Celery tasks: feed validation, fetching, dispatchers run by Celery beat
-    ├── scheduler.py           # low-level fetch functions called by the tasks (no scheduling)
-    ├── validators.py          # in-process feed content checks (incl. GTFS-RT protobuf parsing)
-    └── api/
-        ├── urls.py
-        ├── views.py
-        └── serializers.py
+├── data_manager/
+│   ├── models.py              # FeedSubmission, StaticFeedEntry, RealtimeSubmission, ...
+│   ├── tasks.py               # Celery tasks: feed validation, fetching, dispatchers run by Celery beat
+│   ├── scheduler.py           # low-level fetch functions called by the tasks (no scheduling)
+│   ├── validators.py          # in-process feed content checks (incl. GTFS-RT protobuf parsing)
+│   └── api/
+│       ├── urls.py
+│       ├── views.py
+│       └── serializers.py
+└── planner/
+    ├── models.py              # PlannerFeed, GraphBuild
+    ├── services.py            # build requests, rollback, build schedule (django-celery-beat)
+    ├── pipeline.py            # graph build steps, activation, recovery (Celery only)
+    ├── otp_runtime.py         # Docker (build containers, serving OTP) and OTP HTTP
+    ├── otp_config.py          # generated build-config/otp-config/router-config
+    ├── osm.py                 # OSM filtering and cropping to the feeds' area (osmium)
+    ├── tasks.py               # Celery tasks: builds, scheduled builds, watchdog
+    └── api/                   # /api/planner/admin/
 ```
 
 Main DRF routers:
@@ -89,6 +99,8 @@ Main DRF routers:
 /api/data_manager/realtime-endpoints/
 /api/data_manager/feeds/
 /api/users/
+/api/planner/admin/feeds/
+/api/planner/admin/builds/
 ```
 
 Other `data_manager` routes (plain views, not routers):
