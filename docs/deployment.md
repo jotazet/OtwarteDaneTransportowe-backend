@@ -208,7 +208,7 @@ CELERY_FEEDS_CONCURRENCY=1
 
 # ───────────────────────── Reverse proxy (XFF trust limit) ─────────────────────────
 # CIDRs of the trusted proxy (e.g. the Docker network or the proxy address) — client IPs for
-# the blog reaction limit and anonymous throttling. Required: settings_prod refuses to start when empty.
+# the blog reaction limit and DRF throttling. Required: settings_prod refuses to start when empty.
 TRUSTED_PROXY_CIDRS=172.16.0.0/12
 # Only when the app is served directly to clients, without a reverse proxy:
 # ALLOW_UNTRUSTED_PROXY_IPS=True
@@ -230,7 +230,7 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `CSRF_TRUSTED_ORIGINS` | Required for POST behind a TLS proxy. |
 | `FEED_AUTH_ENCRYPTION_KEY` | At-rest encryption of feed credentials. |
 | `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). |
-| `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks, and the client IP is its rightmost address that is not inside them (entries to the left are whatever the client sent). List **every** proxy hop, including a CDN in front of nginx, or its address becomes the client IP of everyone behind it; keep the networks as narrow as possible, because any address inside them is treated as a proxy. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit. DRF's anonymous throttling does not use this setting. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
+| `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks, and the client IP is its rightmost address that is not inside them (entries to the left are whatever the client sent). List **every** proxy hop, including a CDN in front of nginx, or its address becomes the client IP of everyone behind it; keep the networks as narrow as possible, because any address inside them is treated as a proxy. DRF throttling (`THROTTLE_*`) counts anonymous requests per this client IP too. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit, and all anonymous visitors share one bucket of each throttle (`429` for everyone once `THROTTLE_ANON` is reached). The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
 | `ALLOW_UNTRUSTED_PROXY_IPS` | Default `False`. Set to `True` only when the app is served directly to clients without a reverse proxy: it disables the startup check for an empty `TRUSTED_PROXY_CIDRS`, and the client IP is then taken from the socket address (`REMOTE_ADDR`). |
 | `PUBLIC_BASE_URL` | Currently unused (defined in settings, not read by any code). |
 | `UID` / `GID` | User the application containers run as, and the user of the GTFS validator container, so it can write its report into `uploaded_data/`. Default `1000`. |
@@ -655,7 +655,7 @@ has `DOCKER_HOST=tcp://docker-socket-proxy:2375`.
 → Make sure `REDIS_CACHE_URL` is set (a shared cache is
 required for the lock and throttling across processes).
 
-**Blog reactions: everyone overwrites each other's reaction / one reaction globally**
+**Blog reactions: everyone overwrites each other's reaction / one reaction globally; anonymous visitors get `429` together**
 → The backend sees everyone with a single IP (the proxy's address). Set `TRUSTED_PROXY_CIDRS`
 to the proxy network (e.g. `172.16.0.0/12,127.0.0.1/32`) and make sure nginx/Caddy
 forwards `X-Forwarded-For`. Verification: `docker compose exec web python

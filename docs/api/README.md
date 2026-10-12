@@ -328,7 +328,7 @@ Most common responses:
 | `401` | Missing or invalid token |
 | `403` | Valid token, but the required role/permission is missing |
 | `404` | Object does not exist or is not publicly available |
-| `429` | Rate limit: DRF throttling (`anon`, `user`, `login`, `feed_download`; rates set by the `THROTTLE_*` settings) or the per-IP blog reaction limit |
+| `429` | Rate limit: DRF throttling (`anon`, `user`, `login`, `feed_download`; rates set by the `THROTTLE_*` settings; anonymous requests are counted per client IP) or the per-IP blog reaction limit |
 
 ### Multipart nested fields
 
