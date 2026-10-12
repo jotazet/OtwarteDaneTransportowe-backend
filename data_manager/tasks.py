@@ -93,7 +93,8 @@ def _seconds_until(dt) -> int:
 def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
     """
     Queue an immediate fetch for hide_original endpoints of a published submission.
-    Returns the number of newly scheduled loops.
+    Returns the number of newly scheduled loops. Request code calls it from
+    transaction.on_commit, so the worker sees the committed endpoints.
     """
     from data_manager.models import (
         FETCH_STATUS_ACTIVE,
@@ -114,7 +115,11 @@ def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
         reserve_ttl = interval + RT_ALIVE_TTL_BUFFER_SECONDS
         if not cache.add(_rt_alive_key(endpoint_id), '1', timeout=reserve_ttl):
             continue
-        fetch_realtime_endpoint_task.apply_async(args=[endpoint_id], countdown=0)
+        # Called from requests: a broker outage must not fail the write. Release
+        # the reservation so the periodic bootstrap can seed the loop instead.
+        if not enqueue(fetch_realtime_endpoint_task, endpoint_id):
+            cache.delete(_rt_alive_key(endpoint_id))
+            continue
         scheduled += 1
     return scheduled
 

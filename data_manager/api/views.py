@@ -874,7 +874,11 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         return serializer_class(submission, context={'request': request})
 
     def update(self, request, *args, **kwargs):
-        from data_manager.tasks import enqueue, validate_realtime_submission_task
+        from data_manager.tasks import (
+            enqueue,
+            schedule_realtime_endpoint_fetches,
+            validate_realtime_submission_task,
+        )
 
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
@@ -972,24 +976,24 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                     transaction.on_commit(
                         lambda: enqueue(validate_realtime_submission_task, instance.id)
                     )
-        if endpoints_data is not None and not restricted_realtime:
-            if instance.current_stage == 4:
-                # Endpoints were replaced (old fetch loops died with their
-                # rows); re-seed the self-scheduling loops for the new ones
-                # without waiting for the periodic bootstrap.
-                from data_manager.tasks import schedule_realtime_endpoint_fetches
-
-                schedule_realtime_endpoint_fetches(instance.id)
+                    if instance.current_stage == 4:
+                        # Endpoints were replaced (old fetch loops died with their
+                        # rows); re-seed the self-scheduling loops for the new ones
+                        # without waiting for the periodic bootstrap.
+                        transaction.on_commit(
+                            lambda: schedule_realtime_endpoint_fetches(instance.id)
+                        )
         if can_confirm_feeds(request.user):
-            from data_manager.tasks import schedule_realtime_endpoint_fetches
-
             _apply_stage_transition(
                 request,
                 instance,
                 history_model=RealtimeSubmissionHistory,
                 # Publish side-effect (drift vs static made explicit): seed the
-                # realtime fetch loops; static feeds rely on the Beat schedule.
-                on_publish=lambda rts: schedule_realtime_endpoint_fetches(rts.id),
+                # realtime fetch loops after commit; static feeds rely on the
+                # Beat schedule.
+                on_publish=lambda rts: transaction.on_commit(
+                    lambda: schedule_realtime_endpoint_fetches(rts.id)
+                ),
             )
         # Re-read: the prefetched history predates the rows written above.
         # get_object() already authorized access, so the unfiltered queryset is fine.
@@ -1147,5 +1151,5 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
         from data_manager.tasks import _rt_alive_key, schedule_realtime_endpoint_fetches
 
         cache.delete(_rt_alive_key(endpoint.id))
-        schedule_realtime_endpoint_fetches(endpoint.submission_id)
+        transaction.on_commit(lambda: schedule_realtime_endpoint_fetches(endpoint.submission_id))
         return Response(self.get_serializer(endpoint).data)
