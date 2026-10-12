@@ -12,6 +12,7 @@ import socket
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.test import TestCase
 from rest_framework.test import APIClient
 
 from cases.models import TransportOrganization
@@ -83,7 +84,7 @@ def _static_submission(org, user, *, data_type='gtfs', published=True):
 
 
 def _gbfs_payload(org, **overrides):
-    # static_submission: None is sent explicitly to work around the bug pinned by
+    # static_submission: None is accepted as well as an omitted field, see
     # test_documented_gbfs_payload_without_static_submission_is_accepted.
     payload = {
         'transport_organization': org.id,
@@ -136,7 +137,10 @@ def _post(user, payload):
     client = APIClient()
     if user is not None:
         client.force_authenticate(user=user)
-    return client.post(URL, payload, format='json')
+    # Validation is queued from transaction.on_commit, which never fires inside
+    # the test's transaction unless captured.
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        return client.post(URL, payload, format='json')
 
 
 def _validation_queued_for(celery_send_task):
