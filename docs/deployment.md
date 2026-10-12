@@ -468,7 +468,9 @@ The application listens on `127.0.0.1:8000`. Put a reverse proxy with TLS in fro
 api.example.org {
     reverse_proxy 127.0.0.1:8000 {
         header_up X-Forwarded-Proto {scheme}
-        header_up X-Forwarded-For {remote_host}
+        # One value: the client IP as Caddy resolved it; without trusted_proxies, the
+        # connecting address (see "Client IP" below).
+        header_up X-Forwarded-For {client_ip}
     }
 }
 ```
@@ -511,6 +513,56 @@ in compose (`WEB_HOST_BIND` / `WEB_HOST_PORT`) so that it is reachable by the pr
 > The proxy must forward **all** traffic to the application, including the `/static/` path
 > (the `location /` above ensures this). If you use only rules such as
 > `location /api/`, static files (admin/Swagger CSS) will not reach Django.
+
+### Client IP: CDN and the frontend
+
+Anonymous clients are told apart by IP: DRF throttling (`THROTTLE_ANON`) and the blog reaction
+limits. Two hops can hide it ([ADR 0011](architecture/decisions/0011-client-ip-behind-cloudflare-and-ssr.md)):
+
+- **A CDN in front of Caddy (Cloudflare).** Caddy ignores an incoming `X-Forwarded-For`
+  unless the request comes from `trusted_proxies`, so without them the backend sees the
+  CDN edge server's address: everyone routed through it shares one throttle bucket and one
+  reaction per post. Add a global block at the top of the Caddyfile; the site blocks keep
+  `header_up X-Forwarded-For {client_ip}`, as in Option A above and in the frontend's
+  `docs/deployment.md`:
+
+  ```caddy
+  {
+      servers {
+          # Cloudflare's current ranges (https://www.cloudflare.com/ips/) and the Docker
+          # networks the frontend's server-side rendering connects from.
+          trusted_proxies static <ranges> 172.16.0.0/12
+          # Cloudflare sends CF-Connecting-IP; the frontend sends X-Forwarded-For.
+          client_ip_headers CF-Connecting-IP X-Forwarded-For
+      }
+  }
+  ```
+
+  The `trusted_proxies` line with the current list:
+
+  ```bash
+  echo "trusted_proxies static $( (curl -s https://www.cloudflare.com/ips-v4; echo; curl -s https://www.cloudflare.com/ips-v6) | xargs)"
+  ```
+
+  Update it when Cloudflare changes its ranges. `TRUSTED_PROXY_CIDRS` does not list the CDN:
+  Caddy resolves the client IP and sends a single value.
+- **The frontend on the same host.** The frontend renders public pages on the server and calls
+  the API for them. Through the CDN, all those calls would carry this machine's address and
+  share one `anon` bucket, so public pages fail for everyone above `THROTTLE_ANON`. With
+  `API_HOSTNAME` in the frontend's `.env` (see its `docs/deployment.md`), its container
+  resolves the API host to this machine and reaches Caddy directly, with the visitor's IP in
+  `X-Forwarded-For`, which Caddy accepts from `172.16.0.0/12` (above). Host and TLS stay the
+  public ones, so URLs the API builds, such as feed download links, stay correct.
+
+Order: deploy the frontend, then reload Caddy right after it. Until both are done, all
+server-side rendering shares one bucket.
+
+Verification: add a reaction to a blog post you have not reacted to yet; the newest stored
+address must be your own IP, not a Cloudflare one:
+
+```bash
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT ip_address FROM blog_reaction ORDER BY date DESC LIMIT 1"'
+```
 
 ---
 
@@ -594,6 +646,7 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 - [ ] `CSRF_TRUSTED_ORIGINS` + `CORS_ALLOWED_ORIGINS` narrowed to the frontend
 - [ ] Reverse proxy forwards `X-Forwarded-Proto: https`
 - [ ] `TRUSTED_PROXY_CIDRS` set to the reverse proxy's addresses (production refuses to start without it)
+- [ ] Behind a CDN: Caddy trusts its ranges and sends `X-Forwarded-For {client_ip}` ([section 13](#client-ip-cdn-and-the-frontend))
 - [ ] `postgres`/`redis`/`web` ports not exposed publicly (`127.0.0.1` only)
 - [ ] `docker-socket-proxy` running; rootless Docker / a separate validator microservice considered
 - [ ] `.env` with `600` permissions, outside the git repository
@@ -660,6 +713,13 @@ required for the lock and throttling across processes).
 to the proxy network (e.g. `172.16.0.0/12,127.0.0.1/32`) and make sure nginx/Caddy
 forwards `X-Forwarded-For`. Verification: `docker compose exec web python
 manage.py check` must not report `blog.W001`.
+
+**Blog reactions are stored with Cloudflare addresses**
+→ Caddy does not trust the CDN, so it sends the edge server's address. Configure
+`trusted_proxies` and `header_up X-Forwarded-For {client_ip}` ([section 13](#client-ip-cdn-and-the-frontend)).
+
+**Public pages of the frontend show a load error or HTTP 500 under traffic; the API logs `Too Many Requests`**
+→ Server-side rendering shares one `anon` bucket: see [section 13](#client-ip-cdn-and-the-frontend).
 
 **Large uploads fail with error 413**
 → Increase `client_max_body_size` in nginx and, if needed, `MAX_FEED_FILE_SIZE_BYTES`.
