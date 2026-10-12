@@ -83,32 +83,37 @@ Base endpoint:
 **List (`GET /api/cases/transport-organizations/`):**
 
 ```json
-[
-  {
-    "id": 5,
-    "region": "Mazowieckie",
-    "transport_organization": "ZTM Warszawa",
-    "website": "https://www.wtp.waw.pl/",
-    "contact_email": "kontakt@example.com",
-    "phone_number": "+48123456789",
-    "is_public": true,
-    "data_providers": [
-      {
-        "id": 1,
-        "name": "ZTM Warszawa"
+{
+  "count": 1,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": 5,
+      "region": "Mazowieckie",
+      "transport_organization": "ZTM Warszawa",
+      "website": "https://www.wtp.waw.pl/",
+      "contact_email": "kontakt@example.com",
+      "phone_number": "+48123456789",
+      "is_public": true,
+      "data_providers": [
+        {
+          "id": 1,
+          "name": "ZTM Warszawa"
+        }
+      ],
+      "created_at": "2026-04-27T10:00:00Z",
+      "updated_at": "2026-04-27T10:00:00Z",
+      "latest_status": {
+        "id": 10,
+        "status": "requested",
+        "status_display": "Data Requested",
+        "date": "2026-04-27T10:00:00Z",
+        "description": "Wyslano wniosek."
       }
-    ],
-    "created_at": "2026-04-27T10:00:00Z",
-    "updated_at": "2026-04-27T10:00:00Z",
-    "latest_status": {
-      "id": 10,
-      "status": "requested",
-      "status_display": "Data Requested",
-      "date": "2026-04-27T10:00:00Z",
-      "description": "Wyslano wniosek."
     }
-  }
-]
+  ]
+}
 ```
 
 **Details (`GET /api/cases/transport-organizations/{id}/`):**

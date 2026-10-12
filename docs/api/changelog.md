@@ -218,7 +218,7 @@ as their own, and the interface allowed them to overwrite it.
 
 - ❌ do not use `post.your_reaction` from data fetched in a server component,
 - ✅ in a client component, fetch your own state from `/api/blog/reactions/mine/`
-  (in this repo done in `ReactionPanel`; helper: `fetchMyReactions()` in
+  (in the frontend repository done in `ReactionPanel`; helper: `fetchMyReactions()` in
   `lib/api/blog.ts`),
 - `reactions_summary` (global counters) remains correct from SSR — it is public
   data, independent of identity.

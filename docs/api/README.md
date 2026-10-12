@@ -21,7 +21,7 @@ This documentation describes the REST API of the OtwarteDaneTransportowe (Open T
 
 ## Quick start
 
-The backend is Django 6 + Django REST Framework. The API is divided into three main areas:
+The backend is Django 6 + Django REST Framework. The API is divided into four main areas:
 
 - `/api/blog/` - blog posts and reactions.
 - `/api/cases/` - data providers, transport organizations and case statuses.
@@ -41,7 +41,7 @@ For requests that require login, the client sends:
 Authorization: Bearer <access_token>
 ```
 
-Public list endpoints, blog reads, organization reads, reactions and downloads of published feeds do not require a token.
+Blog reads, reads of cases (data providers, case statuses, transport organizations), the published feed catalogue (`/api/data_manager/feeds/`), blog reactions and downloads of published feeds do not require a token. All other `/api/data_manager/` lists (submissions, static feed entries, realtime endpoints, `proxy-feeds`, fetch errors) and `/api/users/` require login.
 
 ---
 
@@ -55,7 +55,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 - `DataProvider`
 - `Helper`
 
-`Admin` also applies to users with `is_staff=True` or `is_superuser=True`.
+`Admin` permissions also apply to Django superusers (`is_superuser=True`); `is_staff` alone grants nothing in the API. User management (`/api/users/`) and editing a feed source at stages 2–4 require membership in the `Admin` group itself — a superuser without the group gets `403` there.
 
 ### Role meanings
 
@@ -152,14 +152,14 @@ DRF browsable API session login/logout. Useful for development; a production cli
 
 ### List contract (pagination)
 
-Every list endpoint returns the standard DRF envelope:
+Every list endpoint returns the standard DRF envelope (the only exception is `GET /api/data_manager/submissions/`, which is intentionally not paginated and returns `{user, static, realtime}`):
 
 ```json
 { "count": 123, "next": "...?page=2", "previous": null, "results": [ ... ] }
 ```
 
-By default 50 items per page (`page_size` up to 200); exceptions (e.g. blog: 4,
-fetch errors: 25) are described with the endpoints.
+By default 50 items per page (`page_size` up to 200). Exceptions: blog posts 4 per
+page (max 50); fetch errors and `proxy-feeds` 25 per page (max 100).
 
 ### System
 
@@ -168,9 +168,9 @@ fetch errors: 25) are described with the endpoints.
 | `GET` | `/admin/` | Django staff/admin | Django admin panel |
 | `POST` | `/api/auth/token/` | public | Obtain JWT `access` and `refresh` |
 | `POST` | `/api/auth/token/refresh/` | public | Refresh JWT `access` |
-| `GET` | `/api/schema/` | public | OpenAPI schema |
-| `GET` | `/api/schema/swagger-ui/` | public | Swagger UI |
-| `GET` | `/api/schema/redoc/` | public | ReDoc |
+| `GET` | `/api/schema/` | public when `DEBUG`, otherwise `is_staff` only | OpenAPI schema |
+| `GET` | `/api/schema/swagger-ui/` | public when `DEBUG`, otherwise `is_staff` only | Swagger UI |
+| `GET` | `/api/schema/redoc/` | public when `DEBUG`, otherwise `is_staff` only | ReDoc |
 | `GET` | `/api-auth/` | public/dev | Browsable API login/logout |
 
 ### Users (`django.contrib.auth.models.User`)
@@ -219,6 +219,7 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `PATCH` | `/api/blog/posts/{id}/` | own: `Blogger`; any: `Editor`/`Admin` | Partial post edit |
 | `DELETE` | `/api/blog/posts/{id}/` | own: `Blogger`; any: `Editor`/`Admin` | Delete a post |
 | `POST` | `/api/blog/reactions/{post_id}/` | public | Add/change/remove a reaction per IP |
+| `GET` | `/api/blog/reactions/mine/?post_ids=1,2,3` | public | The caller's own reactions, resolved from their IP; read it from the browser, not during SSR |
 
 ### Cases
 
@@ -256,9 +257,9 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `GET` | `/api/data_manager/static-feed-entries/{id}/` | owner or `Helper`/`Admin` | Details of a single static feed with its fetch status |
 | `POST` | `/api/data_manager/static-feed-entries/{id}/pause-fetch/` | `Helper`/`Admin` | Manually pause fetching of a static feed |
 | `POST` | `/api/data_manager/static-feed-entries/{id}/resume-fetch/` | `Helper`/`Admin` | Resume fetching of a static feed and cancel the retry block |
-| `GET` | `/api/data_manager/proxy-feeds/` | `DataProvider`/`Helper`/`Admin` | A single, paginated list of all proxied feeds (static + realtime) for pausing/resuming |
-| `GET` | `/api/data_manager/fetch-errors/?days=7` | `DataProvider`/`Helper`/`Admin` | Global, paginated list of fetch errors: a provider sees their own feeds, helper/admin see all |
-| `GET` | `/api/data_manager/submissions/` | `DataProvider`/`Helper`/`Admin` | Combined list of the logged-in user's own static and realtime submissions |
+| `GET` | `/api/data_manager/proxy-feeds/` | logged in | A single, paginated list of proxied feeds (static + realtime): a provider sees their own, helper/admin see all. Pausing/resuming (`pause-fetch`/`resume-fetch`) is `Helper`/`Admin` only |
+| `GET` | `/api/data_manager/fetch-errors/?days=7` | logged in | Global, paginated list of fetch errors: a provider sees their own feeds, helper/admin see all |
+| `GET` | `/api/data_manager/submissions/` | `DataProvider`/`Helper`/`Admin` | Combined list of the logged-in user's own static and realtime submissions (not paginated) |
 | `GET` | `/api/data_manager/realtime-submissions/` | `DataProvider`/`Helper`/`Admin` | List of realtime submissions: a provider sees their own, helper/admin see all |
 | `GET` | `/api/data_manager/realtime-submissions/eligible-static-submissions/{id-organizacji}/` | `DataProvider`/`Helper`/`Admin` | Published static submissions of the given organization to which a realtime feed can be added |
 | `GET` | `/api/data_manager/realtime-submissions/eligible-static-submissions/{id-organizacji}/{typ}/` | `DataProvider`/`Helper`/`Admin` | Same, filtered by `gtfs`, `netex` or `other` |
@@ -322,7 +323,7 @@ Most common responses:
 | `401` | Missing or invalid token |
 | `403` | Valid token, but the required role/permission is missing |
 | `404` | Object does not exist or is not publicly available |
-| `429` | Per-IP reaction limit |
+| `429` | Rate limit: DRF throttling (`anon`, `user`, `login`, `feed_download`; rates set by the `THROTTLE_*` settings) or the per-IP blog reaction limit |
 
 ### Multipart nested fields
 

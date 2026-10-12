@@ -23,7 +23,7 @@ The full submission lifecycle (stages, rejections, fetch errors and pauses) is d
 GET /api/data_manager/submissions/
 ```
 
-The endpoint requires JWT and returns, in a single response, the logged-in user's own submissions: static (`feed-submissions`) and realtime (`realtime-submissions`). The optional query param `transport_organization` filters both types by organization.
+The endpoint requires JWT and returns, in a single response (not paginated), the logged-in user's own submissions: static (`feed-submissions`) and realtime (`realtime-submissions`). The optional query param `transport_organization` filters both types by organization.
 
 ```json
 {
@@ -73,7 +73,7 @@ Base endpoint:
 - `POST` - `DataProvider` or `Admin`.
 - `GET detail` - owner or `Helper`/`Admin`.
 - `PUT/PATCH` - owner (`DataProvider`) subject to the **editing restrictions** below; **Helper** may only **confirm/reject** (`stage`, `rejection_cause`); **Admin** (the `Admin` group) may edit the submission content as well as confirm/reject.
-- `DELETE` - owner only when `current_stage=1` and the submission is not rejected; `Admin` may delete any submission.
+- `DELETE` - `Admin` only (the `Admin` group or a superuser); anyone else, including the owner, gets `403` (submissions are part of the review audit trail).
 
 **Editing restrictions for the owner (static feed):**
 
@@ -101,20 +101,25 @@ Base endpoint:
 **List:**
 
 ```json
-[
-  {
-    "id": 37,
-    "transport_organization": 5,
-    "data_type": "gtfs",
-    "current_stage": 3,
-    "current_stage_label": "Step 3: Admin confirmation",
-    "is_rejected": false,
-    "published_at": null,
-    "created_at": "2026-04-27T10:00:00Z",
-    "updated_at": "2026-04-27T10:00:00Z",
-    "has_rejection_cause": false
-  }
-]
+{
+  "count": 1,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": 37,
+      "transport_organization": 5,
+      "data_type": "gtfs",
+      "current_stage": 3,
+      "current_stage_label": "Step 3: Admin confirmation",
+      "is_rejected": false,
+      "published_at": null,
+      "created_at": "2026-04-27T10:00:00Z",
+      "updated_at": "2026-04-27T10:00:00Z",
+      "has_rejection_cause": false
+    }
+  ]
+}
 ```
 
 **Detail:**
@@ -252,8 +257,8 @@ Base endpoint:
 - `GET list` - `DataProvider` sees its own; `Helper`/`Admin` sees all.
 - `POST` - `DataProvider` or `Admin`.
 - `GET detail` - owner or `Helper`/`Admin`.
-- `PUT/PATCH` - owner (`DataProvider`) subject to the **editing restrictions** below; `Helper`/`Admin` may edit fully as well as confirm/reject.
-- `DELETE` - owner only at stage 1 and without a rejection; `Admin` may delete any submission.
+- `PUT/PATCH` - owner (`DataProvider`) subject to the **editing restrictions** below; **Helper** may only **confirm/reject** (`stage`, `rejection_cause`); **Admin** (the `Admin` group) may edit the submission content at any stage as well as confirm/reject.
+- `DELETE` - `Admin` only (the `Admin` group or a superuser); anyone else, including the owner, gets `403`.
 
 **Editing restrictions for the owner (realtime feed):**
 
@@ -264,7 +269,7 @@ Base endpoint:
 - **Forbidden from stage 2:** **`name`**, the feed **`url`**, **`auth_type`**, **`auth_value`**, **`is_original`**, **`hide_original`**, adding/removing endpoints, changing `transport_organization` / `static_submission` / `protocol`.
 - With restricted editing, a shortened endpoint object can be sent, e.g. `{"endpoint_type": "gbfs", "interval": 120}` — missing fields are filled in from the database; an attempt to change a locked field returns a validation error.
 - Changing only **`interval`** does **not** re-run the link validation task and does not delete endpoint records.
-- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change the URL/file at stages 2–4; other fields according to role.
+- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background (a failure rejects it).
 
 **List query params:**
 
@@ -287,30 +292,35 @@ GET /api/data_manager/realtime-submissions/eligible-static-submissions/5/other/
 No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `DataProvider` sees only its own successfully completed submissions, while `Helper`/`Admin` sees all of them for the organization. Only static feeds that still have some allowed realtime protocol left are returned.
 
 ```json
-[
-  {
-    "id": 37,
-    "transport_organization": 5,
-    "submitted_by": 12,
-    "data_type": "gtfs",
-    "name": "GTFS ZTM",
-    "current_stage": 4,
-    "current_stage_label": "Step 4: Complete",
-    "published_at": "2026-04-27T10:00:00Z",
-    "allowed_realtime_protocols": ["gtfs_rt"]
-  },
-  {
-    "id": 38,
-    "transport_organization": 5,
-    "submitted_by": 12,
-    "data_type": "netex",
-    "name": "NeTEx ZTM",
-    "current_stage": 4,
-    "current_stage_label": "Step 4: Complete",
-    "published_at": "2026-04-27T10:00:00Z",
-    "allowed_realtime_protocols": ["siri"]
-  }
-]
+{
+  "count": 2,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": 37,
+      "transport_organization": 5,
+      "submitted_by": 12,
+      "data_type": "gtfs",
+      "name": "GTFS ZTM",
+      "current_stage": 4,
+      "current_stage_label": "Step 4: Complete",
+      "published_at": "2026-04-27T10:00:00Z",
+      "allowed_realtime_protocols": ["gtfs_rt"]
+    },
+    {
+      "id": 38,
+      "transport_organization": 5,
+      "submitted_by": 12,
+      "data_type": "netex",
+      "name": "NeTEx ZTM",
+      "current_stage": 4,
+      "current_stage_label": "Step 4: Complete",
+      "published_at": "2026-04-27T10:00:00Z",
+      "allowed_realtime_protocols": ["siri"]
+    }
+  ]
+}
 ```
 
 **Create GTFS-RT:**
@@ -442,20 +452,27 @@ This is not a list of individual feeds, but a list of transport organizations th
 **List (`GET /api/data_manager/feeds/`):**
 
 ```json
-[
-  {
-    "id": 5,
-    "region": "Mazowieckie",
-    "transport_organization": "ZTM Warszawa",
-    "website": "https://www.wtp.waw.pl/",
-    "contact_email": "kontakt@example.com",
-    "phone_number": "+48123456789",
-    "is_public": true,
-    "static_types": ["gtfs"],
-    "dynamic_types": ["gbfs"]
-  }
-]
+{
+  "count": 1,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": 5,
+      "region": "Mazowieckie",
+      "transport_organization": "ZTM Warszawa",
+      "website": "https://www.wtp.waw.pl/",
+      "contact_email": "kontakt@example.com",
+      "phone_number": "+48123456789",
+      "is_public": true,
+      "static_types": ["gtfs"],
+      "dynamic_types": ["gbfs", "gtfs-rt"]
+    }
+  ]
+}
 ```
+
+`dynamic_types` uses the values `gbfs`, `gtfs-rt` and `siri` — note the hyphen in `gtfs-rt`, unlike the `gtfs_rt` protocol value.
 
 **Detail (`GET /api/data_manager/feeds/{organization_id}/`):**
 
@@ -514,7 +531,8 @@ This is not a list of individual feeds, but a list of transport organizations th
             "endpoint_type": "gbfs",
             "interval": 60,
             "feed_url": "https://example.com/feed/rt/14/gbfs/",
-            "cached_at": "2026-04-27T11:00:00Z"
+            "cached_at": "2026-04-27T11:00:00Z",
+            "is_original": true
           }
         ]
       }

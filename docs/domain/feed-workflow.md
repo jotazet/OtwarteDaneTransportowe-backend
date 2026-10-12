@@ -10,8 +10,10 @@ The endpoints used below are documented in the [Feeds API](../api/feeds.md); sta
 DataProvider
   -> POST /api/data_manager/feed-submissions/
   -> backend saves FeedSubmission + StaticFeedEntry
-  -> backend creates an uploaded history entry, usually stage_after=2
-  -> GTFS validation (Celery feeds queue, worker with Docker) / fetch may advance the stage or reject
+  -> backend creates an uploaded history entry (stage 1 -> 2), so a new submission starts at stage 2
+  -> data_type=gtfs: GTFS validation (Celery feeds queue, worker with Docker) runs after the file upload,
+     the URL submission or the proxy fetch; no errors -> stage 3, errors -> rejection (stage 1)
+  -> netex / other: no automatic validation; the submission stays at stage 2 until Helper/Admin sets the stage
   -> StaticFeedEntry.validation_status: pending / valid / invalid / error
   -> from stage 2 the owner may PATCH only the note, license and download schedule (not the name, URL/file, auth, is_original, hide_original)
   -> Helper/Admin PATCH { "stage": 4 }
@@ -53,7 +55,7 @@ The pause, retry and background cache mechanism applies **only to proxied feeds*
 - the fields `fetch_status`, `fetch_failure_count`, `next_fetch_after` etc. are **not returned** by the API (`is_proxy_managed=false`)
 - the Celery schedule and the realtime loop **skip** these feeds
 
-Exception: **validation stage 2** — for a static GTFS feed with a non-proxied URL, the server may download the file **once** into a temporary directory solely for the validator (without saving to `cached_file` and without starting the proxy mechanism). For realtime, stage 2 validation performs a link-check on the URL and creates a cache only for `hide_original=true`.
+Exception: **validation stage 2** — for a static GTFS feed with a non-proxied URL, the server may download the file **once** into a temporary directory solely for the validator (without saving to `cached_file` and without starting the proxy mechanism). For realtime, stage 2 validation performs a link-check on the URL, checks the response format in process (`data_manager/validators.py`) and creates a cache only for `hide_original=true`.
 
 Proxy fetching applies to static feeds and realtime endpoints with `hide_original=true`. Every fetch error is stored as a `FeedFetchError` and can be read from these endpoints:
 
@@ -82,7 +84,7 @@ The response has the format `{"count", "next", "previous", "results": [...]}`.
 Every error record, and the responses of the `static-feed-entries`, `realtime-endpoints` and `proxy-feeds` endpoints, contain readable fields identifying the feed (instead of bare ids):
 
 - `organization` - name of the transport organization (not the id)
-- `region` - region of the transport organization
+- `region` - region of the transport organization (only in `static-feed-entries`, `realtime-endpoints` and `proxy-feeds`; error records do not have it)
 - `feed_name` - feed name with its id in the format `#<id> name`, e.g. `#23 ZTM Warszawa` (when the feed has no name, just `#23`)
 
 `#<id>` is the id of the feed submission (`FeedSubmission` for static, `RealtimeSubmission` for realtime) - the same id under which the feed is published at `/feed/{id}/` and `/feed/rt/{id}/`.
@@ -130,7 +132,7 @@ After consecutive failed fetches the system automatically postpones the next att
 
 The first successful fetch resets the error counter to zero and sets `fetch_status=active`.
 
-`Helper` or `Admin` can manually pause or resume a single **proxied** feed (`is_proxy_managed=true`):
+`Helper` or `Admin` can manually pause or resume a single **proxied** feed (`is_proxy_managed=true`). The `proxy-feeds` list is available to any logged-in user (a `DataProvider` sees only its own feeds), but `pause-fetch` / `resume-fetch` return `403` for anyone other than `Helper`/`Admin`:
 
 ```http
 GET /api/data_manager/proxy-feeds/

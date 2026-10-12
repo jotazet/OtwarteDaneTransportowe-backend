@@ -47,7 +47,7 @@
 | Stage | Label | Meaning |
 |-------|-------|---------|
 | `1` | `Step 1: Endpoints` | Endpoints added / need correction |
-| `2` | `Step 2: Data verification` | Validation in progress (link-check, GTFS-RT validator, first cache fetch) |
+| `2` | `Step 2: Data verification` | Validation in progress (link-check, in-process check of the response format, first cache fetch) |
 | `3` | `Step 3: Admin confirmation` | Verification finished; ready for confirmation |
 | `4` | `Step 4: Published` | Realtime feed published |
 

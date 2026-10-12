@@ -14,29 +14,34 @@ List of blog posts (paginated DRF envelope, like all lists).
 **Response 200 (`results` shortened):**
 
 ```json
-[
-  {
-    "id": 1,
-    "title": "Nowe dane GTFS",
-    "author": 3,
-    "author_username": "admin",
-    "tags": ["gtfs", "transport"],
-    "content": "Skrocona tresc do 150 znakow...",
-    "image": null,
-    "date": "2026-04-27T10:00:00Z",
-    "updated_at": "2026-04-27T10:00:00Z",
-    "reactions_summary": {
-      "like": 3,
-      "dislike": 0,
-      "love": 1,
-      "haha": 0,
-      "wow": 0,
-      "sad": 0,
-      "angry": 0
-    },
-    "your_reaction": "like"
-  }
-]
+{
+  "count": 9,
+  "next": "https://api.example.org/api/blog/posts/?page=2",
+  "previous": null,
+  "results": [
+    {
+      "id": 1,
+      "title": "Nowe dane GTFS",
+      "author": 3,
+      "author_username": "admin",
+      "tags": ["gtfs", "transport"],
+      "content": "Skrocona tresc do 150 znakow...",
+      "image": null,
+      "date": "2026-04-27T10:00:00Z",
+      "updated_at": "2026-04-27T10:00:00Z",
+      "reactions_summary": {
+        "like": 3,
+        "dislike": 0,
+        "love": 1,
+        "haha": 0,
+        "wow": 0,
+        "sad": 0,
+        "angry": 0
+      },
+      "your_reaction": "like"
+    }
+  ]
+}
 ```
 
 ## `GET /api/blog/posts/{id}/`

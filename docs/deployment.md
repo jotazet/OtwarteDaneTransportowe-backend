@@ -7,7 +7,7 @@ Target environment: **a single VPS**, Docker Compose, HTTPS traffic terminated o
 external reverse proxy (nginx/Caddy). The application listens locally on
 `127.0.0.1:8000` and is not exposed directly to the internet.
 
-> Development: for local work use `docker compose up --build` (see `README.md`).
+> Development: for local work use `docker compose up --build` (see [`README.md`](../README.md)).
 > This document covers the **production** configuration (`settings_prod` + gunicorn).
 
 ---
@@ -194,7 +194,6 @@ CELERY_DEFAULT_CONCURRENCY=2
 CELERY_FEEDS_CONCURRENCY=1
 
 # ───────────────────────── Limits / throttling / JWT (optional) ─────────────────────────
-# MAX_FEED_FILE_SIZE_BYTES=209715200      # 200 MB
 # MAX_IMAGE_FILE_SIZE_BYTES=10485760       # 10 MB
 # DATA_UPLOAD_MAX_MEMORY_SIZE=10485760
 # FILE_UPLOAD_MAX_MEMORY_SIZE=5242880
@@ -206,10 +205,14 @@ CELERY_FEEDS_CONCURRENCY=1
 # JWT_REFRESH_DAYS=1
 
 # ───────────────────────── Reverse proxy (XFF trust limit) ─────────────────────────
-# CIDRs of the trusted proxy (e.g. the Docker network or the proxy address) — for the blog reaction limit:
-# TRUSTED_PROXY_CIDRS=172.16.0.0/12
+# CIDRs of the trusted proxy (e.g. the Docker network or the proxy address) — client IPs for
+# the blog reaction limit and anonymous throttling. Required: settings_prod refuses to start when empty.
+TRUSTED_PROXY_CIDRS=172.16.0.0/12
+# Only when the app is served directly to clients, without a reverse proxy:
+# ALLOW_UNTRUSTED_PROXY_IPS=True
 
-# ───────────────────────── Public URL (optional, for GTFS-RT validation) ─────────────────────────
+# ───────────────────────── Public URL (currently unused) ─────────────────────────
+# Defined in settings, but no code reads it at the moment.
 # PUBLIC_BASE_URL=https://api.example.org
 ```
 
@@ -225,7 +228,9 @@ CELERY_FEEDS_CONCURRENCY=1
 | `CSRF_TRUSTED_ORIGINS` | Required for POST behind a TLS proxy. |
 | `FEED_AUTH_ENCRYPTION_KEY` | At-rest encryption of feed credentials. |
 | `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). |
-| `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit. The proxy must also forward `X-Forwarded-For`. A missing value is reported by `manage.py check` as `blog.W001`. |
+| `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one), one shared daily limit, and one shared anonymous throttling bucket. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
+| `ALLOW_UNTRUSTED_PROXY_IPS` | Default `False`. Set to `True` only when the app is served directly to clients without a reverse proxy: it disables the startup check for an empty `TRUSTED_PROXY_CIDRS`, and the client IP is then taken from the socket address (`REMOTE_ADDR`). |
+| `PUBLIC_BASE_URL` | Currently unused (defined in settings, not read by any code). |
 
 ---
 
@@ -559,6 +564,7 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 - [ ] `FEED_AUTH_ENCRYPTION_KEY` set and archived in a vault
 - [ ] `CSRF_TRUSTED_ORIGINS` + `CORS_ALLOWED_ORIGINS` narrowed to the frontend
 - [ ] Reverse proxy forwards `X-Forwarded-Proto: https`
+- [ ] `TRUSTED_PROXY_CIDRS` set to the reverse proxy's addresses (production refuses to start without it)
 - [ ] `postgres`/`redis`/`web` ports not exposed publicly (`127.0.0.1` only)
 - [ ] `docker-socket-proxy` running; rootless Docker / a separate validator microservice considered
 - [ ] `.env` with `600` permissions, outside the git repository
@@ -573,6 +579,10 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 
 **The application does not start, `ImproperlyConfigured: DJANGO_SECRET_KEY...`**
 → Set a real `DJANGO_SECRET_KEY` in `.env` (in prod the placeholder is blocked).
+
+**The application does not start, `ImproperlyConfigured: TRUSTED_PROXY_CIDRS is empty...`**
+→ Set `TRUSTED_PROXY_CIDRS` to the reverse proxy network(s). Only if the app is served
+directly to clients without a proxy, set `ALLOW_UNTRUSTED_PROXY_IPS=True` instead.
 
 **`DisallowedHost` / 400**
 → Add the public API domain to `DJANGO_ALLOWED_HOSTS` (without `https://`).
@@ -613,14 +623,14 @@ has `DOCKER_HOST=tcp://docker-socket-proxy:2375`.
 → Set `UID`/`GID` in `.env` and reload (the `init_uploads` service will run `chown`).
 
 **Realtime feeds do not refresh / the lock does not work**
+→ Make sure `REDIS_CACHE_URL` is set (a shared cache is
+required for the lock and throttling across processes).
+
 **Blog reactions: everyone overwrites each other's reaction / one reaction globally**
 → The backend sees everyone with a single IP (the proxy's address). Set `TRUSTED_PROXY_CIDRS`
 to the proxy network (e.g. `172.16.0.0/12,127.0.0.1/32`) and make sure nginx/Caddy
 forwards `X-Forwarded-For`. Verification: `docker compose exec web python
 manage.py check` must not report `blog.W001`.
-
-→ Make sure `REDIS_CACHE_URL` is set (a shared cache is
-required for the lock and throttling across processes).
 
 **Large uploads fail with error 413**
 → Increase `client_max_body_size` in nginx and, if needed, `MAX_FEED_FILE_SIZE_BYTES`.
@@ -651,4 +661,6 @@ needed; only the proxy mounts the socket (read-only).
    docker compose exec web python manage.py retry_gtfs_validation --submission-id 64
    ```
 
-After successful validation the stage moves to **3**; after GTFS errors — rejection (`is_rejected`, stage 1).
+This applies to GTFS feeds only (NeTEx/other are not validated automatically and stay at stage 2
+until a Helper/Admin sets the stage). After successful validation the stage moves to **3**; after GTFS
+errors — rejection (`is_rejected`, stage 1).
