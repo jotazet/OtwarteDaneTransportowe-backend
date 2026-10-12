@@ -18,7 +18,7 @@ class CaseStatus(models.Model):
 
     status = models.CharField(max_length=32, choices=STATUS_CHOICES, default='none')
     date = models.DateTimeField(auto_now_add=True)
-    description = models.TextField(blank=True, null=True)
+    description = models.TextField(blank=True)
     case = models.ForeignKey(
         'TransportOrganization', related_name='case_status', on_delete=models.CASCADE
     )
@@ -35,8 +35,8 @@ class CaseStatus(models.Model):
 
 class DataProvider(models.Model):
     name = models.CharField(max_length=100, unique=True)
-    website = models.URLField(blank=True, null=True)
-    contact_email = models.EmailField(blank=True, null=True)
+    website = models.URLField(blank=True)
+    contact_email = models.EmailField(blank=True)
 
     def __str__(self):
         return self.name
@@ -48,9 +48,9 @@ class TransportOrganization(models.Model):
     )
     region = models.CharField(max_length=50)
     transport_organization = models.CharField(max_length=100)
-    website = models.URLField(blank=True, null=True)
-    contact_email = models.EmailField(blank=True, null=True)
-    phone_number = models.CharField(max_length=20, blank=True, null=True)
+    website = models.URLField(blank=True)
+    contact_email = models.EmailField(blank=True)
+    phone_number = models.CharField(max_length=20, blank=True)
     is_public = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

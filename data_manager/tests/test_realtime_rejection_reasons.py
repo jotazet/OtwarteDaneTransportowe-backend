@@ -232,7 +232,7 @@ def test_api_serves_reasons_on_detail_history_and_list(org, provider):
     assert detail['rejection_reasons'] == expected
     assert detail['rejection_cause'] is None
     assert detail['history'][0]['reasons'] == expected
-    assert detail['history'][0]['cause'] is None
+    assert detail['history'][0]['cause'] == ''
     (listed,) = [r for r in submissions['realtime'] if r['id'] == rts.id]
     assert listed['has_rejection_cause'] is True
 

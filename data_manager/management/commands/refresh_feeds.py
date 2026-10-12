@@ -32,11 +32,11 @@ class Command(BaseCommand):
         )
         retry_due = Q(fetch_status=FETCH_STATUS_DELAYED, next_fetch_after__lte=now)
 
-        entries = StaticFeedEntry.objects.filter(
-            hide_original=True,
-            url__isnull=False,
-            submission_id__in=completed_ids,
-        ).filter(scheduled_due | retry_due)
+        entries = (
+            StaticFeedEntry.objects.filter(hide_original=True, submission_id__in=completed_ids)
+            .exclude(url='')
+            .filter(scheduled_due | retry_due)
+        )
 
         count = 0
         for entry in entries:

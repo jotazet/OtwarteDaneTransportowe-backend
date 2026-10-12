@@ -365,7 +365,7 @@ class StaticFeedEntrySerializer(FetchHealthSerializerMixin, serializers.ModelSer
             'auth_value': {'write_only': True},
             'file': {'required': False},
             'url': {'required': False},
-            'auth_type': {'required': False, 'allow_null': True},
+            'auth_type': {'required': False},
         }
 
     def __init__(self, *args, **kwargs):
@@ -489,7 +489,7 @@ class RealtimeEndpointRTWriteSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {
             'auth_value': {'write_only': True, 'required': False},
-            'auth_type': {'required': False, 'allow_null': True},
+            'auth_type': {'required': False},
         }
 
     def validate_url(self, value: str):

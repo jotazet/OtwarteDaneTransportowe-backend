@@ -425,7 +425,7 @@ def test_failed_validation_leaves_no_workdirs(settings, tmp_path, monkeypatch, o
     from data_manager.tasks import validate_gtfs_feed_task
 
     settings.MEDIA_ROOT = tmp_path
-    entry = _entry(org, provider_user, url=None, download_time_1=None, hide_original=False)
+    entry = _entry(org, provider_user, url='', download_time_1=None, hide_original=False)
     entry.file.save('feed.zip', ContentFile(b'PK\x03\x04data'), save=True)
 
     def failing_from_env():

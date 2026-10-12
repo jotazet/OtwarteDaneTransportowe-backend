@@ -63,8 +63,8 @@ class Reaction(models.Model):
     ]
     post = models.ForeignKey(Post, on_delete=models.CASCADE)
     ip_address = models.GenericIPAddressField()
-    # NULL/blank means: user has no active reaction (soft-removed)
-    reaction = models.CharField(max_length=8, choices=REACTION_CHOICES, null=True, blank=True)
+    # Empty means: the user has no active reaction (soft-removed)
+    reaction = models.CharField(max_length=8, choices=REACTION_CHOICES, blank=True)
     date = models.DateTimeField(auto_now_add=True)
 
     class Meta:

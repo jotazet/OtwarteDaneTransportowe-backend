@@ -96,11 +96,11 @@ class MyReactionsView(APIView):
         if not post_ids:
             return Response({})
 
-        rows = Reaction.objects.filter(
-            post_id__in=post_ids,
-            ip_address=client_ip,
-            reaction__isnull=False,
-        ).values_list('post_id', 'reaction')
+        rows = (
+            Reaction.objects.filter(post_id__in=post_ids, ip_address=client_ip)
+            .exclude(reaction='')
+            .values_list('post_id', 'reaction')
+        )
         return Response({str(post_id): reaction for post_id, reaction in rows})
 
 
@@ -127,7 +127,7 @@ class ReactionViewSet(viewsets.ModelViewSet):
         Behavior:
         - Daily limit: 10 reactions per IP across all posts (created in last 24h).
         - If no existing reaction for (post, IP): create new (unless reaction is empty -> no-op).
-        - If existing and reaction in payload is empty/blank/null: set reaction=NULL (soft-remove).
+        - If existing and reaction in payload is empty: set reaction='' (soft-remove).
         - If existing and reaction is different/non-empty: update to new value.
         """
         client_ip = self.get_client_ip(request)
@@ -143,7 +143,7 @@ class ReactionViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         new_reaction = serializer.validated_data.get('reaction')
-        is_empty = new_reaction in (None, '')
+        is_empty = not new_reaction
 
         try:
             existing = Reaction.objects.get(post=post, ip_address=client_ip)
@@ -154,13 +154,13 @@ class ReactionViewSet(viewsets.ModelViewSet):
             if is_empty:
                 return Response(status=status.HTTP_204_NO_CONTENT)
 
-            # Daily limit counts only *active* reactions (reaction IS NOT NULL)
+            # Daily limit counts only *active* reactions (non-empty reaction)
             today_start = timezone.now() - timedelta(days=1)
-            reactions_today = Reaction.objects.filter(
-                ip_address=client_ip,
-                date__gte=today_start,
-                reaction__isnull=False,
-            ).count()
+            reactions_today = (
+                Reaction.objects.filter(ip_address=client_ip, date__gte=today_start)
+                .exclude(reaction='')
+                .count()
+            )
 
             if reactions_today >= 10:
                 return Response(
@@ -178,9 +178,9 @@ class ReactionViewSet(viewsets.ModelViewSet):
 
         # Existing row found for this (post, IP)
         if is_empty:
-            # Soft-remove: keep the row but null out the reaction
-            if existing.reaction is not None:
-                existing.reaction = None
+            # Soft-remove: keep the row but clear the reaction
+            if existing.reaction:
+                existing.reaction = ''
                 existing.save(update_fields=['reaction'])
             return Response(status=status.HTTP_204_NO_CONTENT)
 

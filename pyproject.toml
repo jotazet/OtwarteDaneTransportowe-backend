@@ -48,9 +48,6 @@ select = ["E", "F", "W", "I", "B", "UP", "DTZ", "DJ"]
 ignore = [
     # Line length is the formatter's job; the rest are long strings and URLs.
     "E501",
-    # null=True on CharField: fixing it needs data migrations and changes the
-    # API contract (null becomes ""), so it is a separate task.
-    "DJ001",
 ]
 
 [tool.ruff.lint.per-file-ignores]

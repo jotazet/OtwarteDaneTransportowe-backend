@@ -74,11 +74,15 @@ def test_create_update_and_soft_remove_reaction(api_client, post):
     assert response.status_code == 200
     assert Reaction.objects.get(post=post).reaction == 'wow'
 
-    # Empty reaction soft-removes: row kept, value nulled.
+    # Empty reaction soft-removes: row kept, value cleared.
     response = api_client.post(url, {'reaction': ''})
     assert response.status_code == 204
     row = Reaction.objects.get(post=post)
-    assert row.reaction is None
+    assert row.reaction == ''
+
+    # null is not an empty value any more: '' is the only one.
+    response = api_client.post(url, {'reaction': None}, format='json')
+    assert response.status_code == 400
 
 
 def test_daily_limit_of_ten_active_reactions(api_client, settings):
@@ -185,7 +189,7 @@ def test_my_reactions_returns_only_callers_reactions(api_client, post, settings)
 
 def test_my_reactions_ignores_soft_removed_and_bad_input(api_client, post, settings):
     settings.TRUSTED_PROXY_CIDRS = []
-    Reaction.objects.create(post=post, ip_address='203.0.113.10', reaction=None)
+    Reaction.objects.create(post=post, ip_address='203.0.113.10', reaction='')
 
     response = api_client.get(
         f'/api/blog/reactions/mine/?post_ids={post.id}', REMOTE_ADDR='203.0.113.10'

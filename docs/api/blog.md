@@ -103,14 +103,6 @@ Removing a reaction:
 
 ```json
 {
-  "reaction": null
-}
-```
-
-or:
-
-```json
-{
   "reaction": ""
 }
 ```

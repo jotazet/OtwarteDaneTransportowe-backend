@@ -528,6 +528,12 @@ git pull
 
 After changing dependencies (`pyproject.toml` and `uv.lock`) or the `Dockerfile`, a build is required.
 
+To roll back to an older version, first reverse the migrations it does not know about
+(`./scripts/deploy.sh exec web python manage.py migrate <app> <last migration of the old version>`),
+then deploy the old code: old code often cannot write to a schema migrated forward
+(for example, columns that became `NOT NULL`). Check `docs/api/changelog.md` for
+release-specific steps.
+
 ---
 
 ## 16. Backups and restore

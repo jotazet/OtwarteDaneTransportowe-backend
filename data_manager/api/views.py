@@ -157,7 +157,7 @@ class ProxyManagedFeedListView(APIView):
     def get(self, request):
         static_qs = self._ordered(
             annotate_fetch_health(
-                StaticFeedEntry.objects.filter(hide_original=True, url__isnull=False)
+                StaticFeedEntry.objects.filter(hide_original=True)
                 .exclude(url='')
                 .select_related(
                     'submission', 'submission__transport_organization', 'submission__submitted_by'
