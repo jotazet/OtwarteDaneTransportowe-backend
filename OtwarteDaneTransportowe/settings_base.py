@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -85,6 +86,7 @@ INSTALLED_APPS = [
     'cases.apps.CasesConfig',
     'data_manager.apps.DataManagerConfig',
     'accounts.apps.AccountsConfig',
+    'planner.apps.PlannerConfig',
 ]
 
 MIDDLEWARE = [
@@ -288,16 +290,28 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': crontab(minute='*/5'),
         'options': {'queue': 'default'},
     },
+    # The graph build itself is scheduled from the admin panel (PeriodicTask
+    # 'planner-graph-build', managed by planner.services), not here.
+    'planner-watchdog': {
+        'task': 'planner.watchdog',
+        'schedule': crontab(minute='*/5'),
+        'options': {'queue': 'default'},
+    },
 }
 
 CELERY_TASK_QUEUES = {
     'default': {},
     'feeds': {},
+    # Graph builds run for minutes to hours and drive Docker, so they get their
+    # own worker (celery_planner_worker) and never delay validations on 'feeds'.
+    'planner': {},
 }
 CELERY_TASK_DEFAULT_QUEUE = 'default'
 CELERY_TASK_ROUTES = {
     'data_manager.validate_gtfs_feed': {'queue': 'feeds'},
     'data_manager.fetch_static_entry': {'queue': 'feeds'},
+    'planner.run_graph_build': {'queue': 'planner'},
+    'planner.ensure_serving': {'queue': 'planner'},
 }
 CELERY_TASK_SOFT_TIME_LIMIT = 90
 CELERY_TASK_TIME_LIMIT = 120
@@ -344,3 +358,40 @@ if DEBUG:
     ]
 else:
     CORS_ALLOWED_ORIGIN_REGEXES = _env_list('CORS_ALLOWED_ORIGIN_REGEXES', default=[])
+
+
+# ---------------------------------------------------------------------------
+# Journey planner (OpenTripPlanner). See docs/deployment.md "Journey planner".
+# ---------------------------------------------------------------------------
+# Pinned: a graph file only loads in the OTP version that built it.
+PLANNER_OTP_IMAGE = os.getenv('PLANNER_OTP_IMAGE') or 'opentripplanner/opentripplanner:2.10.0'
+# Graphs, snapshots and build workspaces. The OTP containers are started by the
+# HOST's Docker daemon, so their bind mounts need the host path as well.
+PLANNER_DATA_DIR = os.getenv('PLANNER_DATA_DIR') or str(BASE_DIR / 'planner_data')
+HOST_PLANNER_DATA_DIR = os.getenv('HOST_PLANNER_DATA_DIR') or os.path.join(
+    HOST_PROJECT_PATH, 'planner_data'
+)
+# OSM extract the street graph is built from, relative to PLANNER_DATA_DIR.
+PLANNER_OSM_FILE = os.getenv('PLANNER_OSM_FILE') or 'osm/region.osm.pbf'
+# The serving OTP container (docker-compose service `otp`) and how web reaches it.
+PLANNER_OTP_CONTAINER = os.getenv('PLANNER_OTP_CONTAINER') or 'odt-otp'
+PLANNER_OTP_URL = (os.getenv('PLANNER_OTP_URL') or 'http://odt-otp:8080').rstrip('/')
+# How OTP reaches this app for realtime files of proxied feeds, and the shared
+# secret it sends so those polls are exempt from public throttling.
+PLANNER_ODT_INTERNAL_URL = (os.getenv('PLANNER_ODT_INTERNAL_URL') or 'http://odt-web:8000').rstrip(
+    '/'
+)
+PLANNER_INTERNAL_TOKEN = os.getenv('PLANNER_INTERNAL_TOKEN', '')
+# Memory of build containers. Builds run while the serving OTP is stopped and
+# may spill into swap: the heap can exceed the container's RAM limit.
+PLANNER_OTP_BUILD_HEAP = os.getenv('PLANNER_OTP_BUILD_HEAP') or '14g'
+PLANNER_OTP_BUILD_MEM_LIMIT = os.getenv('PLANNER_OTP_BUILD_MEM_LIMIT') or '8g'
+PLANNER_OTP_BUILD_MEMSWAP_LIMIT = os.getenv('PLANNER_OTP_BUILD_MEMSWAP_LIMIT') or '22g'
+PLANNER_OTP_FEED_TEST_HEAP = os.getenv('PLANNER_OTP_FEED_TEST_HEAP') or '6g'
+PLANNER_OTP_FEED_TEST_MEM_LIMIT = os.getenv('PLANNER_OTP_FEED_TEST_MEM_LIMIT') or '7g'
+# Build containers write into planner_data as the app's own user.
+PLANNER_CONTAINER_USER = f'{GTFS_VALIDATOR_UID}:{GTFS_VALIDATOR_GID}'
+# OTP polls realtime files with the internal host name in the Host header.
+_planner_internal_host = urlsplit(PLANNER_ODT_INTERNAL_URL).hostname
+if _planner_internal_host and _planner_internal_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_planner_internal_host)

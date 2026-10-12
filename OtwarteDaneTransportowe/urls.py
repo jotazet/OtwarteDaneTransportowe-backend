@@ -58,6 +58,7 @@ urlpatterns = [
     path('api/blog/', include('blog.api.urls')),
     path('api/data_manager/', include('data_manager.api.urls')),
     path('api/users/', include('accounts.api.urls')),
+    path('api/planner/admin/', include('planner.api.urls')),
     path('api/auth/token/', RolesInTokenObtainPairView.as_view(), name='token-obtain-pair'),
     path('api/auth/token/refresh/', ThrottledTokenRefreshView.as_view(), name='token-refresh'),
 ]
