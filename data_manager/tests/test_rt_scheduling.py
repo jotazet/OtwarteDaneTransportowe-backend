@@ -78,12 +78,25 @@ def test_bootstrap_reseeds_after_marker_expires(published_gbfs_endpoint, monkeyp
     assert len(calls) == 2
 
 
-def test_schedule_releases_reservation_when_broker_is_down(published_gbfs_endpoint, monkeypatch):
+def test_schedule_stops_and_releases_reservation_when_broker_is_down(
+    published_gbfs_endpoint, monkeypatch
+):
     """A failed enqueue must not leave the alive-marker behind: it would make
-    the periodic bootstrap skip the endpoint until the marker expires."""
+    the periodic bootstrap skip the endpoint until the marker expires. Nor may
+    the request wait on the dead broker once per endpoint."""
     from django.core.cache import cache
 
+    second = RealtimeEndpointRT.objects.create(
+        submission=published_gbfs_endpoint.submission,
+        endpoint_type='station_status',
+        url='https://example.org/station_status.json',
+        hide_original=True,
+        interval=30,
+    )
+    attempts = []
+
     def broker_down(*args, **kwargs):
+        attempts.append(args)
         raise OSError('Error 111 connecting to redis:6379. Connection refused.')
 
     monkeypatch.setattr(tasks.fetch_realtime_endpoint_task, 'apply_async', broker_down)
@@ -91,4 +104,6 @@ def test_schedule_releases_reservation_when_broker_is_down(published_gbfs_endpoi
     scheduled = tasks.schedule_realtime_endpoint_fetches(published_gbfs_endpoint.submission_id)
 
     assert scheduled == 0
-    assert cache.get(tasks._rt_alive_key(published_gbfs_endpoint.id)) is None
+    assert len(attempts) == 1
+    for endpoint in (published_gbfs_endpoint, second):
+        assert cache.get(tasks._rt_alive_key(endpoint.id)) is None

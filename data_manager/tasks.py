@@ -122,11 +122,12 @@ def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
         reserve_ttl = interval + RT_ALIVE_TTL_BUFFER_SECONDS
         if not cache.add(_rt_alive_key(endpoint_id), '1', timeout=reserve_ttl):
             continue
-        # Called from requests: a broker outage must not fail the write. Release
-        # the reservation so the periodic bootstrap can seed the loop instead.
+        # Called from requests: a broker outage must not fail the write, nor hold
+        # it up once per endpoint. Release the reservation and stop; the periodic
+        # bootstrap seeds this loop and the remaining (never reserved) ones.
         if not enqueue(fetch_realtime_endpoint_task, endpoint_id):
             cache.delete(_rt_alive_key(endpoint_id))
-            continue
+            break
         scheduled += 1
     return scheduled
 
