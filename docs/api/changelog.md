@@ -2,6 +2,20 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10: coded reasons for automatic realtime rejections
+
+Not breaking: fields are only added.
+
+- `GET /api/data_manager/realtime-submissions/{id}/` (and the write responses of the same resource) gain **`rejection_reasons`**: a list of `{code, details}` or `null`. Each `history` entry gains **`reasons`** with the same shape.
+- Automatic realtime validation no longer writes Polish text to `rejection_cause`; it stays `null` for these rejections. `rejection_cause` now carries only a reviewer's free text.
+- Existing rejections whose text was fully recognised got codes by a data migration and keep their old text in `rejection_cause`; when `rejection_reasons` is not `null`, show it and ignore `rejection_cause`.
+- `has_rejection_cause` in `GET /api/data_manager/submissions/` is also `true` when only `rejection_reasons` is set.
+- The codes and their `details` are listed in [Realtime rejection reasons](feeds.md#realtime-rejection-reasons). The frontend translates them and shows a generic message for unknown codes.
+
+**Frontend:** until the frontend reads `rejection_reasons`, automatic realtime rejections show no reason text.
+
+**Not changed yet:** static (GTFS) rejection causes are still English text in `rejection_cause`; they move to codes in a separate change ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
+
 ## 2026-07: paginated lists, canonical realtime file routes and other breaking changes
 
 Applies to the backend deployment of July 2026 (hardening + DRF unification).

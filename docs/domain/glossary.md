@@ -14,7 +14,7 @@ One concept, one name. Code uses the **English term**; the Polish UI uses the **
 | Endpoint (`RealtimeEndpointRT`) | Endpoint | One URL of a realtime submission, typed by `endpoint_type` (e.g. `trip_update`, `sx`, `station_status`). |
 | Stage | Etap | Workflow step 1–4: upload/endpoints → data verification → admin confirmation → published. Derived from history, never stored. See [feed workflow](feed-workflow.md). |
 | History event (`*History`) | Historia zgłoszenia | `uploaded`, `stage_advanced`, `rejected`, `completed`. |
-| Rejection cause | Przyczyna odrzucenia | Why a submission went back to stage 1. |
+| Rejection cause | Przyczyna odrzucenia | Why a submission went back to stage 1: a reviewer's free text (`rejection_cause`) or, for automatic realtime rejections, codes (`rejection_reasons`) that the frontend translates. |
 | Published | Opublikowane | Stage 4: visible in the public catalogue. |
 | Validation report (`FeedValidationReport`) | Raport walidacji *confirm* | Output of the GTFS validator for a static entry. |
 | Hide original URL (`hide_original`), proxy feed | Ukryj oryginalny adres URL; feed proxy | ODT fetches the source itself and serves the file from its own URL. Forced when the source needs authorization. |

@@ -58,6 +58,7 @@ class RealtimeSubmissionHistorySerializer(serializers.ModelSerializer):
             'stage_after',
             'actor',
             'cause',
+            'reasons',
             'created_at',
         ]
         read_only_fields = fields
@@ -505,6 +506,7 @@ class RealtimeSubmissionSerializer(serializers.ModelSerializer):
     current_stage_label = serializers.SerializerMethodField()
     is_rejected = serializers.BooleanField(read_only=True)
     rejection_cause = serializers.CharField(read_only=True, allow_null=True)
+    rejection_reasons = serializers.JSONField(read_only=True, allow_null=True)
     published_at = serializers.DateTimeField(read_only=True, allow_null=True)
     history = RealtimeSubmissionHistorySerializer(many=True, read_only=True)
     static_submission = serializers.PrimaryKeyRelatedField(read_only=True)
@@ -526,6 +528,7 @@ class RealtimeSubmissionSerializer(serializers.ModelSerializer):
             'current_stage_label',
             'is_rejected',
             'rejection_cause',
+            'rejection_reasons',
             'published_at',
             'endpoints',
             'history',
@@ -539,6 +542,7 @@ class RealtimeSubmissionSerializer(serializers.ModelSerializer):
             'current_stage_label',
             'is_rejected',
             'rejection_cause',
+            'rejection_reasons',
             'published_at',
             'history',
         ]
@@ -1542,4 +1546,4 @@ class UserRealtimeSubmissionSerializer(serializers.ModelSerializer):
         return labels.get(obj.current_stage, 'Unknown')
 
     def get_has_rejection_cause(self, obj: RealtimeSubmission) -> bool:
-        return bool(obj.rejection_cause)
+        return bool(obj.rejection_cause or obj.rejection_reasons)
