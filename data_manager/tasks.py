@@ -450,7 +450,7 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
 )
 def validate_gtfs_feed_task(self, entry_id: int):
     """
-    Validates a static GTFS feed using 'ghcr.io/mobilitydata/gtfs-validator'.
+    Validates a static GTFS feed using the image in settings.GTFS_VALIDATOR_IMAGE.
 
     Steps:
     1. Identify the input file (user upload 'file' OR server download 'cached_file').
@@ -663,7 +663,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             mem_limit = os.environ.get('GTFS_VALIDATOR_MEM_LIMIT', '2g')
             pids_limit = int(os.environ.get('GTFS_VALIDATOR_PIDS_LIMIT', '512'))
             run_kwargs = dict(
-                image="ghcr.io/mobilitydata/gtfs-validator:latest",
+                image=settings.GTFS_VALIDATOR_IMAGE,
                 command=command,
                 volumes=volumes,
                 remove=True,

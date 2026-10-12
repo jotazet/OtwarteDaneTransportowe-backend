@@ -89,11 +89,16 @@ def org(normal_user, settings, tmp_path):
     )
 
 
-def _mock_docker_from_env(error_count: int):
-    """Simulate gtfs-validator container writing report.json (no Docker socket required)."""
+def _mock_docker_from_env(error_count: int, runs: list | None = None):
+    """Simulate gtfs-validator container writing report.json (no Docker socket required).
+
+    Pass ``runs`` to collect the image of each containers.run() call.
+    """
 
     class _Containers:
         def run(self, image, command, volumes, **kwargs):
+            if runs is not None:
+                runs.append(image)
             output_host_dir = next(
                 host for host, spec in volumes.items() if spec.get('bind') == '/output'
             )
@@ -194,6 +199,28 @@ def test_gtfs_upload_flow_correct(api_client, admin_user, normal_user, org):
     assert submission_id in nested_feed_ids, (
         "Feed not found in organization detail after reaching stage 4"
     )
+
+
+def test_validation_runs_configured_image(normal_user, org, settings, monkeypatch):
+    settings.GTFS_VALIDATOR_IMAGE = 'registry.example.org/gtfs-validator:9.9.9'
+    monkeypatch.setenv('HOST_MEDIA_ROOT', str(settings.MEDIA_ROOT))
+    submission = FeedSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=normal_user,
+        data_type='gtfs',
+        name='Configured validator image',
+    )
+    with patch('data_manager.signals.validate_gtfs_feed_task.delay'):
+        entry = StaticFeedEntry.objects.create(
+            submission=submission,
+            file=ContentFile(b'PK\x03\x04data', name='feed.zip'),
+        )
+
+    runs = []
+    with patch('docker.from_env', _mock_docker_from_env(0, runs)):
+        validate_gtfs_feed_task(entry.id)
+
+    assert runs == ['registry.example.org/gtfs-validator:9.9.9']
 
 
 def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
