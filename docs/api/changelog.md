@@ -2,6 +2,22 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10: PUT/PATCH responses show the saved state
+
+Not breaking: the response shape is unchanged.
+
+`PUT/PATCH /api/data_manager/feed-submissions/{id}/` and
+`/api/data_manager/realtime-submissions/{id}/` that changed the stage — a
+confirmation or rejection (`stage`, `rejection_cause`) or an owner resubmitting a
+rejected feed (new source or endpoints) — used to return the submission as it was
+**before** the change:
+`current_stage`, `current_stage_label`, `is_rejected`, `rejection_cause` and
+`published_at` were stale, although the transition was saved. The response now
+reflects the new state, the same as a following GET. Clients that re-fetch after the PATCH (as the
+ODT frontend does) see no difference.
+
+---
+
 ## 2026-10: coded reasons for automatic realtime rejections
 
 Not breaking: fields are only added.
@@ -15,6 +31,8 @@ Not breaking: fields are only added.
 **Frontend:** until the frontend reads `rejection_reasons`, automatic realtime rejections show no reason text.
 
 **Not changed yet:** static (GTFS) rejection causes are still English text in `rejection_cause`; they move to codes in a separate change ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
+
+---
 
 ## 2026-07: paginated lists, canonical realtime file routes and other breaking changes
 

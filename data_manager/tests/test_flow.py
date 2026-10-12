@@ -1003,6 +1003,9 @@ def test_resubmit_clears_is_rejected(api_client, normal_user, org, settings, tmp
             format='json',
         )
     assert response.status_code == 200, response.data
+    # The response reflects the resubmission, not the rejected state before it.
+    assert response.data['is_rejected'] is False
+    assert response.data['current_stage'] == 2
     submission.refresh_from_db()
     assert submission.is_rejected is False
     assert submission.rejection_cause is None
@@ -1783,3 +1786,102 @@ def test_url_without_download_time_returns_400_not_500(api_client, normal_user, 
     assert response.status_code == 400, response.status_code
     assert 'download_time_1' in str(response.data), response.data
     assert FeedSubmission.objects.count() == before
+
+
+def _feed_at_stage_2(org, user):
+    submission = FeedSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=user,
+        data_type='gtfs',
+        name='Awaiting review',
+    )
+    FeedSubmissionHistory.objects.create(
+        submission=submission,
+        event_type=FeedSubmissionHistory.EVENT_UPLOADED,
+        stage_before=1,
+        stage_after=2,
+        actor=user,
+    )
+    return submission
+
+
+def _realtime_at_stage_1(org, user):
+    rts = RealtimeSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=user,
+        protocol=RealtimeSubmission.PROTOCOL_GBFS,
+    )
+    RealtimeSubmissionHistory.objects.create(
+        submission=rts,
+        event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+        stage_before=0,
+        stage_after=1,
+        actor=user,
+    )
+    return rts
+
+
+@pytest.mark.parametrize('reviewer', ['admin_role_user', 'helper_user'])
+def test_feed_reject_patch_response_reflects_rejection(
+    request, api_client, reviewer, normal_user, org
+):
+    submission = _feed_at_stage_2(org, normal_user)
+    api_client.force_authenticate(user=request.getfixturevalue(reviewer))
+    response = api_client.patch(
+        f'/api/data_manager/feed-submissions/{submission.id}/',
+        {'rejection_cause': 'Missing stops.txt'},
+        format='json',
+    )
+    assert response.status_code == 200, response.data
+    assert response.data['is_rejected'] is True
+    assert response.data['rejection_cause'] == 'Missing stops.txt'
+    assert response.data['current_stage'] == 1
+
+
+@pytest.mark.parametrize('reviewer', ['admin_role_user', 'helper_user'])
+def test_feed_stage_patch_response_reflects_new_stage(
+    request, api_client, reviewer, normal_user, org
+):
+    submission = _feed_at_stage_2(org, normal_user)
+    api_client.force_authenticate(user=request.getfixturevalue(reviewer))
+    response = api_client.patch(
+        f'/api/data_manager/feed-submissions/{submission.id}/',
+        {'stage': 3},
+        format='json',
+    )
+    assert response.status_code == 200, response.data
+    assert response.data['current_stage'] == 3
+    assert response.data['is_rejected'] is False
+
+
+@pytest.mark.parametrize('reviewer', ['admin_role_user', 'helper_user'])
+def test_realtime_reject_patch_response_reflects_rejection(
+    request, api_client, reviewer, normal_user, org
+):
+    rts = _realtime_at_stage_1(org, normal_user)
+    api_client.force_authenticate(user=request.getfixturevalue(reviewer))
+    response = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'rejection_cause': 'Feed unreachable'},
+        format='json',
+    )
+    assert response.status_code == 200, response.data
+    assert response.data['is_rejected'] is True
+    assert response.data['rejection_cause'] == 'Feed unreachable'
+    assert response.data['current_stage'] == 1
+
+
+@pytest.mark.parametrize('reviewer', ['admin_role_user', 'helper_user'])
+def test_realtime_stage_patch_response_reflects_new_stage(
+    request, api_client, reviewer, normal_user, org
+):
+    rts = _realtime_at_stage_1(org, normal_user)
+    api_client.force_authenticate(user=request.getfixturevalue(reviewer))
+    response = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'stage': 3},
+        format='json',
+    )
+    assert response.status_code == 200, response.data
+    assert response.data['current_stage'] == 3
+    assert response.data['is_rejected'] is False
