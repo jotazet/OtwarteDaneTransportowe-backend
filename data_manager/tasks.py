@@ -663,11 +663,10 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 network_disabled=True,
                 mem_limit=settings.GTFS_VALIDATOR_MEM_LIMIT,
                 pids_limit=settings.GTFS_VALIDATOR_PIDS_LIMIT,
+                nano_cpus=settings.GTFS_VALIDATOR_NANO_CPUS,
                 cap_drop=['ALL'],
                 security_opt=['no-new-privileges:true'],
             )
-            if settings.GTFS_VALIDATOR_NANO_CPUS is not None:
-                run_kwargs['nano_cpus'] = settings.GTFS_VALIDATOR_NANO_CPUS
 
             client.containers.run(**run_kwargs)
 

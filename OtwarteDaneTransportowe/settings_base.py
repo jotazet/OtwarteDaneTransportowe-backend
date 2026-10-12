@@ -242,11 +242,10 @@ HOST_MEDIA_ROOT = os.getenv('HOST_MEDIA_ROOT', os.path.join(HOST_PROJECT_PATH, '
 GTFS_VALIDATOR_UID = os.getenv('UID', '1000')
 GTFS_VALIDATOR_GID = os.getenv('GID', '1000')
 # Resource limits of the validator container (a zip bomb must not exhaust the
-# host). NANO_CPUS is in 1e-9 CPUs (1000000000 = one core); unset = no CPU cap.
+# host). NANO_CPUS is in 1e-9 CPUs (1000000000 = one core).
 GTFS_VALIDATOR_MEM_LIMIT = os.getenv('GTFS_VALIDATOR_MEM_LIMIT', '2g')
 GTFS_VALIDATOR_PIDS_LIMIT = int(os.getenv('GTFS_VALIDATOR_PIDS_LIMIT', '512'))
-_gtfs_validator_nano_cpus = os.getenv('GTFS_VALIDATOR_NANO_CPUS')
-GTFS_VALIDATOR_NANO_CPUS = int(_gtfs_validator_nano_cpus) if _gtfs_validator_nano_cpus else None
+GTFS_VALIDATOR_NANO_CPUS = int(os.getenv('GTFS_VALIDATOR_NANO_CPUS') or 0)  # 0 = no cap
 # Hard cap (bytes) for blog post images.
 MAX_IMAGE_FILE_SIZE_BYTES = int(os.getenv('MAX_IMAGE_FILE_SIZE_BYTES', str(10 * 1024 * 1024)))
 
