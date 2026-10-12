@@ -478,7 +478,12 @@ def validate_gtfs_feed_task(self, entry_id: int):
     import docker
     from django.conf import settings
 
-    from data_manager.models import FeedSubmissionHistory, FeedValidationReport, StaticFeedEntry
+    from data_manager.models import (
+        FeedSubmission,
+        FeedSubmissionHistory,
+        FeedValidationReport,
+        StaticFeedEntry,
+    )
 
     logger.info(f"Starting GTFS validation for StaticFeedEntry id={entry_id}")
 
@@ -503,6 +508,15 @@ def validate_gtfs_feed_task(self, entry_id: int):
 
     _set_validation_status(StaticFeedEntry.VALIDATION_PENDING, 'Validation in progress')
 
+    def _lock_submission() -> FeedSubmission:
+        # Overlapping runs (upload signal, proxy refresh, retry command) must read
+        # the stage one at a time: read it from the returned row, in the same atomic block.
+        return (
+            FeedSubmission.objects.select_for_update()
+            .prefetch_related('history')
+            .get(pk=entry.submission_id)
+        )
+
     def _reject_submission(reason: str, *, validation_error: bool = False) -> None:
         status = (
             StaticFeedEntry.VALIDATION_ERROR
@@ -510,23 +524,28 @@ def validate_gtfs_feed_task(self, entry_id: int):
             else StaticFeedEntry.VALIDATION_INVALID
         )
         _set_validation_status(status, reason)
-        submission = entry.submission
-        if submission.current_stage >= 4:
-            logger.warning(
-                'GTFS validation failed for published submission %s; not reverting stage (was %s): %s',
-                submission.id,
-                submission.current_stage,
-                reason,
+        with transaction.atomic():
+            submission = _lock_submission()
+            stage = submission.current_stage
+            if stage >= 4:
+                logger.warning(
+                    'GTFS validation failed for published submission %s; not reverting stage (was %s): %s',
+                    submission.id,
+                    stage,
+                    reason,
+                )
+                return
+            if submission.rejection_cause == reason:
+                # The same verdict is already recorded, e.g. by an overlapping run.
+                return
+            FeedSubmissionHistory.objects.create(
+                submission=submission,
+                event_type=FeedSubmissionHistory.EVENT_REJECTED,
+                stage_before=stage,
+                stage_after=1,
+                cause=reason,
+                actor=None,
             )
-            return
-        FeedSubmissionHistory.objects.create(
-            submission=submission,
-            event_type=FeedSubmissionHistory.EVENT_REJECTED,
-            stage_before=submission.current_stage,
-            stage_after=1,
-            cause=reason,
-            actor=None,
-        )
         logger.warning(f"Submission {submission.id} rejected: {reason}")
 
     # Both work dirs carry a random suffix, so a leaked one is never reused and
@@ -806,8 +825,6 @@ def validate_gtfs_feed_task(self, entry_id: int):
             val_report.report_file.save('report.json', ContentFile(report_bytes))
 
         # Update Submission Stage
-        submission = entry.submission
-
         if error_count > 0:
             # Build rejection_cause as "code: count" list
             if error_code_counts:
@@ -818,21 +835,21 @@ def validate_gtfs_feed_task(self, entry_id: int):
             _reject_submission(cause)
         else:
             _set_validation_status(StaticFeedEntry.VALIDATION_VALID)
-            # Re-fetch submission fresh state in case it changed
-            submission.refresh_from_db()
-            current_stage = submission.current_stage
-            # Prevent advancing if already advanced by something else
-            if current_stage < 3:
-                FeedSubmissionHistory.objects.create(
-                    submission=submission,
-                    event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
-                    stage_before=current_stage,
-                    stage_after=3,
-                    actor=None,
-                )
-                logger.info(
-                    f"Submission {submission.id} advanced to Stage 3 (valid GTFS, awaiting admin)."
-                )
+            with transaction.atomic():
+                submission = _lock_submission()
+                stage = submission.current_stage
+                # Already at stage 3 or later, possibly by an overlapping run.
+                if stage < 3:
+                    FeedSubmissionHistory.objects.create(
+                        submission=submission,
+                        event_type=FeedSubmissionHistory.EVENT_STAGE_ADVANCED,
+                        stage_before=stage,
+                        stage_after=3,
+                        actor=None,
+                    )
+                    logger.info(
+                        f"Submission {submission.id} advanced to Stage 3 (valid GTFS, awaiting admin)."
+                    )
     finally:
         _cleanup_workdirs()
 
