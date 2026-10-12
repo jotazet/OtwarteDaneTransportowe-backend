@@ -1008,7 +1008,9 @@ def test_owner_can_change_file_when_rejected(
             )
     assert ok.status_code == 200, ok.data
     entry = StaticFeedEntry.objects.get(submission=submission)
-    delay_mock.assert_called_with(entry.id)
+    # Once: the file signal and the view's resubmission restart must not both
+    # queue it (two validator containers for one entry).
+    delay_mock.assert_called_once_with(entry.id)
     assert entry.file.name.endswith('.zip')
     assert 'wrong.zip' not in entry.file.name
 

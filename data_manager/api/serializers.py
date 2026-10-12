@@ -1091,6 +1091,8 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 
             enqueue_on_commit(fetch_static_entry_task, entry.pk)
         elif entry.submission.data_type == 'gtfs':
+            if getattr(entry, '_gtfs_validation_queued', False):
+                return  # the file signal already queued it for this save
             from data_manager.tasks import enqueue_on_commit, validate_gtfs_feed_task
 
             enqueue_on_commit(validate_gtfs_feed_task, entry.pk)
