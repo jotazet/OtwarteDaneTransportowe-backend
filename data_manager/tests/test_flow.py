@@ -1,5 +1,8 @@
+import contextlib
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import time
 from unittest.mock import patch
 
@@ -9,6 +12,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
+from django.db import connection
 from django.test import override_settings
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
@@ -2207,3 +2211,83 @@ def test_realtime_stage_patch_response_reflects_new_stage(
     assert response.status_code == 200, response.data
     assert response.data['current_stage'] == 3
     assert response.data['is_rejected'] is False
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    ('error_count', 'event_type', 'stage_after'),
+    [
+        (0, FeedSubmissionHistory.EVENT_STAGE_ADVANCED, 3),
+        (3, FeedSubmissionHistory.EVENT_REJECTED, 1),
+    ],
+)
+def test_overlapping_gtfs_validations_record_the_stage_change_once(
+    normal_user, org, settings, error_count, event_type, stage_after
+):
+    """Two runs for one entry (upload signal, proxy refresh, manage.py
+    retry_gtfs_validation) both read stage 2 and both appended the
+    transition, leaving two 2 -> 3 (or 2 -> 1) rows in the audit trail."""
+    settings.HOST_MEDIA_ROOT = str(settings.MEDIA_ROOT)
+    submission = _feed_at_stage_2(org, normal_user)
+    entry = StaticFeedEntry.objects.create(
+        submission=submission,
+        file=ContentFile(b'PK\x03\x04data', name='feed.zip'),
+    )
+
+    real_current_stage = FeedSubmission.current_stage
+    both_read = threading.Barrier(2)
+
+    def current_stage_then_wait(submission):
+        stage = real_current_stage.fget(submission)
+        # Hold each run between reading the stage and writing the history row
+        # until the other run has read it too. When the runs are serialized
+        # the other one never gets here, so the wait times out and both go on.
+        with contextlib.suppress(threading.BrokenBarrierError):
+            both_read.wait(timeout=1)
+        return stage
+
+    def run_validation():
+        try:
+            validate_gtfs_feed_task(entry.id)
+        finally:
+            connection.close()
+
+    with (
+        patch('docker.from_env', _mock_docker_from_env(error_count)),
+        patch.object(FeedSubmission, 'current_stage', property(current_stage_then_wait)),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        runs = [pool.submit(run_validation) for _ in range(2)]
+        for run in runs:
+            run.result()
+
+    transitions = FeedSubmissionHistory.objects.filter(
+        submission=submission, event_type=event_type
+    ).values_list('stage_before', 'stage_after')
+    assert list(transitions) == [(2, stage_after)]
+
+
+def test_failed_revalidation_of_rejected_feed_records_only_a_new_cause(normal_user, org, settings):
+    """A rejected submission can be re-validated without leaving stage 1 (e.g.
+    an Admin replaced its file). A new failure is recorded with its own cause;
+    the same failure again is not recorded twice."""
+    settings.HOST_MEDIA_ROOT = str(settings.MEDIA_ROOT)
+    submission = _feed_at_stage_2(org, normal_user)
+    entry = StaticFeedEntry.objects.create(
+        submission=submission,
+        file=ContentFile(b'PK\x03\x04data', name='feed.zip'),
+    )
+
+    for error_count in (3, 3, 5):
+        with patch('docker.from_env', _mock_docker_from_env(error_count)):
+            validate_gtfs_feed_task(entry.id)
+
+    rejections = (
+        submission.history.filter(event_type=FeedSubmissionHistory.EVENT_REJECTED)
+        .order_by('created_at', 'id')
+        .values_list('stage_before', 'cause')
+    )
+    assert list(rejections) == [
+        (2, 'test_validation_error: 3'),
+        (1, 'test_validation_error: 5'),
+    ]
