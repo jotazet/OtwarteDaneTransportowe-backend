@@ -13,6 +13,7 @@ NO_ENDPOINTS = 'realtime.no_endpoints'
 ENDPOINT_HTTP_ERROR = 'realtime.endpoint_http_error'  # + ``status``
 ENDPOINT_CONTENT_EMPTY = 'realtime.endpoint_content_empty'
 ENDPOINT_CONTENT_INVALID = 'realtime.endpoint_content_invalid'  # + ``protocol``
+ENDPOINT_TOO_LARGE = 'realtime.endpoint_too_large'  # + ``limit_bytes``
 ENDPOINT_URL_BLOCKED = 'realtime.endpoint_url_blocked'
 ENDPOINT_TIMEOUT = 'realtime.endpoint_timeout'
 ENDPOINT_UNREACHABLE = 'realtime.endpoint_unreachable'

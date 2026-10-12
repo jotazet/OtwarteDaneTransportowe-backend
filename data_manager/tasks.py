@@ -861,7 +861,7 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
         RealtimeSubmissionHistory,
         completed_submission_ids,
     )
-    from data_manager.net_security import OutboundURLBlocked, safe_get
+    from data_manager.net_security import OutboundURLBlocked, ResponseTooLarge, safe_get
     from data_manager.scheduler import _build_auth_headers, _fetch_realtime_endpoint_rt
     from data_manager.validators import (
         EmptyFeedContent,
@@ -924,6 +924,7 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     exception_codes = (
         (EmptyFeedContent, rr.ENDPOINT_CONTENT_EMPTY),
         (InvalidFeedContent, rr.ENDPOINT_CONTENT_INVALID),
+        (ResponseTooLarge, rr.ENDPOINT_TOO_LARGE),
         (OutboundURLBlocked, rr.ENDPOINT_URL_BLOCKED),
         (requests.exceptions.Timeout, rr.ENDPOINT_TIMEOUT),
         (requests.exceptions.ConnectionError, rr.ENDPOINT_UNREACHABLE),
@@ -961,7 +962,11 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                 code,
                 exc,
             )
-            extra = {'protocol': rts.protocol} if code == rr.ENDPOINT_CONTENT_INVALID else {}
+            extra = {}
+            if code == rr.ENDPOINT_CONTENT_INVALID:
+                extra['protocol'] = rts.protocol
+            elif code == rr.ENDPOINT_TOO_LARGE:
+                extra['limit_bytes'] = exc.max_bytes
             reasons.append(rr.rejection_reason(code, endpoint_type=ep.endpoint_type, **extra))
 
     if not reasons:

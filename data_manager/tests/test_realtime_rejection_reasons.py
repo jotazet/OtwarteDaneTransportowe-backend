@@ -20,7 +20,7 @@ from data_manager.models import (
     RealtimeSubmission,
     RealtimeSubmissionHistory,
 )
-from data_manager.net_security import OutboundURLBlocked
+from data_manager.net_security import OutboundURLBlocked, ResponseTooLarge
 from data_manager.tasks import validate_realtime_submission_task
 from data_manager.tests.test_flow import gtfs_rt_feed_bytes
 
@@ -139,6 +139,11 @@ def test_submission_level_problem_is_rejected_with_code(
             {'side_effect': OutboundURLBlocked('URL resolves to a non-public IP address.')},
             rr.ENDPOINT_URL_BLOCKED,
             {},
+        ),
+        (
+            {'side_effect': ResponseTooLarge(1024)},
+            rr.ENDPOINT_TOO_LARGE,
+            {'limit_bytes': 1024},
         ),
         ({'side_effect': requests.exceptions.ReadTimeout('slow')}, rr.ENDPOINT_TIMEOUT, {}),
         # ConnectTimeout is both a Timeout and a ConnectionError: it counts as a timeout.
@@ -312,6 +317,16 @@ def test_reviewer_rejection_keeps_free_text_and_has_no_reasons(org, provider):
             'sm: blocked URL (URL resolves to a non-public IP address.)',
             'siri',
             [{'code': rr.ENDPOINT_URL_BLOCKED, 'details': {'endpoint_type': 'sm'}}],
+        ),
+        (
+            'gbfs: blocked URL (Response body exceeds the 33554432 byte limit.)',
+            'gbfs',
+            [
+                {
+                    'code': rr.ENDPOINT_TOO_LARGE,
+                    'details': {'endpoint_type': 'gbfs', 'limit_bytes': 33554432},
+                }
+            ],
         ),
         (
             'gbfs: Total download time budget exceeded.',

@@ -468,7 +468,8 @@ Rejections recorded before codes existed were converted when every part of their
 | `realtime.endpoint_http_error` | `endpoint_type`, `status` | The endpoint answered with HTTP `status` (400 or higher). |
 | `realtime.endpoint_content_empty` | `endpoint_type` | The endpoint answered with an empty body. |
 | `realtime.endpoint_content_invalid` | `endpoint_type`, `protocol` | The body is not a valid feed of `protocol` (`gtfs_rt`: not a parsable protobuf or no `header.gtfs_realtime_version`; `gbfs`: not JSON; `siri`: an HTML page). |
-| `realtime.endpoint_url_blocked` | `endpoint_type` | The URL was refused by the outbound security rules: its host does not resolve or resolves to a non-public address, a redirect was refused, or the response exceeded the size limit. |
+| `realtime.endpoint_too_large` | `endpoint_type`, `limit_bytes` | The response exceeded the size limit for realtime feeds (`MAX_REALTIME_FEED_BYTES`, 32 MiB by default). |
+| `realtime.endpoint_url_blocked` | `endpoint_type` | The URL was refused by the outbound security rules: its host does not resolve or resolves to a non-public address, or a redirect was refused. |
 | `realtime.endpoint_timeout` | `endpoint_type` | The endpoint did not answer in time. |
 | `realtime.endpoint_unreachable` | `endpoint_type` | No connection could be made (refused, reset, TLS error). |
 | `realtime.endpoint_fetch_failed` | `endpoint_type` | Any other error while fetching; details are in the server log. |

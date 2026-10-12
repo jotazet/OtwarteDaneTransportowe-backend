@@ -64,6 +64,7 @@ ENDPOINT_MESSAGE_PREFIXES = {
 
 ENDPOINT_PART = re.compile(r'(?P<endpoint_type>[a-z_]+): (?P<message>.+)', re.DOTALL)
 HTTP_STATUS = re.compile(r'HTTP (?P<status>\d{3})')
+TOO_LARGE = re.compile(r'blocked URL \(Response body exceeds the (?P<limit>\d+) byte limit\.\)')
 
 
 def _endpoint_reason(part: str, protocol: str) -> dict | None:
@@ -77,6 +78,11 @@ def _endpoint_reason(part: str, protocol: str) -> dict | None:
     if status:
         details['status'] = int(status['status'])
         return {'code': 'realtime.endpoint_http_error', 'details': details}
+
+    too_large = TOO_LARGE.fullmatch(message)
+    if too_large:
+        details['limit_bytes'] = int(too_large['limit'])
+        return {'code': 'realtime.endpoint_too_large', 'details': details}
 
     code = ENDPOINT_MESSAGES.get(message) or next(
         (c for prefix, c in ENDPOINT_MESSAGE_PREFIXES.items() if message.startswith(prefix)),

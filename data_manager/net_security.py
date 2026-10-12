@@ -24,6 +24,14 @@ class OutboundURLBlocked(ValueError):
     """Raised when an outbound URL is considered unsafe (SSRF protection)."""
 
 
+class ResponseTooLarge(OutboundURLBlocked):
+    """The response body exceeded the caller's ``max_bytes`` cap."""
+
+    def __init__(self, max_bytes: int):
+        super().__init__(f"Response body exceeds the {max_bytes} byte limit.")
+        self.max_bytes = max_bytes
+
+
 def _is_public_ip(ip: str) -> bool:
     addr = ip_address(ip)
     if addr.is_private:
@@ -327,7 +335,7 @@ def _drain_to_spool(response, *, max_bytes: int, chunk_size: int, deadline: _Dea
             deadline.check()
             total += len(chunk)
             if total > max_bytes:
-                raise OutboundURLBlocked(f"Response body exceeds the {max_bytes} byte limit.")
+                raise ResponseTooLarge(max_bytes)
             spool.write(chunk)
         spool.seek(0)
         return spool
