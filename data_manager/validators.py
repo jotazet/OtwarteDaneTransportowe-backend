@@ -78,7 +78,7 @@ def _validate_gtfs_rt_protobuf(content: bytes) -> None:
     """
     try:
         from google.transit import gtfs_realtime_pb2
-    except ImportError:  # pragma: no cover - dependency is in requirements.txt
+    except ImportError:  # pragma: no cover - dependency is in pyproject.toml
         logger.warning(
             'gtfs-realtime-bindings is not installed — GTFS-RT bodies are only '
             'checked for an XML/HTML prefix, not parsed as protobuf.'

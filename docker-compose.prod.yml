@@ -19,6 +19,9 @@
 
 services:
   web:
+    build:
+      args:
+        INSTALL_DEV: "false"
     command: >
       gunicorn OtwarteDaneTransportowe.wsgi:application
       --bind 0.0.0.0:8000
@@ -30,17 +33,29 @@ services:
       HOME: /app
 
   celery_worker:
+    build:
+      args:
+        INSTALL_DEV: "false"
     environment:
       DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
 
   celery_beat:
+    build:
+      args:
+        INSTALL_DEV: "false"
     environment:
       DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
 
   celery_validator_worker:
+    build:
+      args:
+        INSTALL_DEV: "false"
     environment:
       DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
 
   migrate:
+    build:
+      args:
+        INSTALL_DEV: "false"
     environment:
       DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod

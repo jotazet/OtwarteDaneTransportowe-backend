@@ -11,7 +11,11 @@ x-app-env: &app-env
   REDIS_CACHE_URL: redis://redis:6379/2
 
 x-app-service: &app-service
-  build: .
+  build:
+    context: .
+    # Dev image includes pytest and ruff; docker-compose.prod.yml turns it off.
+    args:
+      INSTALL_DEV: "true"
   restart: unless-stopped
   user: "${UID:-1000}:${GID:-1000}"
   security_opt:
