@@ -1003,6 +1003,9 @@ def test_resubmit_clears_is_rejected(api_client, normal_user, org, settings, tmp
             format='json',
         )
     assert response.status_code == 200, response.data
+    # The response reflects the resubmission, not the rejected state before it.
+    assert response.data['is_rejected'] is False
+    assert response.data['current_stage'] == 2
     submission.refresh_from_db()
     assert submission.is_rejected is False
     assert submission.rejection_cause is None
