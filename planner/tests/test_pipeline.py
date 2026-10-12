@@ -262,3 +262,97 @@ def test_ensure_serving_leaves_a_running_build_alone(make_feed, fake_otp):
     pipeline.ensure_serving()
 
     assert not fake_otp.running
+
+
+def test_heartbeat_is_refreshed_while_feeds_are_collected(make_feed, fake_otp, monkeypatch):
+    make_feed('krk')
+    make_feed('waw')
+    beats = []
+    real_heartbeat = pipeline._heartbeat
+    monkeypatch.setattr(
+        pipeline,
+        '_heartbeat',
+        lambda build: (beats.append(list(fake_otp.events)), real_heartbeat(build)),
+    )
+
+    build_now()
+
+    assert len([events for events in beats if 'stop' not in events]) >= 2
+
+
+def test_unreachable_docker_fails_the_build_with_its_own_code(make_feed, fake_otp, monkeypatch):
+    make_feed('krk')
+
+    def run_otp(*args, **kwargs):
+        raise pipeline.otp_runtime.DockerUnavailable('connection refused')
+
+    monkeypatch.setattr(pipeline.otp_runtime, 'run_otp', run_otp)
+
+    build = build_now()
+
+    assert build.error_code == 'planner.docker_unavailable'
+    assert fake_otp.running
+
+
+def test_snapshot_of_a_deleted_feed_is_not_reused(make_feed, fake_otp, planner_data):
+    feed = make_feed('waw')
+    snapshot = Path(pipeline.snapshot_path(feed))
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_bytes(GTFS_ZIP)  # left behind by an earlier 'waw' that was deleted
+    make_feed('krk')
+    fake_otp.failing_feeds['waw'] = (255, 'boom')
+
+    build = build_now()
+
+    assert results(build)['waw']['outcome'] == 'excluded'
+
+
+def test_failed_first_activation_serves_nothing(make_feed, fake_otp):
+    make_feed('krk')
+    fake_otp.healthy = False
+
+    build = build_now()
+
+    assert build.error_code == 'planner.activation_failed'
+    assert not os.path.lexists(pipeline.data_path('serving'))
+
+
+def test_feed_copy_is_retried_on_the_current_file(make_feed, fake_otp, monkeypatch):
+    feed = make_feed('krk', content=b'PK\x03\x04 mid-rewrite')
+    monkeypatch.setattr(pipeline, '_sleep', lambda seconds: set_feed_content(feed, GTFS_ZIP))
+
+    build = build_now()
+
+    assert results(build)['krk']['outcome'] == 'fresh'
+
+
+def test_last_good_version_is_retested_after_an_otp_upgrade(
+    make_feed, fake_otp, settings, monkeypatch
+):
+    make_feed('krk')
+    waw = make_feed('waw')
+    build_now()
+    settings.PLANNER_OTP_IMAGE = 'opentripplanner/opentripplanner:2.11.0'
+    set_feed_content(waw, b'not a zip')  # newest version unusable -> last good version
+    fake_otp.failing_feeds['waw'] = (100, 'incompatible')
+
+    build = build_now()
+
+    waw_result = results(build)['waw']
+    assert (waw_result['outcome'], waw_result['error_code']) == ('excluded', 'planner.feed_invalid')
+    assert build.status == GraphBuild.STATUS_SUCCEEDED
+
+
+def test_excluded_feed_keeps_its_area_in_the_street_graph(make_feed, fake_otp):
+    make_feed('krk')
+    waw = make_feed('waw', content=gtfs_variant('v1'), failure_policy=PlannerFeed.POLICY_EXCLUDE)
+    first = build_now()
+    set_feed_content(waw, gtfs_variant('v2'))
+    fake_otp.failing_feeds['waw'] = (255, 'boom')
+    fake_otp.runs.clear()
+
+    build = build_now()
+
+    assert results(build)['waw']['outcome'] == 'excluded'
+    assert 'street' not in fake_otp.kinds()
+    assert build.street_graph_key == first.street_graph_key

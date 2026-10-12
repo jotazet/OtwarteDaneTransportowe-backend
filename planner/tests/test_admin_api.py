@@ -219,3 +219,17 @@ def test_feed_list_query_count_does_not_grow_with_feeds(
         response = admin_client.get(f'{BASE}/feeds/')
 
     assert response.data['count'] == 10
+
+
+def test_schedule_edited_elsewhere_still_reads(admin_client):
+    from django_celery_beat.models import CrontabSchedule
+
+    crontab = CrontabSchedule.objects.create(minute='0', hour='*', day_of_week='*', timezone='UTC')
+    PeriodicTask.objects.create(
+        name='planner-graph-build', task='planner.scheduled_graph_build', crontab=crontab
+    )
+
+    response = admin_client.get(f'{BASE}/schedule/')
+
+    assert response.status_code == 200
+    assert response.data['weekdays'] == [3, 7]

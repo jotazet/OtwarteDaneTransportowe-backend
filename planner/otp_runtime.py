@@ -25,6 +25,10 @@ class OtpUnavailable(Exception):
     pass
 
 
+class DockerUnavailable(Exception):
+    pass
+
+
 @dataclass
 class RunResult:
     exit_code: int
@@ -67,6 +71,11 @@ def run_otp(host_dir, args, *, heap, mem_limit, memswap_limit=None, mounts=None,
                 status = container.wait(timeout=WAIT_POLL_SECONDS)
                 break
             except requests.exceptions.RequestException:
+                # Usually the wait timed out; if Docker itself is gone, reload fails too.
+                try:
+                    container.reload()
+                except (requests.exceptions.RequestException, docker.errors.DockerException) as exc:
+                    raise DockerUnavailable(str(exc)) from exc
                 if on_tick:
                     on_tick()
         container.reload()

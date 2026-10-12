@@ -26,24 +26,12 @@ class BuildNotActivatable(Exception):
 
 def request_build(trigger: str, user=None) -> GraphBuild:
     """Queue a graph build unless one is already queued or running."""
-    from planner.tasks import run_graph_build_task
-
-    with transaction.atomic():
-        with connection.cursor() as cursor:
-            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [BUILD_REQUEST_LOCK])
-        if GraphBuild.objects.filter(status__in=GraphBuild.ACTIVE_STATUSES).exists():
-            raise BuildInProgress
-        build = GraphBuild.objects.create(
-            trigger=trigger, requested_by=user, otp_image=settings.PLANNER_OTP_IMAGE
-        )
-        enqueue_on_commit(run_graph_build_task, build.id)
-    return build
+    return _queue_build(trigger=trigger, requested_by=user, otp_image=settings.PLANNER_OTP_IMAGE)
 
 
 def request_rollback(target: GraphBuild, user=None) -> GraphBuild:
     """Serve an earlier build's graph again, if it is still on disk."""
     from planner.pipeline import graph_dir
-    from planner.tasks import run_graph_build_task
 
     if (
         target.status != GraphBuild.STATUS_SUCCEEDED
@@ -52,20 +40,26 @@ def request_rollback(target: GraphBuild, user=None) -> GraphBuild:
         or not os.path.exists(os.path.join(graph_dir(target), 'graph.obj'))
     ):
         raise BuildNotActivatable
-    source = target.rollback_of or target
+    return _queue_build(
+        trigger=GraphBuild.TRIGGER_ROLLBACK,
+        requested_by=user,
+        rollback_of=target.rollback_of or target,
+        otp_image=target.otp_image,
+        street_graph_key=target.street_graph_key,
+        feed_results=target.feed_results,
+    )
+
+
+def _queue_build(**fields) -> GraphBuild:
+    from planner.tasks import run_graph_build_task
+
     with transaction.atomic():
+        # Serialises concurrent requests: a row lock cannot cover a row that does not exist yet.
         with connection.cursor() as cursor:
             cursor.execute('SELECT pg_advisory_xact_lock(%s)', [BUILD_REQUEST_LOCK])
         if GraphBuild.objects.filter(status__in=GraphBuild.ACTIVE_STATUSES).exists():
             raise BuildInProgress
-        build = GraphBuild.objects.create(
-            trigger=GraphBuild.TRIGGER_ROLLBACK,
-            requested_by=user,
-            rollback_of=source,
-            otp_image=target.otp_image,
-            street_graph_key=target.street_graph_key,
-            feed_results=target.feed_results,
-        )
+        build = GraphBuild.objects.create(**fields)
         enqueue_on_commit(run_graph_build_task, build.id)
     return build
 
@@ -91,11 +85,14 @@ def get_build_schedule() -> dict:
     if task is None or task.crontab is None:
         return dict(DEFAULT_SCHEDULE)
     crontab = task.crontab
-    return {
-        'enabled': task.enabled,
-        'weekdays': sorted(_CRON_TO_ISO[day] for day in crontab.day_of_week.split(',')),
-        'time_utc': f'{int(crontab.hour):02d}:{int(crontab.minute):02d}',
-    }
+    try:
+        weekdays = sorted(_CRON_TO_ISO[day] for day in crontab.day_of_week.split(','))
+        time_utc = f'{int(crontab.hour):02d}:{int(crontab.minute):02d}'
+    except (KeyError, ValueError):
+        # Edited by hand (e.g. in the Django admin) into a form the panel does
+        # not use; show the default so it can be saved again.
+        return {**DEFAULT_SCHEDULE, 'enabled': task.enabled}
+    return {'enabled': task.enabled, 'weekdays': weekdays, 'time_utc': time_utc}
 
 
 def set_build_schedule(*, enabled: bool, weekdays: list[int], time_utc: str) -> dict:
