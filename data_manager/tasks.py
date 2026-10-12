@@ -617,7 +617,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             )
             return
 
-        # NOTE: Do not check host_file_path existence here.
+        # NOTE: Do not check that the file exists at the host path here.
         # This code runs inside the worker container and does not have access
         # to host filesystem paths like /home/jakub/..., which causes false rejections.
 
