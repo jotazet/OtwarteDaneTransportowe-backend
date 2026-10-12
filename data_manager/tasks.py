@@ -883,40 +883,58 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     except RealtimeSubmission.DoesNotExist:
         return {'status': 'not_found', 'id': submission_id}
 
-    def _reject(reasons: list[dict]) -> dict:
-        stage = rts.current_stage
-        if stage >= 4:
-            # A failed revalidation of a published feed must not unpublish it
-            # (ADR 0005), same as the static path: report it and keep the stage.
-            logger.warning(
-                'Realtime validation failed for published submission %s; not reverting '
-                'stage (was %s): %s',
-                submission_id,
-                stage,
-                ', '.join(reason['code'] for reason in reasons),
-            )
-            return {'status': 'failed_published', 'reasons': reasons}
-        RealtimeSubmissionHistory.objects.create(
-            submission=rts,
-            event_type=RealtimeSubmissionHistory.EVENT_REJECTED,
-            stage_before=stage,
-            stage_after=1,
-            reasons=reasons,
-            actor=None,
+    def _lock_submission() -> RealtimeSubmission:
+        # Overlapping runs (create, resubmission, retry command) must read the
+        # stage one at a time: read it from the returned row, in the same atomic block.
+        return (
+            RealtimeSubmission.objects.select_for_update()
+            .prefetch_related('history')
+            .get(pk=submission_id)
         )
+
+    def _reject(reasons: list[dict]) -> dict:
+        with transaction.atomic():
+            submission = _lock_submission()
+            stage = submission.current_stage
+            if stage >= 4:
+                # A failed revalidation of a published feed must not unpublish it
+                # (ADR 0005), same as the static path: report it and keep the stage.
+                logger.warning(
+                    'Realtime validation failed for published submission %s; not reverting '
+                    'stage (was %s): %s',
+                    submission_id,
+                    stage,
+                    ', '.join(reason['code'] for reason in reasons),
+                )
+                return {'status': 'failed_published', 'reasons': reasons}
+            # Unless the same verdict is already recorded, e.g. by an overlapping run.
+            if submission.rejection_reasons != reasons:
+                RealtimeSubmissionHistory.objects.create(
+                    submission=submission,
+                    event_type=RealtimeSubmissionHistory.EVENT_REJECTED,
+                    stage_before=stage,
+                    stage_after=1,
+                    reasons=reasons,
+                    actor=None,
+                )
         return {'status': 'rejected', 'reasons': reasons}
 
-    def _advance(stage_before: int, stage_after: int) -> None:
-        RealtimeSubmissionHistory.objects.create(
-            submission=rts,
-            event_type=RealtimeSubmissionHistory.EVENT_STAGE_ADVANCED,
-            stage_before=stage_before,
-            stage_after=stage_after,
-            actor=None,
-        )
+    def _advance(stage_after: int) -> None:
+        with transaction.atomic():
+            submission = _lock_submission()
+            stage = submission.current_stage
+            if stage >= stage_after:
+                # Already moved, by an overlapping run or a reviewer.
+                return
+            RealtimeSubmissionHistory.objects.create(
+                submission=submission,
+                event_type=RealtimeSubmissionHistory.EVENT_STAGE_ADVANCED,
+                stage_before=stage,
+                stage_after=stage_after,
+                actor=None,
+            )
 
-    if rts.current_stage == 1:
-        _advance(1, 2)
+    _advance(2)
 
     if rts.protocol in (RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI):
         if not rts.static_submission_id:
@@ -997,9 +1015,5 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     if reasons:
         return _reject(reasons)
 
-    cur = RealtimeSubmission.objects.get(pk=submission_id).current_stage
-    if cur == 2:
-        _advance(2, 3)
-    elif cur == 1:
-        _advance(1, 3)
+    _advance(3)
     return {'status': 'ok', 'id': submission_id}

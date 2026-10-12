@@ -1,7 +1,10 @@
 """Automatic realtime rejections are stored and served as codes (ADR 0006)."""
 
+import contextlib
 import importlib
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -10,6 +13,7 @@ import requests
 from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.db import connection
 from rest_framework.test import APIClient
 
 from cases.models import TransportOrganization
@@ -250,6 +254,57 @@ def test_failed_revalidation_keeps_published_submission(
     assert not rts.is_rejected
     assert not rts.history.filter(event_type=RealtimeSubmissionHistory.EVENT_REJECTED).exists()
     assert code in caplog.text
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    ('status_code', 'transitions'),
+    [
+        (200, [(0, 1), (1, 2), (2, 3)]),
+        (404, [(0, 1), (1, 2), (2, 1)]),
+    ],
+)
+def test_overlapping_validations_record_each_stage_change_once(
+    org, provider, status_code, transitions
+):
+    """Two runs for one submission (create, owner resubmission, manage.py
+    retry_realtime_validation) both read the stage and both appended the
+    transition: two 1 -> 2 rows, then two 2 -> 3 (or 2 -> 1) rows."""
+    rts = make_rts(org, provider, 'gbfs', endpoint_types=['gbfs'])
+
+    real_current_stage = RealtimeSubmission.current_stage
+    both_started = threading.Barrier(2)
+    both_read = threading.Barrier(2)
+
+    def current_stage_then_wait(submission):
+        stage = real_current_stage.fget(submission)
+        # Hold each run between reading the stage and writing the history row
+        # until the other run has read it too. When the runs are serialized
+        # the other one never gets here, so the wait times out and both go on.
+        with contextlib.suppress(threading.BrokenBarrierError):
+            both_read.wait(timeout=1)
+        return stage
+
+    def run_validation():
+        # Start together: a run that began after the other one finished would
+        # legitimately record its own 1 -> 2 and rejection again.
+        both_started.wait(timeout=10)
+        try:
+            validate_realtime_submission_task(rts.id)
+        finally:
+            connection.close()
+
+    with (
+        patch('data_manager.net_security.safe_get', return_value=response(status_code, b'{}')),
+        patch.object(RealtimeSubmission, 'current_stage', property(current_stage_then_wait)),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        runs = [pool.submit(run_validation) for _ in range(2)]
+        for run in runs:
+            run.result()
+
+    history = rts.history.order_by('created_at', 'id').values_list('stage_before', 'stage_after')
+    assert list(history) == transitions
 
 
 # ---------------------------------------------------------------------------
