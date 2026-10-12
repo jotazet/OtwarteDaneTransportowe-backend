@@ -298,8 +298,11 @@ validator release can add, remove or reclassify notices, so the same feed may pa
 before and fail after. To upgrade, read the
 [release notes](https://github.com/MobilityData/gtfs-validator/releases), run a few
 real feeds through the new tag, then bump the default in code (or set the variable
-in `.env` and restart `celery_validator_worker`). Published feeds are not unpublished
-by a failed revalidation.
+in `.env` and recreate the worker with `./scripts/deploy.sh up -d celery_validator_worker`;
+a plain `restart` does not re-read `.env`). Pull the new image on the host first
+(`docker pull <image>`): otherwise the first validation pulls it inside the task, and on a
+slow link it can hit the task's time limit and reject the submission. Published feeds are
+not unpublished by a failed revalidation.
 
 > ⚠️ **Security (honestly):** the proxy cuts off exec/volumes/networks/secrets,
 > but the `containers create` API still accepts bind mounts and the `privileged` flag,
