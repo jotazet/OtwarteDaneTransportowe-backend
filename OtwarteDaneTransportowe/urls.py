@@ -26,10 +26,9 @@ from drf_spectacular.views import (
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
-from rest_framework.permissions import AllowAny
 
 from data_manager.api.views import PublicFeedDownloadView, RealtimePublicFeedDownloadView
-from OtwarteDaneTransportowe.auth_roles import RequiresAdminGroup
+from OtwarteDaneTransportowe.auth_roles import AdminGroupOrDebug
 from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairView, ThrottledTokenRefreshView
 
 urlpatterns = [
@@ -65,7 +64,7 @@ urlpatterns = [
 
 # The API schema and interactive docs are public in development but restricted to
 # the Admin role in production to avoid disclosing the full API surface.
-_schema_permissions = [AllowAny] if settings.DEBUG else [RequiresAdminGroup]
+_schema_permissions = [AdminGroupOrDebug]
 urlpatterns += [
     path(
         'api/schema/',

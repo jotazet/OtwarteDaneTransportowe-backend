@@ -1,3 +1,4 @@
+from django.conf import settings
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 ROLE_ADMIN = 'Admin'
@@ -203,6 +204,13 @@ class RequiresAdminGroup(BasePermission):
 
     def has_permission(self, request, view):
         return has_admin_role(request.user)
+
+
+class AdminGroupOrDebug(BasePermission):
+    """Open to everyone with ``DEBUG``, otherwise the ``Admin`` group only (API schema)."""
+
+    def has_permission(self, request, view):
+        return settings.DEBUG or has_admin_role(request.user)
 
 
 class IsFeedParticipant(BasePermission):
