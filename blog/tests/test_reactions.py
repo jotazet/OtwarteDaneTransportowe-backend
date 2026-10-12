@@ -52,6 +52,26 @@ def test_xff_ignored_when_remote_outside_trusted_cidr(settings):
     assert get_client_ip(request) == '203.0.113.7'
 
 
+def test_spoofed_leftmost_xff_cannot_choose_client_ip(settings):
+    # nginx's $proxy_add_x_forwarded_for appends the real peer to whatever the
+    # client sent, so the leftmost entry is attacker-controlled.
+    settings.TRUSTED_PROXY_CIDRS = ['10.0.0.0/8']
+    request = _request('10.1.2.3', xff='6.6.6.6, 198.51.100.1')
+    assert get_client_ip(request) == '198.51.100.1'
+
+
+def test_trusted_hops_are_skipped_from_the_right(settings):
+    settings.TRUSTED_PROXY_CIDRS = ['10.0.0.0/8']
+    request = _request('10.1.2.3', xff='6.6.6.6, 198.51.100.1, 10.9.9.9')
+    assert get_client_ip(request) == '198.51.100.1'
+
+
+def test_invalid_xff_entry_stops_the_walk(settings):
+    settings.TRUSTED_PROXY_CIDRS = ['10.0.0.0/8']
+    request = _request('10.1.2.3', xff='198.51.100.1, not-an-ip')
+    assert get_client_ip(request) == '10.1.2.3'
+
+
 def test_malformed_cidr_entries_are_skipped(settings):
     settings.TRUSTED_PROXY_CIDRS = ['not-a-cidr', '10.0.0.0/8']
     request = _request('10.1.2.3', xff='198.51.100.1')
