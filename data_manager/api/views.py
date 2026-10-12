@@ -860,7 +860,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                 stage_after=1,
                 actor=request.user,
             )
-        enqueue(validate_realtime_submission_task, rts.id)
+            transaction.on_commit(lambda: enqueue(validate_realtime_submission_task, rts.id))
         out = self._read_serializer(request, rts)
         return Response(out.data, status=status.HTTP_201_CREATED)
 
@@ -967,10 +967,12 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                         )
                     # Admin edits keep the current stage — a published feed must
                     # not be silently unpublished by an endpoint tweak. The
-                    # re-validation below rejects (with an audit trail) if the
-                    # new endpoints turn out to be broken.
+                    # re-validation rejects (with an audit trail) a submission
+                    # that is not published yet if the new endpoints are broken.
+                    transaction.on_commit(
+                        lambda: enqueue(validate_realtime_submission_task, instance.id)
+                    )
         if endpoints_data is not None and not restricted_realtime:
-            enqueue(validate_realtime_submission_task, instance.id)
             if instance.current_stage == 4:
                 # Endpoints were replaced (old fetch loops died with their
                 # rows); re-seed the self-scheduling loops for the new ones

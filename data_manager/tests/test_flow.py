@@ -1419,7 +1419,7 @@ def test_owner_cannot_delete_realtime_submission(api_client, normal_user, admin_
 
 
 def test_admin_endpoint_edit_keeps_published_rt_stage(
-    api_client, admin_role_user, normal_user, org
+    api_client, admin_role_user, normal_user, org, django_capture_on_commit_callbacks
 ):
     """Replacing endpoints of a published RT must not silently unpublish it."""
     rts = RealtimeSubmission.objects.create(
@@ -1445,6 +1445,7 @@ def test_admin_endpoint_edit_keeps_published_rt_stage(
     with (
         patch('data_manager.tasks.validate_realtime_submission_task.delay') as validate_mock,
         patch('data_manager.tasks.schedule_realtime_endpoint_fetches') as schedule_mock,
+        django_capture_on_commit_callbacks(execute=True),
     ):
         response = api_client.patch(
             f'/api/data_manager/realtime-submissions/{rts.id}/',
@@ -1473,6 +1474,38 @@ def test_admin_endpoint_edit_keeps_published_rt_stage(
     )
     validate_mock.assert_called_once_with(rts.id)
     schedule_mock.assert_called_once_with(rts.id)
+
+
+def test_realtime_create_queues_validation_after_commit(
+    api_client, normal_user, org, monkeypatch, django_capture_on_commit_callbacks
+):
+    """The worker must not read the submission before it is committed."""
+    monkeypatch.setattr(
+        'data_manager.net_security.socket.getaddrinfo',
+        lambda host, port, *a, **k: [(2, 1, 6, '', ('93.184.216.34', port or 80))],
+    )
+    api_client.force_authenticate(user=normal_user)
+    with patch('data_manager.tasks.validate_realtime_submission_task.delay') as validate_mock:
+        with django_capture_on_commit_callbacks() as callbacks:
+            response = api_client.post(
+                '/api/data_manager/realtime-submissions/',
+                {
+                    'transport_organization': org.id,
+                    'protocol': 'gbfs',
+                    'static_submission': None,
+                    'endpoints': [
+                        {'endpoint_type': 'gbfs', 'url': 'https://example.org/gbfs.json'}
+                    ],
+                },
+                format='json',
+            )
+        assert response.status_code == 201, response.data
+        validate_mock.assert_not_called()
+
+        for callback in callbacks:
+            callback()
+
+    validate_mock.assert_called_once_with(response.data['id'])
 
 
 def _realtime_with_secret(settings, org, owner, stage_after):
