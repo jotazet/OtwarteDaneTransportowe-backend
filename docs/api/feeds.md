@@ -141,16 +141,31 @@ Base endpoint:
   "published_at": null,
   "static_entry": {
     "id": 9,
+    "organization": "ZTM Warszawa",
+    "region": "Mazowieckie",
+    "feed_name": "#37 Rozklad ZTM",
+    "is_proxy_managed": true,
     "url": "https://example.com/gtfs.zip",
     "file": null,
     "is_original": true,
-    "hide_original": false,
+    "hide_original": true,
     "auth_type": "",
     "download_time_1": "03:00:00",
     "download_time_2": null,
     "license": "CC BY 4.0",
-    "cached_at": null,
-    "uploaded_at": "2026-04-27T10:00:00Z"
+    "cached_at": "2026-04-27T10:05:00Z",
+    "uploaded_at": "2026-04-27T10:00:00Z",
+    "validation_status": "valid",
+    "validation_message": "",
+    "fetch_status": "active",
+    "fetch_failure_count": 0,
+    "next_fetch_after": null,
+    "fetch_paused_at": null,
+    "fetch_pause_reason": "",
+    "last_fetch_success_at": "2026-04-27T10:05:00Z",
+    "last_fetch_error_at": null,
+    "last_fetch_error_message": null,
+    "fetch_error_count_7d": 0
   },
   "realtime_submissions": [],
   "history": [
@@ -168,6 +183,13 @@ Base endpoint:
 ```
 
 `auth_value` is write-only and is never returned in a response.
+
+In `static_entry`:
+
+- The fetch health fields, from `fetch_status` to `fetch_error_count_7d`, are present only when `is_proxy_managed` is `true` (a URL with `hide_original=true`); for an uploaded file or a non-proxied URL they are left out. They are described in the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+- `validation_status` is `pending`, `valid`, `invalid` or `error`; `validation_message` is a short English status or error text from validation (empty when valid).
+
+For Helper/Admin the detail and the write responses also contain `submitted_by_username`.
 
 **Create - URL:**
 
