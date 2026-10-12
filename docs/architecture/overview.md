@@ -1,5 +1,34 @@
 # Architecture overview
 
+## System context
+
+```
+ feed consumers, data providers, ODT team
+            │  browser
+            ▼
+   ┌──────────────────────┐  HTTP/JSON (JWT)  ┌──────────────────────────────┐
+   │ frontend (separate   │ ────────────────▶ │ web: Django + DRF (gunicorn) │
+   │ repo): Next.js + MUI │                   └───────┬──────────────┬───────┘
+   └──────────────────────┘                           │              │ enqueue (on commit)
+                                                      ▼              ▼
+                                               PostgreSQL 16      Redis: broker, results, cache
+                                                      ▲              │
+                                                      │              ▼
+                       ┌──────────────────────────────┴──────────────────────────────┐
+                       │ celery_beat (DB scheduler)  → dispatches every 1 / 5 min      │
+                       │ celery_worker (queue default) → realtime fetching, dispatch   │
+                       │ celery_validator_worker (queue feeds) → static downloads,      │
+                       │   GTFS validation via docker-socket-proxy → MobilityData image │
+                       └──────────────────────────────────────────────────────────────┘
+                                                      │
+                                                      ▼
+                                 providers' source URLs (SSRF-guarded, net_security.py)
+```
+
+- Consumers find published feeds in the catalogue (`/api/data_manager/feeds/`). Uploaded files and copies of proxied sources (`hide_original`) are served by the API host under `/feed/...`; sources that are not proxied are listed with their original URL.
+- Decisions: [0001 two repositories](decisions/0001-separate-backend-and-frontend-repositories.md), [0002 Django + DRF + PostgreSQL](decisions/0002-django-drf-and-postgresql.md), [0003 JWT and roles](decisions/0003-jwt-and-group-based-roles.md), [0004 Celery + Redis](decisions/0004-celery-and-redis-for-background-work.md), [0005 feed validation](decisions/0005-feed-validation.md), [0006 error codes](decisions/0006-api-error-codes.md) (proposed).
+- Workflow of a submission: [feed workflow](../domain/feed-workflow.md). Operations: [deployment](../deployment.md).
+
 ## Backend structure
 
 The most important files:
