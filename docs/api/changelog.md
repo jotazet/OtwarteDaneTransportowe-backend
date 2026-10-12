@@ -36,6 +36,22 @@ In `static_entry`, `"auth_type": ""` used to set `hide_original=true` as if a cr
 
 ---
 
+## 2026-10: PUT/PATCH responses show the saved state
+
+Not breaking: the response shape is unchanged.
+
+`PUT/PATCH /api/data_manager/feed-submissions/{id}/` and
+`/api/data_manager/realtime-submissions/{id}/` that changed the stage — a
+confirmation or rejection (`stage`, `rejection_cause`) or an owner resubmitting a
+rejected feed (new source or endpoints) — used to return the submission as it was
+**before** the change:
+`current_stage`, `current_stage_label`, `is_rejected`, `rejection_cause` and
+`published_at` were stale, although the transition was saved. The response now
+reflects the new state, the same as a following GET. Clients that re-fetch after the PATCH (as the
+ODT frontend does) see no difference.
+
+---
+
 ## 2026-10: coded reasons for automatic realtime rejections
 
 Not breaking: fields are only added.

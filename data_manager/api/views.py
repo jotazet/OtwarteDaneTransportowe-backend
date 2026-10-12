@@ -686,6 +686,9 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
             if can_confirm_feeds(request.user):
                 _apply_stage_transition(request, submission, history_model=FeedSubmissionHistory)
 
+        # Re-read: the prefetched history predates the rows written above.
+        # get_object() already authorized access, so the unfiltered queryset is fine.
+        submission = self.queryset.get(pk=submission.pk)
         output = self._read_serializer(request, submission)
         return Response(output.data)
 
@@ -973,6 +976,9 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                 # realtime fetch loops; static feeds rely on the Beat schedule.
                 on_publish=lambda rts: schedule_realtime_endpoint_fetches(rts.id),
             )
+        # Re-read: the prefetched history predates the rows written above.
+        # get_object() already authorized access, so the unfiltered queryset is fine.
+        instance = self.queryset.get(pk=instance.pk)
         out = self._read_serializer(request, instance)
         return Response(out.data)
 

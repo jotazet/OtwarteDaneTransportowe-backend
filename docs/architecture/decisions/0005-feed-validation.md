@@ -16,7 +16,7 @@ A feed is verified before an admin confirms it (stage 2 of the [workflow](../../
 ## Consequences
 
 - The validator worker can still create containers, so a compromised worker stays dangerous; the proxy shrinks the surface but does not remove it (see the [deployment guide](../../deployment.md)). Rootless Docker or a separate validator service would close it.
-- The validator image is pulled as `:latest`, so results can change without a code change. Pinning a version is a follow-up.
+- The validator image is pinned to a release (`GTFS_VALIDATOR_IMAGE`, default in `settings_base.py`) and the socket proxy image is pinned in `docker-compose.yml`, so results change only when someone bumps a tag. Upgrades are manual: read the release notes and re-check real feeds first (see the [deployment guide](../../deployment.md)).
 - NeTEx has no automated validation yet.
 
 ## Alternatives considered

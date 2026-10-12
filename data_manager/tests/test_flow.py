@@ -89,11 +89,16 @@ def org(normal_user, settings, tmp_path):
     )
 
 
-def _mock_docker_from_env(error_count: int):
-    """Simulate gtfs-validator container writing report.json (no Docker socket required)."""
+def _mock_docker_from_env(error_count: int, runs: list | None = None):
+    """Simulate gtfs-validator container writing report.json (no Docker socket required).
+
+    Pass ``runs`` to collect the image of each containers.run() call.
+    """
 
     class _Containers:
         def run(self, image, command, volumes, **kwargs):
+            if runs is not None:
+                runs.append(image)
             output_host_dir = next(
                 host for host, spec in volumes.items() if spec.get('bind') == '/output'
             )
@@ -194,6 +199,28 @@ def test_gtfs_upload_flow_correct(api_client, admin_user, normal_user, org):
     assert submission_id in nested_feed_ids, (
         "Feed not found in organization detail after reaching stage 4"
     )
+
+
+def test_validation_runs_configured_image(normal_user, org, settings, monkeypatch):
+    settings.GTFS_VALIDATOR_IMAGE = 'registry.example.org/gtfs-validator:9.9.9'
+    monkeypatch.setenv('HOST_MEDIA_ROOT', str(settings.MEDIA_ROOT))
+    submission = FeedSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=normal_user,
+        data_type='gtfs',
+        name='Configured validator image',
+    )
+    with patch('data_manager.signals.validate_gtfs_feed_task.delay'):
+        entry = StaticFeedEntry.objects.create(
+            submission=submission,
+            file=ContentFile(b'PK\x03\x04data', name='feed.zip'),
+        )
+
+    runs = []
+    with patch('docker.from_env', _mock_docker_from_env(0, runs)):
+        validate_gtfs_feed_task(entry.id)
+
+    assert runs == ['registry.example.org/gtfs-validator:9.9.9']
 
 
 def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
@@ -1003,6 +1030,9 @@ def test_resubmit_clears_is_rejected(api_client, normal_user, org, settings, tmp
             format='json',
         )
     assert response.status_code == 200, response.data
+    # The response reflects the resubmission, not the rejected state before it.
+    assert response.data['is_rejected'] is False
+    assert response.data['current_stage'] == 2
     submission.refresh_from_db()
     assert submission.is_rejected is False
     assert submission.rejection_cause is None
@@ -1878,3 +1908,102 @@ def test_url_without_download_time_returns_400_not_500(api_client, normal_user, 
     assert response.status_code == 400, response.status_code
     assert 'download_time_1' in str(response.data), response.data
     assert FeedSubmission.objects.count() == before
+
+
+def _feed_at_stage_2(org, user):
+    submission = FeedSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=user,
+        data_type='gtfs',
+        name='Awaiting review',
+    )
+    FeedSubmissionHistory.objects.create(
+        submission=submission,
+        event_type=FeedSubmissionHistory.EVENT_UPLOADED,
+        stage_before=1,
+        stage_after=2,
+        actor=user,
+    )
+    return submission
+
+
+def _realtime_at_stage_1(org, user):
+    rts = RealtimeSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=user,
+        protocol=RealtimeSubmission.PROTOCOL_GBFS,
+    )
+    RealtimeSubmissionHistory.objects.create(
+        submission=rts,
+        event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+        stage_before=0,
+        stage_after=1,
+        actor=user,
+    )
+    return rts
+
+
+@pytest.mark.parametrize('reviewer', ['admin_role_user', 'helper_user'])
+def test_feed_reject_patch_response_reflects_rejection(
+    request, api_client, reviewer, normal_user, org
+):
+    submission = _feed_at_stage_2(org, normal_user)
+    api_client.force_authenticate(user=request.getfixturevalue(reviewer))
+    response = api_client.patch(
+        f'/api/data_manager/feed-submissions/{submission.id}/',
+        {'rejection_cause': 'Missing stops.txt'},
+        format='json',
+    )
+    assert response.status_code == 200, response.data
+    assert response.data['is_rejected'] is True
+    assert response.data['rejection_cause'] == 'Missing stops.txt'
+    assert response.data['current_stage'] == 1
+
+
+@pytest.mark.parametrize('reviewer', ['admin_role_user', 'helper_user'])
+def test_feed_stage_patch_response_reflects_new_stage(
+    request, api_client, reviewer, normal_user, org
+):
+    submission = _feed_at_stage_2(org, normal_user)
+    api_client.force_authenticate(user=request.getfixturevalue(reviewer))
+    response = api_client.patch(
+        f'/api/data_manager/feed-submissions/{submission.id}/',
+        {'stage': 3},
+        format='json',
+    )
+    assert response.status_code == 200, response.data
+    assert response.data['current_stage'] == 3
+    assert response.data['is_rejected'] is False
+
+
+@pytest.mark.parametrize('reviewer', ['admin_role_user', 'helper_user'])
+def test_realtime_reject_patch_response_reflects_rejection(
+    request, api_client, reviewer, normal_user, org
+):
+    rts = _realtime_at_stage_1(org, normal_user)
+    api_client.force_authenticate(user=request.getfixturevalue(reviewer))
+    response = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'rejection_cause': 'Feed unreachable'},
+        format='json',
+    )
+    assert response.status_code == 200, response.data
+    assert response.data['is_rejected'] is True
+    assert response.data['rejection_cause'] == 'Feed unreachable'
+    assert response.data['current_stage'] == 1
+
+
+@pytest.mark.parametrize('reviewer', ['admin_role_user', 'helper_user'])
+def test_realtime_stage_patch_response_reflects_new_stage(
+    request, api_client, reviewer, normal_user, org
+):
+    rts = _realtime_at_stage_1(org, normal_user)
+    api_client.force_authenticate(user=request.getfixturevalue(reviewer))
+    response = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'stage': 3},
+        format='json',
+    )
+    assert response.status_code == 200, response.data
+    assert response.data['current_stage'] == 3
+    assert response.data['is_rejected'] is False
