@@ -1,10 +1,12 @@
 """Public planner API (/api/planner/v1/). Documented in docs/api/planner.md."""
 
+from django.core.validators import RegexValidator
+from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 
-from planner import services
+from planner import planning, services
 from planner.access import PlannerPublicView, planner_settings
 from planner.models import GraphBuild, PlannerFeed
 
@@ -96,3 +98,212 @@ def _feeds(build) -> list[dict]:
             }
         )
     return sorted(rows, key=lambda row: row['feed_id'])
+
+
+# ---------------------------------------------------------------------------
+# Trip planning
+# ---------------------------------------------------------------------------
+
+PLAN_TIMEOUT_SECONDS = 12
+
+
+class QueryBoolean(serializers.BooleanField):
+    """A query-string flag that falls back to its default when absent (not to False)."""
+
+    default_empty_html = serializers.empty
+
+
+class InstantField(serializers.DateTimeField):
+    """ISO 8601 with a UTC offset. DRF would read a time without one as UTC,
+    which is an hour or two off in Poland and ambiguous on the DST change."""
+
+    def to_internal_value(self, value):
+        try:
+            parsed = parse_datetime(value) if isinstance(value, str) else None
+        except ValueError:  # well-formed but impossible, e.g. 30 February
+            parsed = None
+        if parsed is not None and parsed.tzinfo is None:
+            raise serializers.ValidationError(
+                'Give a UTC offset.', code='planner.time_without_offset'
+            )
+        return super().to_internal_value(value)
+
+
+class FeedScopedIdField(serializers.CharField):
+    """`<feed_id>:<id in the feed>`, as OTP expects every stop, route and agency ID."""
+
+    def __init__(self, **kwargs):
+        super().__init__(max_length=128, **kwargs)
+        self.validators.append(
+            RegexValidator(planning.FEED_SCOPED_ID, 'Not a feed-scoped ID.', 'planner.invalid_id')
+        )
+
+
+def _id_list(max_length):
+    return serializers.ListField(child=FeedScopedIdField(), max_length=max_length, required=False)
+
+
+class FromFieldMixin:
+    """Serves the field declared as `from_` as `from`, a Python keyword."""
+
+    def get_fields(self):
+        fields = super().get_fields()
+        return {'from' if name == 'from_' else name: field for name, field in fields.items()}
+
+
+class PlanQuerySerializer(FromFieldMixin, serializers.Serializer):
+    from_ = serializers.CharField(
+        max_length=128, help_text='`lat,lon` or a stop/station ID, e.g. `krk:2047691`.'
+    )
+    to = serializers.CharField(max_length=128, help_text='Same as `from`.')
+    time = InstantField(required=False, help_text='ISO 8601 with offset; default: now.')
+    arrive_by = QueryBoolean(default=False, help_text='`time` is the latest arrival.')
+    modes = serializers.ListField(
+        child=serializers.ChoiceField(choices=list(planning.TRANSIT_MODES)),
+        required=False,
+        help_text='Repeat the parameter; default: every transit mode.',
+    )
+    wheelchair = QueryBoolean(default=False)
+    walk_speed = serializers.ChoiceField(choices=list(planning.WALK_SPEEDS), default='normal')
+    max_transfers = serializers.IntegerField(min_value=0, max_value=8, required=False)
+    min_transfer_minutes = serializers.IntegerField(min_value=0, max_value=30, default=2)
+    via = _id_list(2)
+    agencies = _id_list(20)
+    exclude_agencies = _id_list(20)
+    routes = _id_list(20)
+    exclude_routes = _id_list(20)
+    realtime = QueryBoolean(default=True, help_text='Use realtime delays and cancellations.')
+    num_itineraries = serializers.IntegerField(min_value=1, max_value=10, default=5)
+    cursor = serializers.CharField(
+        max_length=1024, required=False, help_text='`next_cursor` or `previous_cursor` of a result.'
+    )
+    stops = QueryBoolean(default=False, help_text='List the stops of every transit leg.')
+
+    def validate_cursor(self, value):
+        if not value.startswith((planning.CURSOR_NEXT, planning.CURSOR_PREVIOUS)):
+            raise serializers.ValidationError('Unknown cursor.', code='planner.invalid_cursor')
+        return value
+
+    def validate(self, attrs):
+        for field in ('from', 'to'):
+            location = planning.parse_place(attrs[field]).get('coordinate')
+            if location:
+                valid = -90 <= location['latitude'] <= 90 and -180 <= location['longitude'] <= 180
+            else:
+                valid = planning.FEED_SCOPED_ID.match(attrs[field]) is not None
+            if not valid:
+                raise serializers.ValidationError(
+                    {field: 'Neither coordinates nor a stop ID.'}, code='planner.invalid_location'
+                )
+        if attrs['arrive_by'] and not attrs.get('time'):
+            raise serializers.ValidationError(
+                {'arrive_by': 'Needs time.'}, code='planner.arrive_by_without_time'
+            )
+        return attrs
+
+
+class PlaceSerializer(serializers.Serializer):
+    name = serializers.CharField(allow_null=True)
+    lat = serializers.FloatField()
+    lon = serializers.FloatField()
+    stop_id = serializers.CharField(allow_null=True)
+    platform = serializers.CharField(allow_null=True)
+
+
+class LegTimeSerializer(serializers.Serializer):
+    scheduled = serializers.CharField(help_text='UTC instant.')
+    estimated = serializers.CharField(allow_null=True, help_text='Realtime estimate, if any.')
+    delay_s = serializers.IntegerField(allow_null=True)
+
+
+class RouteSummarySerializer(serializers.Serializer):
+    id = serializers.CharField()
+    short_name = serializers.CharField(allow_null=True)
+    long_name = serializers.CharField(allow_null=True)
+    color = serializers.CharField(allow_null=True)
+    text_color = serializers.CharField(allow_null=True)
+
+
+class AgencySummarySerializer(serializers.Serializer):
+    id = serializers.CharField()
+    name = serializers.CharField()
+
+
+class AlertSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    header = serializers.CharField(allow_null=True)
+    description = serializers.CharField(allow_null=True)
+    url = serializers.CharField(allow_null=True)
+    effect = serializers.CharField(allow_null=True)
+    severity = serializers.CharField(allow_null=True)
+
+
+class StopCallSerializer(serializers.Serializer):
+    stop_id = serializers.CharField(allow_null=True)
+    name = serializers.CharField(allow_null=True)
+    lat = serializers.FloatField(allow_null=True)
+    lon = serializers.FloatField(allow_null=True)
+
+
+class LegSerializer(FromFieldMixin, serializers.Serializer):
+    mode = serializers.CharField(help_text='walk, bus, tram, rail, subway, …')
+    from_ = PlaceSerializer()
+    to = PlaceSerializer()
+    start = LegTimeSerializer()
+    end = LegTimeSerializer()
+    duration_s = serializers.IntegerField()
+    distance_m = serializers.IntegerField()
+    route = RouteSummarySerializer(allow_null=True)
+    agency = AgencySummarySerializer(allow_null=True)
+    trip_id = serializers.CharField(allow_null=True)
+    service_date = serializers.DateField(allow_null=True)
+    headsign = serializers.CharField(allow_null=True)
+    realtime = serializers.BooleanField()
+    geometry = serializers.CharField(allow_null=True, help_text='Encoded polyline (precision 5).')
+    alerts = AlertSerializer(many=True)
+    stops = StopCallSerializer(many=True, allow_null=True)
+
+
+class ItinerarySerializer(serializers.Serializer):
+    start = serializers.CharField()
+    end = serializers.CharField()
+    duration_s = serializers.IntegerField()
+    walk_distance_m = serializers.IntegerField()
+    transfers = serializers.IntegerField()
+    legs = LegSerializer(many=True)
+
+
+class RoutingErrorSerializer(serializers.Serializer):
+    code = serializers.CharField()
+
+
+class PlanResponseSerializer(serializers.Serializer):
+    itineraries = ItinerarySerializer(many=True)
+    next_cursor = serializers.CharField(allow_null=True)
+    previous_cursor = serializers.CharField(allow_null=True)
+    routing_errors = RoutingErrorSerializer(many=True)
+
+
+class PlanView(PlannerPublicView):
+    """Plan a trip by public transport, with realtime delays where the operators provide them."""
+
+    limit_group = 'plan'
+    uses_otp = True
+
+    def otp_input_errors(self, messages):
+        return planning.input_errors(messages)
+
+    @extend_schema(
+        parameters=[PlanQuerySerializer],
+        responses=PlanResponseSerializer,
+        summary='Plan a trip',
+    )
+    def get(self, request):
+        query = PlanQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        data = self.otp_query(
+            planning.PLAN_DOCUMENT,
+            planning.plan_variables(query.validated_data),
+            timeout=PLAN_TIMEOUT_SECONDS,
+        )
+        return Response(PlanResponseSerializer(planning.plan_response(data)).data)

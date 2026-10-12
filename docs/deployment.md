@@ -193,6 +193,9 @@ HOST_MEDIA_ROOT=/opt/odt/uploaded_data
 
 # ───────────────────────── Performance / Celery / gunicorn ─────────────────────────
 GUNICORN_WORKERS=3
+# Threads per worker (gthread). Journey planner requests wait on OpenTripPlanner,
+# so threads keep the other endpoints answering meanwhile.
+GUNICORN_THREADS=4
 CELERY_DEFAULT_CONCURRENCY=2
 # The feeds queue only handles static downloads and GTFS validations — a few tasks per
 # feed per day. Each additional process is ~90 MB of RAM when idle.
@@ -749,6 +752,7 @@ The first build also builds the street graph. Until then `otp` waits for a graph
 
 - **Off by default.** The public API (`/api/planner/v1/`) ships switched off. Turn it on with `PATCH /api/planner/admin/settings/ {"public_api_enabled": true}` once a graph is served; limits are edited there too.
 - **CORS.** Any origin may call `/api/planner/v1/` (configured in code, not through `CORS_ALLOWED_ORIGINS`).
+- **Concurrency.** Each gunicorn worker sends at most 2 queries to OTP at once (`MAX_CONCURRENT_QUERIES` in `planner/otp_runtime.py`); a request that finds no free slot within a second gets `503 planner.busy`. With `GUNICORN_WORKERS=3` that is 6 parallel OTP queries, what the serving sizing above was measured with. More workers mean more parallel OTP queries and more OTP memory.
 - **Client IPs.** Rate limits, bans and the request log rely on correct client IPs: `TRUSTED_PROXY_CIDRS` must list every proxy hop (see section 5).
 - **Request log retention.** The request log keeps raw rows, which include IP addresses, for `PLANNER_REQUEST_LOG_RETENTION_DAYS` (default 30). The beat task `planner.maintain_request_logs` (00:30 UTC) summarises each finished day without IPs and then deletes expired rows.
 

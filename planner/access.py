@@ -22,7 +22,7 @@ from rest_framework.throttling import BaseThrottle
 from rest_framework.views import APIView, exception_handler
 
 from OtwarteDaneTransportowe.request_ip import get_client_ip
-from planner import services
+from planner import otp_runtime, services
 from planner.models import ApiKey, IpBan, PlannerRequestLog, PlannerSettings
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ LAST_USED_EVERY_SECONDS = 300
 REJECTION_LOG_EVERY_SECONDS = 60
 REJECTION_STATUSES = (401, 403, 429, 503)
 MAINTENANCE_RETRY_AFTER_SECONDS = 600
+OTP_BUSY_RETRY_AFTER_SECONDS = 5
 
 
 class PlannerError(exceptions.APIException):
@@ -265,6 +266,27 @@ class PlannerPublicView(APIView):
 
     def get_exception_handler(self):
         return planner_exception_handler
+
+    def otp_input_errors(self, messages: list[str]) -> dict:
+        """Field errors for OTP errors caused by the client's input; override per endpoint."""
+        return {}
+
+    def otp_query(self, document: str, variables: dict, timeout: int) -> dict:
+        try:
+            return otp_runtime.query(document, variables, timeout=timeout)
+        except otp_runtime.OtpBusy:
+            raise PlannerError(
+                'planner.busy', 503, retry_after=OTP_BUSY_RETRY_AFTER_SECONDS
+            ) from None
+        except otp_runtime.OtpQueryError as exc:
+            fields = self.otp_input_errors(exc.messages)
+            if fields:
+                raise exceptions.ValidationError(fields) from None
+            logger.warning('OTP failed a planner query', exc_info=True)
+            raise PlannerError('planner.unavailable', 503, details={'reason': 'engine'}) from None
+        except otp_runtime.OtpUnavailable:
+            logger.warning('OTP did not answer a planner query', exc_info=True)
+            raise PlannerError('planner.unavailable', 503, details={'reason': 'engine'}) from None
 
     def initial(self, request, *args, **kwargs):
         # Before authentication, so a banned client cannot make us look up keys.

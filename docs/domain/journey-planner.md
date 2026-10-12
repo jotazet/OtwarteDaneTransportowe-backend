@@ -27,6 +27,16 @@ Error codes stored per feed: `planner.feed_not_published`, `planner.feed_source_
 - **Vehicle positions.** OTP drops positions whose trip it cannot match, so vehicles without a valid `trip_id` are not shown.
 - **Blocks (brigades).** A block is the GTFS `block_id`: the sequence of trips one vehicle runs in a day. 21 of the 44 published feeds set it (e.g. Kraków `T/72-04`). Block IDs can contain `/`, which is why planner IDs are passed as query parameters, never path segments.
 
+## Trip planning
+
+- **Times are instants.** `plan/` takes `time` only with a UTC offset and answers in UTC. On 2026-10-25 the hour 02:00–03:00 happens twice in Poland, so a local time without an offset could mean two moments.
+- **Service date.** A leg's `service_date` is its GTFS service day, which for trips after midnight (stop times past `24:00:00`) is the previous calendar day. Together with `trip_id` it identifies the run.
+- **Walking speed presets.** `slow`, `normal` and `fast` (1.0, 1.33 and 1.7 m/s) rather than any number: OTP caches the transfers between stops per set of street preferences, so a few fixed values keep that cache bounded.
+- **Wheelchair access.** With `wheelchair=true`, OTP uses only stops and trips explicitly marked accessible (`wheelchair_boarding`, `wheelchair_accessible` = 1; OTP 2.10 defaults `onlyConsiderAccessible: true` for stops and trips). In the 2026-10-12 audit, only 2 of 44 feeds (Warsaw) marked most stops, and 11 marked most trips.
+- **Realtime in plans.** By default plans use OTP's realtime timetable (delays, cancellations); `realtime=false` plans on the published timetable. Only `fresh` feeds have realtime.
+- **No walking directions.** OTP's step-by-step instructions name unnamed paths in English ("path", "sidewalk"), which would be backend prose; legs carry only the geometry. OTP's labels "Origin" and "Destination" for requested points are dropped for the same reason.
+- **Routing errors** are OTP's `RoutingErrorCode` values, lowercased and prefixed (`planner.location_not_found`). See [the API reference](../api/planner.md#routing-errors).
+
 ## Street map
 
 - **Source and cropping.** The street graph comes from an OSM extract (Geofabrik). Before building, it is filtered to the ways OTP routes on (osmium tag filter from [OTP's docs](https://docs.opentripplanner.org/en/v2.10.0/Preparing-OSM/)) and cropped to ~3 km grid cells around the included stops, plus one cell of margin. In the spike the stops covered about 40% of Poland.

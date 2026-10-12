@@ -246,7 +246,10 @@ def test_cors_allows_any_origin_only_for_the_public_planner_api(enabled):
 def test_public_schema_is_open_and_lists_only_planner_routes():
     schema = APIClient().get('/api/planner/v1/schema/?format=json').json()
 
-    assert list(schema['paths']) == ['/api/planner/v1/status/']
+    assert list(schema['paths']) == ['/api/planner/v1/plan/', '/api/planner/v1/status/']
+    plan = schema['paths']['/api/planner/v1/plan/']['get']['parameters']
+    required = {p['name'] for p in plan if p.get('required')}
+    assert required == {'from', 'to'}
     assert schema['components']['securitySchemes']['ApiKey']['name'] == 'X-API-Key'
 
 

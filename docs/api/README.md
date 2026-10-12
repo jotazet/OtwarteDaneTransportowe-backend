@@ -312,6 +312,7 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 | Method | Endpoint | Permissions | Description |
 |--------|----------|-------------|------|
 | `GET` | `/api/planner/v1/status/` | public | Availability, served graph, feeds with licences, attribution |
+| `GET` | `/api/planner/v1/plan/` | public | Trip planning with realtime delays |
 | `GET` | `/api/planner/v1/schema/` | public | OpenAPI document of the public planner API |
 | `GET` | `/api/planner/v1/docs/` | public | ReDoc for the public planner API |
 

@@ -1,0 +1,190 @@
+{
+ "planConnection": {
+  "routingErrors": [],
+  "pageInfo": {
+   "startCursor": "PREV",
+   "endCursor": "NEXT"
+  },
+  "edges": [
+   {
+    "node": {
+     "start": "2026-10-14T08:03:30+02:00",
+     "end": "2026-10-14T08:40:24+02:00",
+     "duration": 2214,
+     "walkDistance": 1177.65,
+     "numberOfTransfers": 0,
+     "legs": [
+      {
+       "mode": "WALK",
+       "duration": 690.0,
+       "distance": 874.24,
+       "headsign": null,
+       "serviceDate": null,
+       "start": {
+        "scheduledTime": "2026-10-14T08:03:30+02:00",
+        "estimated": null
+       },
+       "end": {
+        "scheduledTime": "2026-10-14T08:15:00+02:00",
+        "estimated": null
+       },
+       "from": {
+        "name": "Origin",
+        "lat": 50.0617,
+        "lon": 19.9373,
+        "stop": null
+       },
+       "to": {
+        "name": "Starowiślna",
+        "lat": 50.057227,
+        "lon": 19.946086,
+        "stop": {
+         "gtfsId": "krk:2047470",
+         "platformCode": null
+        }
+       },
+       "route": null,
+       "agency": null,
+       "trip": null,
+       "legGeometry": {
+        "points": "utppHe_uxB@G"
+       },
+       "alerts": [],
+       "stopCalls": []
+      },
+      {
+       "mode": "TRAM",
+       "duration": 1260.0,
+       "distance": 7300.0,
+       "headsign": "Pleszów",
+       "serviceDate": "2026-10-14",
+       "start": {
+        "scheduledTime": "2026-10-14T08:15:00+02:00",
+        "estimated": {
+         "time": "2026-10-14T08:16:30+02:00",
+         "delay": "PT1M30S"
+        }
+       },
+       "end": {
+        "scheduledTime": "2026-10-14T08:36:00+02:00",
+        "estimated": {
+         "time": "2026-10-14T08:35:00+02:00",
+         "delay": "-PT1M"
+        }
+       },
+       "from": {
+        "name": "Starowiślna",
+        "lat": 50.057227,
+        "lon": 19.946086,
+        "stop": {
+         "gtfsId": "krk:2047470",
+         "platformCode": null
+        }
+       },
+       "to": {
+        "name": "Os. Kolorowe",
+        "lat": 50.072198,
+        "lon": 20.0298,
+        "stop": {
+         "gtfsId": "krk:2047513",
+         "platformCode": null
+        }
+       },
+       "route": {
+        "gtfsId": "krk:352529",
+        "shortName": "70",
+        "longName": null,
+        "color": null,
+        "textColor": null
+       },
+       "agency": {
+        "gtfsId": "krk:302",
+        "name": "Kraków"
+       },
+       "trip": {
+        "gtfsId": "krk:53620411_256159"
+       },
+       "legGeometry": {
+        "points": "uxopH}uvxBA?"
+       },
+       "alerts": [
+        {
+         "id": "QWxlcnQ6a3JrOjE",
+         "alertHeaderText": "Objazd",
+         "alertDescriptionText": null,
+         "alertUrl": null,
+         "alertEffect": "DETOUR",
+         "alertSeverityLevel": "WARNING"
+        }
+       ],
+       "stopCalls": [
+        {
+         "stopLocation": {
+          "gtfsId": "krk:2047470",
+          "name": "Starowiślna",
+          "lat": 50.057227,
+          "lon": 19.946086
+         }
+        },
+        {
+         "stopLocation": {
+          "gtfsId": "krk:2047482",
+          "name": "Hala Targowa",
+          "lat": 50.058639,
+          "lon": 19.948875
+         }
+        },
+        {
+         "stopLocation": {
+          "gtfsId": "krk:2047513",
+          "name": "Os. Kolorowe",
+          "lat": 50.072198,
+          "lon": 20.0298
+         }
+        }
+       ]
+      },
+      {
+       "mode": "WALK",
+       "duration": 264.0,
+       "distance": 303.41,
+       "headsign": null,
+       "serviceDate": null,
+       "start": {
+        "scheduledTime": "2026-10-14T08:36:00+02:00",
+        "estimated": null
+       },
+       "end": {
+        "scheduledTime": "2026-10-14T08:40:24+02:00",
+        "estimated": null
+       },
+       "from": {
+        "name": "Os. Kolorowe",
+        "lat": 50.072198,
+        "lon": 20.0298,
+        "stop": {
+         "gtfsId": "krk:2047513",
+         "platformCode": null
+        }
+       },
+       "to": {
+        "name": "Destination",
+        "lat": 50.07,
+        "lon": 20.03,
+        "stop": null
+       },
+       "route": null,
+       "agency": null,
+       "trip": null,
+       "legGeometry": {
+        "points": "evrpHgagyB@@"
+       },
+       "alerts": [],
+       "stopCalls": []
+      }
+     ]
+    }
+   }
+  ]
+ }
+}

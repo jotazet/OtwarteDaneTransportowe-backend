@@ -4,7 +4,7 @@ The public API of ODT's journey planner, for ODT's website and for anyone buildi
 
 The planner routes over the feeds ODT publishes with [OpenTripPlanner](https://www.opentripplanner.org/); how it works and its limits are described in [journey planner](../domain/journey-planner.md). Admin routes: [planner-admin](planner-admin.md).
 
-> Status: being built. Available now: `status/`. Trip planning, stops, lines, departures, timetables, vehicles and blocks follow.
+> Status: being built. Available now: `status/` and `plan/`. Stops, lines, departures, timetables, vehicles and blocks follow.
 
 ## Access
 
@@ -50,7 +50,8 @@ Every error is a stable code with details; codes never change once published, an
 | 405 | `planner.method_not_allowed` | Only `GET` is supported. |
 | 429 | `planner.rate_limited` | Over a limit; see [Limits](#limits). |
 | 503 | `planner.disabled` | The planner API is switched off. |
-| 503 | `planner.unavailable` | The routing engine is not answering; `details.reason` is `maintenance` while the timetable data is being rebuilt (usually at night, see `Retry-After`). Stop and line search still answer. |
+| 503 | `planner.unavailable` | The routing engine is not answering. `details.reason` is `maintenance` while the timetable data is being rebuilt (usually at night, see `Retry-After`; stop and line search still answer) or `engine` when it failed to answer. |
+| 503 | `planner.busy` | Too many requests are being routed at this moment. Retry after `Retry-After` seconds. |
 
 ## Identifiers
 
@@ -90,6 +91,137 @@ Whether the planner answers now, which graph it serves and from which feeds. It 
 | `reason` | `disabled`, `maintenance`, `no_graph` or `null`. |
 | `feeds[].outcome` | `fresh`: the newest published version. `stale`: an older version, because the newest could not be used; realtime data is not applied to it. |
 | `feeds[].version_at` | When that version of the feed was obtained. |
+
+## `GET /api/planner/v1/plan/`
+
+Trips by public transport and walking between two places, with realtime delays where operators publish them. Limit group: `plan`.
+
+```http
+GET /api/planner/v1/plan/?from=50.0617,19.9373&to=krk:2047513&time=2026-10-14T08:00:00%2B02:00&modes=tram&modes=bus
+```
+
+### Parameters
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `from`, `to` | required | `lat,lon` (WGS 84, e.g. `50.0617,19.9373`) or a stop or station ID (`krk:2047513`). Addresses are not searched. |
+| `time` | now | ISO 8601 **with a UTC offset** (`2026-10-14T08:00:00+02:00` or `…Z`); a time without one is rejected, because a local time is ambiguous on the night the clocks change. Encode `+` as `%2B`. |
+| `arrive_by` | `false` | `true`: `time` is the latest arrival instead of the earliest departure; needs `time`. |
+| `modes` | all | Transit modes to use; repeat the parameter (`modes=tram&modes=bus`). `bus`, `coach`, `tram`, `trolleybus`, `subway`, `rail`, `ferry`, `funicular`, `cable_car`, `gondola`, `monorail`. |
+| `wheelchair` | `false` | Only stops and trips the feed marks as wheelchair-accessible; those without the information are not used. Few feeds publish it (in October 2026, for most stops, only Warsaw's), so elsewhere the answer is usually `planner.no_stops_in_range`. |
+| `walk_speed` | `normal` | `slow` (1.0 m/s), `normal` (1.33 m/s) or `fast` (1.7 m/s). |
+| `max_transfers` | engine default | 0–8. |
+| `min_transfer_minutes` | `2` | 0–30: extra time added to every transfer. |
+| `via` | — | Up to 2 stop IDs the trip must pass through, in order; repeat the parameter. |
+| `agencies`, `routes` | — | Use only these operators or lines (IDs, up to 20 each, repeated). |
+| `exclude_agencies`, `exclude_routes` | — | Never use these (IDs, up to 20 each); they win over `agencies` and `routes`. |
+| `realtime` | `true` | `false`: plan on the timetable only, ignoring delays and cancellations. |
+| `num_itineraries` | `5` | 1–10 itineraries per page. |
+| `cursor` | — | `next_cursor` or `previous_cursor` of an earlier answer, with the same other parameters: later or earlier departures. |
+| `stops` | `false` | `true`: list the stops of every transit leg. |
+
+Operator, line and stop IDs come from the other planner endpoints or from the feeds themselves (`<feed_id>:<agency_id>`, `<feed_id>:<route_id>`, `<feed_id>:<stop_id>`).
+
+Invalid parameters return `400 planner.invalid_request` with the codes in `details.fields` (plus DRF's generic codes such as `required`, `invalid`, `invalid_choice`, `max_value`, `max_length`):
+
+| Code | Parameter |
+| --- | --- |
+| `planner.invalid_location` | `from`, `to`: neither coordinates in range nor a `<feed_id>:<id>` ID. |
+| `planner.invalid_id` | `via`, `agencies`, `routes`, `exclude_*`: not a `<feed_id>:<id>` ID (reported per position). |
+| `planner.stop_not_found` | `via`: no such stop or station. |
+| `planner.time_without_offset` | `time` has no UTC offset. |
+| `planner.arrive_by_without_time` | `arrive_by=true` without `time`. |
+| `planner.invalid_cursor` | `cursor` is not one this API returned. |
+
+An unknown `from` or `to` stop is not a parameter error: the answer is `200` with the routing error `planner.location_not_found`.
+
+### Response
+
+```json
+{
+  "itineraries": [
+    {
+      "start": "2026-10-14T06:03:30Z",
+      "end": "2026-10-14T06:40:24Z",
+      "duration_s": 2214,
+      "walk_distance_m": 1178,
+      "transfers": 0,
+      "legs": [
+        {
+          "mode": "walk",
+          "from": { "name": null, "lat": 50.0617, "lon": 19.9373, "stop_id": null, "platform": null },
+          "to": { "name": "Starowiślna", "lat": 50.057227, "lon": 19.946086, "stop_id": "krk:2047470", "platform": null },
+          "start": { "scheduled": "2026-10-14T06:03:30Z", "estimated": null, "delay_s": null },
+          "end": { "scheduled": "2026-10-14T06:15:00Z", "estimated": null, "delay_s": null },
+          "duration_s": 690,
+          "distance_m": 874,
+          "route": null,
+          "agency": null,
+          "trip_id": null,
+          "service_date": null,
+          "headsign": null,
+          "realtime": false,
+          "geometry": "utppHe_uxB…",
+          "alerts": [],
+          "stops": null
+        },
+        {
+          "mode": "tram",
+          "from": { "name": "Starowiślna", "lat": 50.057227, "lon": 19.946086, "stop_id": "krk:2047470", "platform": null },
+          "to": { "name": "Os. Kolorowe", "lat": 50.072198, "lon": 20.0298, "stop_id": "krk:2047513", "platform": null },
+          "start": { "scheduled": "2026-10-14T06:15:00Z", "estimated": "2026-10-14T06:16:30Z", "delay_s": 90 },
+          "end": { "scheduled": "2026-10-14T06:36:00Z", "estimated": "2026-10-14T06:37:00Z", "delay_s": 60 },
+          "duration_s": 1260,
+          "distance_m": 7300,
+          "route": { "id": "krk:352529", "short_name": "70", "long_name": null, "color": null, "text_color": null },
+          "agency": { "id": "krk:302", "name": "Kraków" },
+          "trip_id": "krk:53620411_256159",
+          "service_date": "2026-10-14",
+          "headsign": "Pleszów",
+          "realtime": true,
+          "geometry": "uxopH}uvxB…",
+          "alerts": [],
+          "stops": null
+        }
+      ]
+    }
+  ],
+  "next_cursor": "n:MnxORVhUX1BBR0V8…",
+  "previous_cursor": "p:MnxQUkVWSU9VU19QQUdF…",
+  "routing_errors": []
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `start`, `end`, `*.scheduled`, `*.estimated` | UTC instants; convert to local time for display. |
+| `legs[].mode` | `walk` or a transit mode from `modes`. |
+| `legs[].from.name`, `legs[].to.name` | Stop name; `null` for the coordinates you sent. |
+| `legs[].start.estimated`, `delay_s` | The realtime prediction and its difference from the timetable in seconds (negative: early); `null` without realtime data. `realtime` is `true` when the leg has a prediction. |
+| `legs[].route.color`, `text_color` | Hex colour without `#`, as in the feed; often `null`. |
+| `legs[].trip_id`, `service_date` | Identify the vehicle's trip on that day (`service_date` is the timetable day, which for trips after midnight can be the day before). |
+| `legs[].geometry` | The leg's path as an [encoded polyline](https://developers.google.com/maps/documentation/utilities/polylinealgorithm) (precision 5). |
+| `legs[].alerts` | Service alerts published by the operator for that leg. `header` and `description` are the operator's own texts, usually in Polish; `effect` and `severity` are the lowercase GTFS-RT values (`detour`, `no_service`, …; `info`, `warning`, `severe`). |
+| `legs[].stops` | With `stops=true`: the stops of a transit leg from boarding to alighting (walking legs: `[]`); otherwise `null`. |
+| `next_cursor`, `previous_cursor` | Pass as `cursor` for the next or previous page. |
+| `routing_errors` | Why no (or no better) trip was found; see below. The answer is still `200`. |
+
+There are no turn-by-turn walking directions: the engine names unnamed paths in English, and the API returns no prose.
+
+### Routing errors
+
+| Code | Meaning |
+| --- | --- |
+| `planner.location_not_found` | `from` or `to` is an unknown stop ID, or a point with no street or stop near it (the planner's map covers only the surroundings of its stops). |
+| `planner.outside_bounds` | A point is outside the area the planner covers. |
+| `planner.no_stops_in_range` | No stop can be reached on foot from `from` or `to`. |
+| `planner.no_transit_connection` | No public transport connects the places on that day or the next. |
+| `planner.no_transit_connection_in_search_window` | A connection exists, but outside the time searched; follow `next_cursor` or `previous_cursor`. |
+| `planner.outside_service_period` | `time` is outside the dates the timetables cover (the planner holds about two months ahead). |
+| `planner.walking_better_than_transit` | Walking all the way is easier than any transit trip, so transit trips were left out; a walking itinerary may be returned. |
+| `planner.no_direct_mode_connection` | No walking route was found and no transit was searched. |
+
+New codes may be added; show a generic message for unknown ones.
 
 ## Versioning
 

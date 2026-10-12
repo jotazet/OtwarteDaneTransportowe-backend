@@ -6,6 +6,7 @@ no capabilities, bounded memory and processes. The serving OTP is the
 docker-compose service ``otp``; it is only stopped and started from here.
 """
 
+import threading
 from dataclasses import dataclass
 
 import docker
@@ -19,6 +20,13 @@ PIDS_LIMIT = 2048
 LOG_TAIL_LINES = 80
 HEALTH_TIMEOUT_SECONDS = 5
 QUERY_TIMEOUT_SECONDS = 30
+# Concurrent OTP queries per web process, and how long a request waits for a
+# free slot before it is refused: one slow OTP must not tie up every thread.
+# 3 gunicorn workers x 2 = 6 at once, which OTP with -Xmx6g served without
+# stalls in the 2026-10-12 measurements (docs/deployment.md, section 19).
+MAX_CONCURRENT_QUERIES = 2
+QUERY_SLOT_WAIT_SECONDS = 1
+_query_slots = threading.BoundedSemaphore(MAX_CONCURRENT_QUERIES)
 
 
 class OtpUnavailable(Exception):
@@ -27,6 +35,18 @@ class OtpUnavailable(Exception):
 
 class DockerUnavailable(Exception):
     pass
+
+
+class OtpBusy(OtpUnavailable):
+    """Every query slot of this process is taken."""
+
+
+class OtpQueryError(OtpUnavailable):
+    """OTP answered, with GraphQL errors (possibly caused by the query's input)."""
+
+    def __init__(self, messages: list[str]):
+        super().__init__('; '.join(messages)[:500])
+        self.messages = messages
 
 
 @dataclass
@@ -119,19 +139,26 @@ def is_healthy() -> bool:
     return response.status_code == 200
 
 
-def query(document: str, variables: dict | None = None) -> dict:
+def query(
+    document: str, variables: dict | None = None, timeout: int = QUERY_TIMEOUT_SECONDS
+) -> dict:
     """Run a fixed GraphQL document against OTP's GTFS API; variables carry all input."""
+    if not _query_slots.acquire(timeout=QUERY_SLOT_WAIT_SECONDS):
+        raise OtpBusy
     try:
         response = requests.post(
             f'{settings.PLANNER_OTP_URL}/otp/gtfs/v1',
             json={'query': document, 'variables': variables or {}},
-            headers={'OTPTimeout': str(QUERY_TIMEOUT_SECONDS * 1000)},
-            timeout=QUERY_TIMEOUT_SECONDS + 5,
+            # OTP gives up on its own before we stop waiting for it.
+            headers={'OTPTimeout': str(timeout * 1000)},
+            timeout=(3, timeout + 2),
         )
         response.raise_for_status()
         payload = response.json()
     except (requests.exceptions.RequestException, ValueError) as exc:
         raise OtpUnavailable(str(exc)) from exc
+    finally:
+        _query_slots.release()
     if payload.get('errors'):
-        raise OtpUnavailable(str(payload['errors'])[:500])
+        raise OtpQueryError([str(error.get('message', error)) for error in payload['errors']])
     return payload['data']
