@@ -89,9 +89,9 @@ Base endpoint:
 - **Editing from stage 2 to 4** — when there is **no** rejection and `current_stage` is **2, 3 or 4**, the owner (`DataProvider`) may change only:
   - on the submission: **`note`** (the **`name` field is locked**);
   - in `static_entry`: only **`license`**, **`download_time_1`**, **`download_time_2`** (including setting `download_time_2` to `null`).
-- **Forbidden from stage 2 to 4 for the owner and Helper** (an attempt to change them via `PATCH` returns a validation error): **`name`**, **`transport_organization`**, **`data_type`**, link / file (`url`, `file`), **`is_original`**, **`hide_original`**, **`auth_type`**, **`auth_value`** (password / secret). **Only a user in the Django `Admin` group** may change the URL/file at stages 2–4 (`is_superuser` / `is_staff` alone without that group is **not** enough).
+- **Forbidden from stage 2 to 4 for the owner** (an attempt to change them via `PATCH` returns `400` with a validation error): **`name`**, **`transport_organization`**, **`data_type`**, link / file (`url`, `file`), **`is_original`**, **`hide_original`**, **`auth_type`**, **`auth_value`** (password / secret). **Only a user in the Django `Admin` group** may change the URL/file at stages 2–4 (`is_superuser` / `is_staff` alone without that group is **not** enough).
 - **Published feed (stage 4):** re-running GTFS validation **does not move** the stage back to rejection — the error is logged and the `FeedSubmission` stays at stage 4.
-- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change the URL/file at stages 2–4; other fields according to role.
+- **Helper** does not edit submission content at any stage: a `PUT`/`PATCH` from a Helper with any field other than `stage` and `rejection_cause` returns `403` (`{"detail": "Helper may only confirm or reject submissions ..."}`) and nothing is saved. **Admin** (the `Admin` group) may change the URL/file at stages 2–4; other fields according to role.
 
 **List query params:**
 
@@ -271,7 +271,7 @@ Base endpoint:
 - **Forbidden from stage 2:** **`name`**, the feed **`url`**, **`auth_type`**, **`auth_value`**, **`is_original`**, **`hide_original`**, adding/removing endpoints, changing `transport_organization` / `static_submission` / `protocol`.
 - With restricted editing, a shortened endpoint object can be sent, e.g. `{"endpoint_type": "gbfs", "interval": 120}` — missing fields are filled in from the database; an attempt to change a locked field returns a validation error.
 - Changing only **`interval`** does **not** re-run the link validation task and does not delete endpoint records.
-- **Helper** does not edit submission content (only `stage` / `rejection_cause`). **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background (a failure rejects it).
+- **Helper** does not edit submission content at any stage: a body with any field other than `stage` and `rejection_cause` returns `403`, as for static feeds. **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background (a failure rejects it).
 
 **List query params:**
 
