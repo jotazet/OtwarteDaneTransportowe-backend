@@ -248,3 +248,45 @@ def test_public_schema_is_open_and_lists_only_planner_routes():
 
     assert list(schema['paths']) == ['/api/planner/v1/status/']
     assert schema['components']['securitySchemes']['ApiKey']['name'] == 'X-API-Key'
+
+
+def test_ipv4_clients_seen_through_a_dual_stack_socket_stay_ipv4(enabled):
+    IpBan.objects.create(network='203.0.113.0/24')
+    PlannerSettings.objects.filter(pk=1).update(anonymous_lookup_per_minute=1)
+    access.forget_cached_access()
+
+    banned = get(LOOKUP, ip='::ffff:203.0.113.50')
+    first = get(LOOKUP, ip='::ffff:198.51.100.1')
+    other_client = get(LOOKUP, ip='::ffff:198.51.100.2')
+
+    assert banned.status_code == 403
+    assert (first.status_code, other_client.status_code) == (200, 200)
+
+
+def test_banned_client_sending_a_key_still_gets_banned(enabled):
+    IpBan.objects.create(network='203.0.113.50/32')
+
+    response = get(LOOKUP, ip='203.0.113.50', **{'X-API-Key': 'odt_anything'})
+
+    assert response.status_code == 403
+
+
+def test_guessing_keys_is_cut_off_and_logged_once_a_minute(enabled):
+    responses = [get(LOOKUP, **{'X-API-Key': f'odt_guess_{n}'}) for n in range(12)]
+
+    assert [r.status_code for r in responses[:10]] == [401] * 10
+    assert responses[10].json()['code'] == 'planner.rate_limited'
+    assert PlannerRequestLog.objects.filter(status_code=401).count() == 1
+
+
+def test_key_limit_of_zero_blocks_that_group(enabled):
+    make_key('odt_one', lookup_per_minute=0)
+
+    assert get(LOOKUP, **{'X-API-Key': 'odt_one'}).status_code == 429
+
+
+def test_requests_while_switched_off_are_logged_once_a_minute():
+    for _ in range(3):
+        get(LOOKUP)
+
+    assert PlannerRequestLog.objects.filter(status_code=503).count() == 1

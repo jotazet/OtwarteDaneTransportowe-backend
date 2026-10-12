@@ -170,11 +170,18 @@ class IpBanSerializer(serializers.ModelSerializer):
 
     def validate_network(self, value):
         try:
-            return str(ipaddress.ip_network(value.strip(), strict=False))
+            network = str(ipaddress.ip_network(value.strip(), strict=False))
         except ValueError:
             raise serializers.ValidationError(
                 'Not an IP address or network.', code='planner.invalid_network'
             ) from None
+        # The model's unique check saw the input before normalisation.
+        duplicates = IpBan.objects.filter(network=network)
+        if self.instance is not None:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise serializers.ValidationError('Already banned.', code='unique')
+        return network
 
 
 class PlannerRequestLogSerializer(serializers.ModelSerializer):

@@ -220,7 +220,7 @@ Requests to `/api/planner/v1/` of the last 30 days, newest first (default: the l
 ```
 
 - No query parameters are stored, so trip origins and destinations never reach the log.
-- Rejected requests (`403`, `429`) are logged at most once a minute per client.
+- Refused requests (`401`, `403`, `429`, `503`) are logged at most once a minute per client and status.
 - Rows are deleted after `PLANNER_REQUEST_LOG_RETENTION_DAYS` (30) days, once each day has been summarised (see below). The log contains IP addresses, which are personal data; it is for the `Admin` group only.
 
 ## Statistics
@@ -230,16 +230,16 @@ GET /api/planner/admin/stats/daily/?date_from=&date_to=&endpoint=&api_key=
 GET /api/planner/admin/stats/top-clients/?days=7&endpoint=
 ```
 
-`stats/daily/` (default: the last 30 days) counts requests per day from the daily summaries, which keep no IP addresses and are kept indefinitely, plus today from the live log:
+`stats/daily/` (default: the last 30 days) counts requests per day, paginated like every list. It reads the daily summaries, which keep no IP addresses and are kept indefinitely; days not summarised yet (today, and yesterday until the 00:30 UTC rollup) come from the raw log:
 
 ```json
-{ "date_from": "2026-09-14", "date_to": "2026-10-13",
-  "days": [ { "date": "2026-10-12", "requests": 1520, "ok": 1490, "client_errors": 12, "rate_limited": 3,
-              "server_errors": 15, "avg_latency_ms": 41, "max_latency_ms": 2310 } ] }
+{ "count": 30, "next": null, "previous": null,
+  "results": [ { "date": "2026-10-12", "requests": 1520, "ok": 1490, "client_errors": 12, "rate_limited": 3,
+                 "server_errors": 15, "avg_latency_ms": 41, "max_latency_ms": 2310 } ] }
 ```
 
 `rate_limited` counts logged rejections, which are sampled once a minute per client, so it is a lower bound.
 
-`stats/top-clients/` lists the 20 busiest clients of the last `days` days (1–30, from the raw log): `{"days": 7, "clients": [{"client_ip": "198.51.100.7", "api_key": {"id": 3, "name": "…", "prefix": "odt_Q2mS8xk"}, "requests": 812}]}`.
+`stats/top-clients/` lists the 20 busiest clients of the last `days` days (1–30, from the raw log), in the page envelope: `results: [{"client_ip": "198.51.100.7", "api_key": {"id": 3, "name": "…", "prefix": "odt_Q2mS8xk"}, "requests": 812}]`.
 
 Error codes on these routes: field codes `planner.invalid_network`, `planner.invalid_range`, and DRF's defaults.

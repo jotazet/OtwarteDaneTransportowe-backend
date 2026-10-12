@@ -236,7 +236,7 @@ class PlannerRequestLogListView(generics.ListAPIView):
         return rows
 
 
-class DailyStatsView(APIView):
+class DailyStatsView(generics.GenericAPIView):
     """Requests per day by status class (no IPs); default: the last 30 days."""
 
     permission_classes = [RequiresAdminGroup]
@@ -250,10 +250,10 @@ class DailyStatsView(APIView):
         days = request_logs.daily_stats(
             date_from, date_to, endpoint=params.get('endpoint'), api_key=params.get('api_key')
         )
-        return Response({'date_from': date_from, 'date_to': date_to, 'days': days})
+        return self.get_paginated_response(self.paginate_queryset(days))
 
 
-class TopClientsView(APIView):
+class TopClientsView(generics.GenericAPIView):
     """The busiest IPs and keys of the last days (from the 30-day raw log)."""
 
     permission_classes = [RequiresAdminGroup]
@@ -262,25 +262,20 @@ class TopClientsView(APIView):
         filters = TopClientsFilterSerializer(data=request.query_params)
         filters.is_valid(raise_exception=True)
         params = filters.validated_data
-        clients = request_logs.top_clients(params['days'], endpoint=params.get('endpoint'))
-        return Response(
+        clients = [
             {
-                'days': params['days'],
-                'clients': [
+                'client_ip': row['client_ip'],
+                'api_key': (
                     {
-                        'client_ip': row['client_ip'],
-                        'api_key': (
-                            {
-                                'id': row['api_key'],
-                                'name': row['api_key__name'],
-                                'prefix': row['api_key__prefix'],
-                            }
-                            if row['api_key']
-                            else None
-                        ),
-                        'requests': row['requests'],
+                        'id': row['api_key'],
+                        'name': row['api_key__name'],
+                        'prefix': row['api_key__prefix'],
                     }
-                    for row in clients
-                ],
+                    if row['api_key']
+                    else None
+                ),
+                'requests': row['requests'],
             }
-        )
+            for row in request_logs.top_clients(params['days'], endpoint=params.get('endpoint'))
+        ]
+        return self.get_paginated_response(self.paginate_queryset(clients))

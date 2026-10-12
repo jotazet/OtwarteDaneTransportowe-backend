@@ -62,7 +62,7 @@ def roll_up_and_purge(today: date | None = None) -> None:
 
 
 def daily_stats(date_from: date, date_to: date, endpoint=None, api_key=None) -> list[dict]:
-    """Requests per day by status class; today comes live from the raw log."""
+    """Requests per day by status class, from the summaries and, for days not yet summarised, the log."""
     filters = {}
     if endpoint:
         filters['endpoint'] = endpoint
@@ -73,18 +73,22 @@ def daily_stats(date_from: date, date_to: date, endpoint=None, api_key=None) -> 
             'date', 'status_code', 'requests', 'latency_ms_sum', 'latency_ms_max'
         )
     )
-    today = timezone.now().date()
-    if date_from <= today <= date_to:
-        rows += [
-            {**row, 'date': today}
-            for row in PlannerRequestLog.objects.filter(created_at__date=today, **filters)
-            .values('status_code')
-            .annotate(
-                requests=Count('id'),
-                latency_ms_sum=Sum('latency_ms'),
-                latency_ms_max=Max('latency_ms'),
-            )
-        ]
+    # Days not summarised yet (today, and yesterday until the nightly rollup)
+    # come from the raw log.
+    summarised = set(PlannerDailyStat.objects.values_list('date', flat=True).distinct())
+    rows += [
+        {**row, 'date': row.pop('created_at__date')}
+        for row in PlannerRequestLog.objects.filter(
+            created_at__date__range=(date_from, date_to), **filters
+        )
+        .values('created_at__date', 'status_code')
+        .annotate(
+            requests=Count('id'),
+            latency_ms_sum=Sum('latency_ms'),
+            latency_ms_max=Max('latency_ms'),
+        )
+        if row['created_at__date'] not in summarised
+    ]
     days = defaultdict(
         lambda: {
             'requests': 0,

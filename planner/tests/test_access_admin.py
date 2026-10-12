@@ -122,7 +122,7 @@ def test_daily_stats_combine_rollups_and_today(admin_client):
     )
     PlannerRequestLog.objects.create(endpoint='a', status_code=500, latency_ms=40)
 
-    days = admin_client.get(f'{BASE}/stats/daily/').data['days']
+    days = admin_client.get(f'{BASE}/stats/daily/').data['results']
 
     assert days[0] | {'date': None} == {
         'date': None,
@@ -147,7 +147,7 @@ def test_top_clients_name_keys_and_ips(admin_client):
         endpoint='a', status_code=200, latency_ms=1, client_ip='198.51.100.1'
     )
 
-    clients = admin_client.get(f'{BASE}/stats/top-clients/?days=7').data['clients']
+    clients = admin_client.get(f'{BASE}/stats/top-clients/?days=7').data['results']
 
     assert clients[0]['api_key'] == {'id': key.id, 'name': 'Gmina app', 'prefix': 'odt_abc'}
     assert clients[0]['requests'] == 3
@@ -183,3 +183,22 @@ def test_admin_lists_do_not_query_per_row(admin_client, django_assert_max_num_qu
     for path in ('/api-keys/', '/ip-bans/', '/requests/'):
         with django_assert_max_num_queries(8):
             assert admin_client.get(BASE + path).data['count'] == 10
+
+
+def test_same_ban_in_another_notation_is_a_field_error(admin_client):
+    admin_client.post(f'{BASE}/ip-bans/', {'network': '203.0.113.7'}, format='json')
+
+    again = admin_client.post(f'{BASE}/ip-bans/', {'network': '203.0.113.7/32'}, format='json')
+
+    assert again.status_code == 400
+    assert again.data['network'][0].code == 'unique'
+
+
+def test_daily_stats_show_days_not_yet_summarised(admin_client):
+    PlannerRequestLog.objects.create(
+        endpoint='a', status_code=200, latency_ms=10, created_at=timezone.now() - timedelta(days=1)
+    )
+
+    days = admin_client.get(f'{BASE}/stats/daily/').data['results']
+
+    assert [day['requests'] for day in days] == [1]

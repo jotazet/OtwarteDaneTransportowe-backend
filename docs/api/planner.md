@@ -44,7 +44,7 @@ Every error is a stable code with details; codes never change once published, an
 | HTTP | Code | Meaning |
 | --- | --- | --- |
 | 400 | `planner.invalid_request` | A parameter is invalid; `details.fields` maps each to its error codes. |
-| 401 | `planner.invalid_api_key` | `X-API-Key` is unknown or revoked. Send no key to use anonymous access. |
+| 401 | `planner.invalid_api_key` | `X-API-Key` is unknown or revoked. Send no key to use anonymous access. After 10 wrong keys in a minute, further key attempts get `429`. |
 | 403 | `planner.client_banned` | Your address is blocked. Contact ODT. |
 | 404 | `planner.not_found` | No such endpoint or object. |
 | 405 | `planner.method_not_allowed` | Only `GET` is supported. |
