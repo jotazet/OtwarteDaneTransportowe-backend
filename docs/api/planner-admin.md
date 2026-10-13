@@ -114,7 +114,7 @@ GET  /api/planner/admin/osm/
 POST /api/planner/admin/osm/   {"url": "https://download.geofabrik.de/europe/poland-latest.osm.pbf"}
 ```
 
-`POST` answers `202` with the queued download, or `409` while another download (`planner.osm_download_in_progress`) or a graph build (`planner.build_in_progress`) is queued or running: a build reads the file a download replaces. For the same reason `POST builds/` answers `409 planner.osm_download_in_progress` during a download, and a scheduled build that falls on one is skipped. `GET` lists downloads, newest first; the newest `succeeded` one describes the file in use.
+A URL that resolves to a private address is refused at once (`400`, field code `planner.osm_url_blocked`). `POST` answers `202` with the queued download, or `409` while another download (`planner.osm_download_in_progress`) or a graph build (`planner.build_in_progress`) is queued or running: a build reads the file a download replaces. For the same reason `POST builds/` answers `409 planner.osm_download_in_progress` during a download, and a scheduled build that falls on one retries every 10 minutes (up to an hour). `GET` lists downloads, newest first; the newest `succeeded` one describes the file in use.
 
 ```json
 {
@@ -286,7 +286,7 @@ DELETE /api/planner/admin/ip-bans/{id}/
 GET /api/planner/admin/requests/?since=&until=&endpoint=&status=&ip=&api_key=
 ```
 
-Requests to `/api/planner/v1/` of the last 30 days, newest first (default: the last 24 hours). Paginated.
+Requests to `/api/planner/v1/` of the last 30 days, newest first, paginated. The filters are those of the statistics below (default: the 24 hours before `until`, which defaults to now; `since` must be before `until`, else `planner.invalid_range`), plus `status`.
 
 ```json
 { "id": 9, "created_at": "2026-10-13T11:25:00Z", "endpoint": "planner-v1-status", "status_code": 200, "latency_ms": 12,

@@ -24,14 +24,20 @@ def run_graph_build_task(build_id: int):
     pipeline.run_build(build_id)
 
 
-@shared_task(name='planner.scheduled_graph_build')
-def scheduled_graph_build_task():
+# A scheduled build that meets an OSM download (a few minutes) waits for it.
+SCHEDULED_BUILD_RETRY_SECONDS = 600
+SCHEDULED_BUILD_RETRIES = 6
+
+
+@shared_task(name='planner.scheduled_graph_build', bind=True, max_retries=SCHEDULED_BUILD_RETRIES)
+def scheduled_graph_build_task(self):
     try:
         services.request_build(GraphBuild.TRIGGER_SCHEDULE)
     except services.BuildInProgress:
         logger.info('Scheduled graph build skipped: a build is already queued or running')
-    except services.OsmDownloadInProgress:
-        logger.warning('Scheduled graph build skipped: an OSM download is under way')
+    except services.OsmDownloadInProgress as exc:
+        logger.warning('Scheduled graph build waits for an OSM download')
+        raise self.retry(exc=exc, countdown=SCHEDULED_BUILD_RETRY_SECONDS) from None
 
 
 @shared_task(name='planner.watchdog')

@@ -31,7 +31,7 @@ HEADER = {
 
 
 @pytest.fixture
-def admin(client_as, make_user):
+def admin(client_as, make_user, fake_dns):
     return client_as(make_user('Admin'))
 
 
@@ -84,6 +84,45 @@ def test_admin_queues_a_download_and_only_one_at_a_time(
     assert (second.status_code, second.data['code']) == (409, 'planner.osm_download_in_progress')
     listed = admin.get('/api/planner/admin/osm/').data
     assert [row['id'] for row in listed['results']] == [first.data['id']]
+
+
+def test_a_url_to_a_private_address_is_refused_at_once(admin, fake_dns):
+    fake_dns['intranet.example.org'] = '10.0.0.5'
+
+    response = admin.post(
+        '/api/planner/admin/osm/', {'url': 'https://intranet.example.org/x.pbf'}, format='json'
+    )
+
+    assert response.data['url'][0].code == 'planner.osm_url_blocked'
+    assert not OsmDownload.objects.exists()
+
+
+def test_a_scheduled_build_waits_for_a_download(monkeypatch):
+    OsmDownload.objects.create(url=URL)
+    retried = []
+
+    def retry(**kwargs):
+        retried.append(kwargs['countdown'])
+        return RuntimeError('retry')
+
+    monkeypatch.setattr(tasks.scheduled_graph_build_task, 'retry', retry)
+
+    with pytest.raises(RuntimeError):
+        tasks.scheduled_graph_build_task.run()
+
+    assert retried == [tasks.SCHEDULED_BUILD_RETRY_SECONDS]
+    assert not GraphBuild.objects.exists()
+
+
+def test_an_unreadable_header_timestamp_does_not_reject_the_file(monkeypatch):
+    output = {'header': {'boxes': [[1, 2, 3, 4]], 'option': {'timestamp': 'yesterday'}}}
+    monkeypatch.setattr(
+        osm.subprocess,
+        'run',
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=json.dumps(output)),
+    )
+
+    assert osm.pbf_header('/data/osm/x.pbf') == {'boxes': [[1, 2, 3, 4]], 'timestamp': None}
 
 
 def test_the_watchdog_fails_a_download_whose_worker_died(admin, celery_send_task, monkeypatch):

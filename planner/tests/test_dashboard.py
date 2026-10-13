@@ -139,6 +139,12 @@ def test_too_many_points_is_refused(admin_client):
     assert response.data['interval'][0].code == 'planner.too_many_buckets'
 
 
+def test_a_long_range_by_the_minute_is_refused_without_building_it(admin_client):
+    response = get(admin_client, 'timeseries', interval='minute', since='2000-01-01T00:00:00Z')
+
+    assert response.data['interval'][0].code == 'planner.too_many_buckets'
+
+
 def test_endpoints_busiest_first_with_share_and_latency(admin_client, traffic):
     rows = get(admin_client, 'endpoints').data['results']
 

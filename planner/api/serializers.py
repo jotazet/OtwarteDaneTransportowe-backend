@@ -10,6 +10,7 @@ from data_manager.models import (
     completed_realtime_submission_ids,
     completed_submission_ids,
 )
+from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url
 from planner import otp_config, request_logs
 from planner.models import (
     ApiKey,
@@ -234,6 +235,16 @@ class OsmDownloadRequestSerializer(serializers.ModelSerializer):
         model = OsmDownload
         fields = ['url']
 
+    def validate_url(self, value):
+        # Checked again (and pinned) when the worker downloads it.
+        try:
+            assert_safe_outbound_url(value)
+        except OutboundURLBlocked:
+            raise serializers.ValidationError(
+                'Not a public address.', code='planner.osm_url_blocked'
+            ) from None
+        return value
+
 
 class BuildScheduleSerializer(serializers.Serializer):
     enabled = serializers.BooleanField()
@@ -364,8 +375,8 @@ class TimeseriesFilterSerializer(StatsFilterSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
-        buckets = request_logs.bucket_starts(attrs['since'], attrs['until'], attrs['interval'])
-        if len(buckets) > request_logs.MAX_BUCKETS:
+        buckets = request_logs.bucket_count(attrs['since'], attrs['until'], attrs['interval'])
+        if buckets > request_logs.MAX_BUCKETS:
             raise serializers.ValidationError(
                 {'interval': 'Too many points for this range.'}, code='planner.too_many_buckets'
             )

@@ -96,12 +96,21 @@ def summary(rows) -> dict:
     )
 
 
+def bucket_count(since: datetime, until: datetime, interval: str) -> int:
+    """How many buckets cover [since, until), without building them."""
+    return math.ceil((until - _first_bucket(since, interval)) / INTERVALS[interval])
+
+
 def bucket_starts(since: datetime, until: datetime, interval: str) -> list[datetime]:
-    """UTC bucket starts covering [since, until); every interval divides a UTC day."""
-    step = INTERVALS[interval]
-    seconds = step.total_seconds()
-    first = datetime.fromtimestamp(since.timestamp() // seconds * seconds, UTC)
-    return [first + n * step for n in range(math.ceil((until - first) / step))]
+    """UTC bucket starts covering [since, until); check bucket_count first."""
+    first = _first_bucket(since, interval)
+    return [first + n * INTERVALS[interval] for n in range(bucket_count(since, until, interval))]
+
+
+def _first_bucket(since: datetime, interval: str) -> datetime:
+    # Every interval divides a UTC day, so flooring the timestamp aligns buckets.
+    seconds = INTERVALS[interval].total_seconds()
+    return datetime.fromtimestamp(since.timestamp() // seconds * seconds, UTC)
 
 
 def timeseries(rows, since: datetime, until: datetime, interval: str, split: str) -> dict:

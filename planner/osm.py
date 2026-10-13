@@ -58,7 +58,11 @@ def pbf_header(path: str) -> dict:
         raise OsmPreparationError('Not an OSM extract with a bounding box.')
     options = header.get('option') or {}
     stamp = options.get('osmosis_replication_timestamp') or options.get('timestamp')
-    return {'boxes': header['boxes'], 'timestamp': datetime.fromisoformat(stamp) if stamp else None}
+    try:
+        timestamp = datetime.fromisoformat(stamp) if stamp else None
+    except ValueError:  # informative only: the extract is still usable
+        timestamp = None
+    return {'boxes': header['boxes'], 'timestamp': timestamp}
 
 
 def stop_cells(feed_paths) -> set[tuple[int, int]]:
