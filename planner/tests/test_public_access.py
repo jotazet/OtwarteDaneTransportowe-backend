@@ -263,6 +263,8 @@ def test_public_schema_is_open_and_lists_only_planner_routes():
             'stops/nearby/',
             'stops/search/',
             'trip/',
+            'trip/block/',
+            'vehicles/',
         )
     ]
     plan = schema['paths']['/api/planner/v1/plan/']['get']['parameters']

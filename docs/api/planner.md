@@ -4,7 +4,7 @@ The public API of ODT's journey planner, for ODT's website and for anyone buildi
 
 The planner routes over the feeds ODT publishes with [OpenTripPlanner](https://www.opentripplanner.org/); how it works and its limits are described in [journey planner](../domain/journey-planner.md). Admin routes: [planner-admin](planner-admin.md).
 
-> Status: being built. Available now: `status/`, `plan/`, stop, line and operator search, departures, stop timetables, lines and trips. Vehicles, blocks, alerts and bike sharing follow.
+> Status: being built. Available now: `status/`, `plan/`, stop, line and operator search, departures, stop timetables, lines, trips, blocks and vehicles. Alerts and bike sharing follow.
 
 ## Access
 
@@ -19,7 +19,7 @@ Requests per minute, counted separately for three groups of endpoints:
 | Group | Endpoints |
 | --- | --- |
 | `plan` | trip planning |
-| `realtime` | answers computed by the routing engine: departures, timetables, lines, trips (later vehicles, alerts) |
+| `realtime` | answers computed by the routing engine: departures, timetables, lines, trips, blocks, vehicles |
 | `lookup` | stop, line and operator search, status |
 
 Each group has a limit per client (an IP address, an IPv6 `/64`, or an API key) and a limit for all clients together. The numbers are set by ODT and may change; a client over a limit gets:
@@ -407,10 +407,74 @@ One trip on its service date, with every stop and realtime predictions.
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `id` | required | Trip ID (`trip_id` of a departure or a plan leg). |
-| `date` | today in Poland | Its `service_date`. |
+| `date` | see below | Its `service_date`. |
 | `geometry` | `false` | `true`: the trip's path in `geometry`. |
 
+Without `date`, the trip's run under way or next: yesterday's while yesterday's run (a trip after midnight) has not ended, otherwise today's.
+
 The answer: `id`, `headsign`, `direction_id`, `block_id` (the vehicle's block, if the feed has one), `route`, `service_date`, `realtime` (any prediction on the trip), `calls[]` with `stop` and `arrival`/`departure` (`scheduled`, `estimated`, `delay_s`), and `geometry`. An unknown trip: `404 planner.trip_not_found`; a date outside the timetables: `404 planner.date_outside_service_period` (as for `stop/timetable/`); a trip that does not run that day: `404 planner.trip_not_on_date`.
+
+### `GET /api/planner/v1/trip/block/?id=…`
+
+The block (in Polish *brygada*) of a trip: every trip the same vehicle runs that day, in order. Only for feeds that set GTFS `block_id` (in October 2026, 21 of 44 published feeds).
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `id` | required | Any trip of the block, e.g. a vehicle's `trip_id`. |
+| `date` | as for `trip/` | Service date. |
+
+```json
+{
+  "feed_id": "krk",
+  "block_id": "T/70-08",
+  "service_date": "2026-10-14",
+  "trips": [
+    {
+      "id": "krk:53620411_256159",
+      "route": { "id": "krk:352529", "short_name": "70", "long_name": null, "mode": "tram", "color": null, "text_color": null, "agency": { "id": "krk:302", "name": "Kraków" } },
+      "headsign": "Pleszów",
+      "start": { "stop": { "id": "krk:2047685", "name": "Kurdwanów P+R", "lat": null, "lon": null, "platform": null }, "scheduled": "2026-10-14T05:55:00Z", "estimated": "2026-10-14T05:57:00Z", "delay_s": 120 },
+      "end": { "stop": { "id": "krk:2047537", "name": "Pleszów", "lat": null, "lon": null, "platform": null }, "scheduled": "2026-10-14T06:53:00Z", "estimated": null, "delay_s": null },
+      "realtime": true,
+      "current": true
+    }
+  ]
+}
+```
+
+`start` is the departure from the first stop, `end` the arrival at the last; `current` marks the trip under way now (by predicted times where known). Predictions come from the operator and usually cover only the trip under way. For a whole trip's stops, ask `trip/`. A trip without a block: `404 planner.block_not_available` with `details.reason` `no_block` (or `too_many_trips` when a feed uses one block ID for more than 1000 trips); no trip of the block that day: `404 planner.trip_not_on_date`.
+
+### `GET /api/planner/v1/vehicles/`
+
+Vehicles reporting their position now. Positions are refreshed every 10 seconds at most (while a refresh is slow, the previous positions, at most a minute old, are returned; without them `503 planner.busy`); a vehicle silent for 5 minutes is left out. Only vehicles the engine matched to a trip are shown, and only for feeds that publish GTFS-RT vehicle positions.
+
+| Parameter | Meaning |
+| --- | --- |
+| `bbox` | `min_lon,min_lat,max_lon,max_lat`, at most 1° a side. |
+| `routes` | Only these lines. |
+| filters | `modes`, `agencies`, `organizations` as for stops. |
+
+Paged like `stops/` (default 500, at most 2000 a page). Each result:
+
+```json
+{
+  "id": "krk:A:301",
+  "label": "301",
+  "lat": 50.0255661,
+  "lon": 19.9592705,
+  "heading": 0.0,
+  "speed_m_s": 0.0,
+  "updated_at": "2026-10-13T00:23:57Z",
+  "route": { "id": "krk:160047", "short_name": "122", "long_name": null, "mode": "bus", "color": null, "text_color": null, "agency": { "id": "krk:302", "name": "Kraków" } },
+  "headsign": "Zesławice",
+  "trip_id": "krk:53566587_256159",
+  "block_id": "A/122-01",
+  "stop_status": "in_transit_to",
+  "stop": { "id": "krk:2048695", "name": "Aleja Przyjaźni" }
+}
+```
+
+`label` is the number painted on the vehicle; `heading` degrees clockwise from north; `stop_status` (`incoming_at`, `stopped_at`, `in_transit_to`) refers to `stop`. Some operators report a vehicle waiting for its first trip of the day under that trip, at the depot with speed 0. Follow `trip_id` to `trip/` and `trip/block/`.
 
 ## Versioning
 

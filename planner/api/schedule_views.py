@@ -4,18 +4,32 @@ Answered by OTP, so with realtime data where operators publish it, and
 unavailable while OTP is stopped for a graph build.
 """
 
+from datetime import timedelta
+
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 
-from planner import schedules
-from planner.access import PlannerError, PlannerPublicView
-from planner.api.params import MAX_IDS, FeedScopedIdField, InstantField, QueryBoolean, id_list
+from planner import otp_runtime, schedules, vehicles
+from planner.access import OTP_BUSY_RETRY_AFTER_SECONDS, PlannerError, PlannerPublicView
+from planner.api.lookup_views import LookupListView, MapPagination
+from planner.api.params import (
+    MAX_IDS,
+    BboxField,
+    FeedScopedIdField,
+    InstantField,
+    OperatorFilter,
+    QueryBoolean,
+    id_list,
+)
 from planner.api.public_views import AgencySummarySerializer
+from planner.models import IndexedBlockTrip
 
 SCHEDULE_TIMEOUT_SECONDS = 10
 STATUSES = ['scheduled', 'updated', 'canceled', 'added', 'modified']
+# Vehicles are filtered in memory, so a larger area than for stops costs nothing.
+VEHICLE_MAX_BBOX_DEGREES = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +132,53 @@ class TripDetailSerializer(serializers.Serializer):
     geometry = serializers.CharField(allow_null=True, help_text='With `geometry=true`.')
 
 
+class VehicleStopSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    name = serializers.CharField()
+
+
+class VehicleSerializer(serializers.Serializer):
+    id = serializers.CharField(help_text='Feed-scoped vehicle ID.')
+    label = serializers.CharField(allow_null=True, help_text='Number shown on the vehicle.')
+    lat = serializers.FloatField()
+    lon = serializers.FloatField()
+    heading = serializers.FloatField(allow_null=True, help_text='Degrees clockwise from north.')
+    speed_m_s = serializers.FloatField(allow_null=True)
+    updated_at = serializers.CharField(allow_null=True, help_text='UTC instant of the position.')
+    route = RouteRefSerializer()
+    headsign = serializers.CharField(allow_null=True)
+    trip_id = serializers.CharField(allow_null=True)
+    block_id = serializers.CharField(allow_null=True)
+    stop_status = serializers.ChoiceField(
+        choices=['incoming_at', 'stopped_at', 'in_transit_to'], allow_null=True
+    )
+    stop = VehicleStopSerializer(allow_null=True, help_text='The stop `stop_status` refers to.')
+
+
+class BlockCallSerializer(serializers.Serializer):
+    stop = StopRefSerializer()
+    scheduled = serializers.CharField(allow_null=True)
+    estimated = serializers.CharField(allow_null=True)
+    delay_s = serializers.IntegerField(allow_null=True)
+
+
+class BlockTripSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    route = RouteRefSerializer()
+    headsign = serializers.CharField(allow_null=True)
+    start = BlockCallSerializer(help_text='First stop, departure.')
+    end = BlockCallSerializer(help_text='Last stop, arrival.')
+    realtime = serializers.BooleanField()
+    current = serializers.BooleanField(help_text='Under way now.')
+
+
+class BlockSerializer(serializers.Serializer):
+    feed_id = serializers.CharField()
+    block_id = serializers.CharField()
+    service_date = serializers.DateField()
+    trips = BlockTripSerializer(many=True)
+
+
 # ---------------------------------------------------------------------------
 # Parameters
 # ---------------------------------------------------------------------------
@@ -152,9 +213,26 @@ class RouteParams(serializers.Serializer):
 class TripParams(serializers.Serializer):
     id = FeedScopedIdField(help_text='Trip ID, e.g. from a departure or a plan leg.')
     date = serializers.DateField(
-        required=False, help_text='Service date (`service_date`); default today in Poland.'
+        required=False,
+        help_text='Service date (`service_date`); default: the day of the run under way or next.',
     )
     geometry = QueryBoolean(default=False, help_text="Return the trip's path.")
+
+
+class VehicleParams(OperatorFilter):
+    bbox = BboxField(
+        VEHICLE_MAX_BBOX_DEGREES,
+        required=False,
+        help_text='`min_lon,min_lat,max_lon,max_lat`, at most 1° a side.',
+    )
+    routes = id_list(help_text='Only these lines.')
+
+
+class BlockParams(serializers.Serializer):
+    id = FeedScopedIdField(help_text='A trip of the block, e.g. from a vehicle or a departure.')
+    date = serializers.DateField(
+        required=False, help_text='Service date; default: the day of the run under way or next.'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +246,16 @@ class ScheduleView(PlannerPublicView):
 
     def ask_otp(self, document: str, variables: dict) -> dict:
         return self.otp_query(document, variables, timeout=SCHEDULE_TIMEOUT_SECONDS)
+
+    def service_date(self, params: dict):
+        """The `date` parameter, or the day of the trip's run under way or next."""
+        if params.get('date'):
+            return params['date']
+        data = self.ask_otp(
+            schedules.CURRENT_RUN_DOCUMENT,
+            {'id': params['id'], 'yesterday': (schedules.today() - timedelta(days=1)).isoformat()},
+        )
+        return schedules.current_service_date(data, timezone.now())
 
     def check_service_period(self, data: dict, day) -> None:
         period = schedules.service_period(data)
@@ -247,7 +335,7 @@ class TripView(ScheduleView):
     @extend_schema(parameters=[TripParams], responses=TripDetailSerializer, summary='A trip')
     def get(self, request):
         params = self.validated(TripParams)
-        day = params.get('date') or schedules.today()
+        day = self.service_date(params)
         data = self.ask_otp(
             schedules.TRIP_DOCUMENT,
             {'id': params['id'], 'date': day.isoformat(), 'withGeometry': params['geometry']},
@@ -259,3 +347,73 @@ class TripView(ScheduleView):
         if trip['calls'] is None:
             raise PlannerError('planner.trip_not_on_date', 404)
         return Response(TripDetailSerializer(trip).data)
+
+
+class BlockView(ScheduleView):
+    """Every trip of the vehicle's block (brigade) on a day, with the one under way marked."""
+
+    @extend_schema(parameters=[BlockParams], responses=BlockSerializer, summary='A block (brigade)')
+    def get(self, request):
+        params = self.validated(BlockParams)
+        member = IndexedBlockTrip.objects.filter(trip_id=params['id']).first()
+        if member is None:
+            raise PlannerError('planner.block_not_available', 404, details={'reason': 'no_block'})
+        trip_ids = list(
+            IndexedBlockTrip.objects.filter(feed_id=member.feed_id, block_id=member.block_id)
+            .order_by('trip_id')
+            .values_list('trip_id', flat=True)[: schedules.MAX_BLOCK_TRIPS + 1]
+        )
+        if len(trip_ids) > schedules.MAX_BLOCK_TRIPS:
+            # Feeds that reuse one block ID for a whole line are no use here.
+            raise PlannerError(
+                'planner.block_not_available', 404, details={'reason': 'too_many_trips'}
+            )
+        day = self.service_date(params)
+        data = self.ask_otp(
+            schedules.block_document(len(trip_ids)), schedules.block_variables(trip_ids, day)
+        )
+        self.check_service_period(data, day)
+        trips = schedules.block_trips(data, len(trip_ids), timezone.now())
+        if not trips:
+            raise PlannerError('planner.trip_not_on_date', 404)
+        return Response(
+            BlockSerializer(
+                {
+                    'feed_id': member.feed_id,
+                    'block_id': member.block_id,
+                    'service_date': day,
+                    'trips': trips,
+                }
+            ).data
+        )
+
+
+@extend_schema(parameters=[VehicleParams], summary='Vehicles')
+class VehicleListView(LookupListView):
+    """Vehicles reporting their position now, matched to a trip; refreshed every 10 s."""
+
+    params_class = VehicleParams
+    serializer_class = VehicleSerializer
+    pagination_class = MapPagination
+    limit_group = 'realtime'
+    uses_otp = True
+
+    def get_queryset(self):
+        params = self.params()
+        try:
+            rows = vehicles.snapshot(
+                lambda document, variables: self.otp_query(
+                    document, variables, timeout=SCHEDULE_TIMEOUT_SECONDS
+                )
+            )
+        except otp_runtime.OtpBusy:
+            raise PlannerError(
+                'planner.busy', 503, retry_after=OTP_BUSY_RETRY_AFTER_SECONDS
+            ) from None
+        return vehicles.matching(
+            rows,
+            bbox=params.get('bbox'),
+            modes=params.get('modes'),
+            agency_ids=params['agency_ids'],
+            route_ids=set(params.get('routes') or []),
+        )

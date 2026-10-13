@@ -11,7 +11,7 @@ from data_manager.models import FeedSubmission, FeedSubmissionHistory, StaticFee
 
 # Re-exported fixture: SSRF-checked URLs resolve without real DNS.
 from data_manager.tests.conftest import fake_dns  # noqa: F401
-from planner import osm, otp_runtime, pipeline
+from planner import osm, otp_runtime, pipeline, vehicles
 from planner.models import PlannerFeed
 
 GTFS_ZIP = (Path(__file__).parents[2] / 'data_manager' / 'tests' / 'GTFS_correct.zip').read_bytes()
@@ -25,6 +25,14 @@ def gtfs_variant(marker: str) -> bytes:
             dst.writestr(name, src.read(name))
         dst.writestr('marker.txt', marker)
     return buffer.getvalue()
+
+
+@pytest.fixture(autouse=True)
+def fresh_vehicle_snapshot():
+    """The vehicle snapshot is per process; no test may see another test's vehicles."""
+    vehicles.forget_snapshot()
+    yield
+    vehicles.forget_snapshot()
 
 
 @pytest.fixture

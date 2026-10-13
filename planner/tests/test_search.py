@@ -10,6 +10,7 @@ from planner import otp_runtime, pipeline, search_index, tasks
 from planner.models import (
     GraphBuild,
     IndexedAgency,
+    IndexedBlockTrip,
     IndexedRoute,
     IndexedStop,
     IndexedStopGroup,
@@ -93,11 +94,20 @@ def otp_index(monkeypatch):
 
     class Fake:
         answer = copy.deepcopy(OTP_INDEX)
+        trips = {
+            'krk': [
+                {'gtfsId': 'krk:t1', 'blockId': 'T/70-08'},
+                {'gtfsId': 'krk:t2', 'blockId': 'T/70-08'},
+                {'gtfsId': 'krk:t3', 'blockId': None},
+            ],
+        }
         error = None
 
         def query(self, document, variables=None, timeout=None):
             if self.error:
                 raise self.error
+            if document == search_index.BLOCK_TRIPS_DOCUMENT:
+                return {'trips': self.trips.get(variables['feeds'][0], [])}
             return copy.deepcopy(self.answer)
 
     fake = Fake()
@@ -171,6 +181,13 @@ def test_index_copies_the_active_graph_once(indexed, active_build):
         2,
     )
     assert IndexedStop.objects.get(stop_id='kml:10').station_id == 'kml:st1'
+
+
+def test_index_keeps_which_trips_share_a_block(indexed):
+    assert sorted(IndexedBlockTrip.objects.values_list('feed_id', 'block_id', 'trip_id')) == [
+        ('krk', 'T/70-08', 'krk:t1'),
+        ('krk', 'T/70-08', 'krk:t2'),
+    ]
 
 
 def test_lines_sort_by_number_then_name(indexed):

@@ -10,6 +10,7 @@ import math
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from itertools import islice
 
 from django.db import transaction
 from django.utils import timezone
@@ -18,6 +19,7 @@ from planner import otp_runtime
 from planner.models import (
     GraphBuild,
     IndexedAgency,
+    IndexedBlockTrip,
     IndexedRoute,
     IndexedStop,
     IndexedStopGroup,
@@ -36,6 +38,10 @@ INDEX_DOCUMENT = """
     routes { gtfsId }
   }
 }
+"""
+# Per feed, to keep each answer small: Kraków has ~83k trips (0.2 s).
+BLOCK_TRIPS_DOCUMENT = """
+query BlockTrips($feeds: [String]) { trips(feeds: $feeds) { gtfsId blockId } }
 """
 # All of Poland is ~93k stops (~20 MB of JSON); Małopolska answered in 0.15 s.
 INDEX_TIMEOUT_SECONDS = 120
@@ -65,6 +71,9 @@ def refresh_active() -> bool:
     data = otp_runtime.query(INDEX_DOCUMENT, timeout=INDEX_TIMEOUT_SECONDS)
     with transaction.atomic():
         counts = _replace(data)
+        counts['block_trips'] = _replace_block_trips(
+            [feed['feedId'] for feed in data.get('feeds') or []]
+        )
         GraphBuild.objects.filter(pk=build.pk).update(indexed_at=timezone.now())
     logger.info('Planner search index refreshed for build %s: %s', build.id, counts)
     return True
@@ -171,6 +180,25 @@ def _replace(data: dict) -> dict:
         'stops': len(stops),
         'groups': len(groups),
     }
+
+
+def _replace_block_trips(feed_ids: list[str]) -> int:
+    """Feed by feed and in batches: all of Poland has ~1.3M trips."""
+    IndexedBlockTrip.objects.all().delete()
+    count = 0
+    for feed_id in feed_ids:
+        trips = otp_runtime.query(
+            BLOCK_TRIPS_DOCUMENT, {'feeds': [feed_id]}, timeout=INDEX_TIMEOUT_SECONDS
+        ).get('trips')
+        rows = (
+            IndexedBlockTrip(feed_id=feed_id, block_id=trip['blockId'], trip_id=trip['gtfsId'])
+            for trip in trips or []
+            if trip.get('blockId')
+        )
+        while batch := list(islice(rows, BATCH_SIZE)):
+            IndexedBlockTrip.objects.bulk_create(batch)
+            count += len(batch)
+    return count
 
 
 def _route_centres(stops: list[dict]) -> dict[str, tuple[float, float]]:

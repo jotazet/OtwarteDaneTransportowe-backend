@@ -365,3 +365,20 @@ class IndexedStop(models.Model):
 
     def __str__(self):
         return self.stop_id
+
+
+class IndexedBlockTrip(models.Model):
+    """A trip that belongs to a block (GTFS block_id): one vehicle's trips of a day.
+
+    OTP cannot list a block's trips, so the index keeps which trips share one.
+    """
+
+    feed_id = models.TextField()
+    block_id = models.TextField()
+    trip_id = models.TextField(unique=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['feed_id', 'block_id'], name='planner_block_trip_block')]
+
+    def __str__(self):
+        return f'{self.feed_id}:{self.block_id} {self.trip_id}'

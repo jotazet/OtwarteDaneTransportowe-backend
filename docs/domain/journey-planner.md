@@ -26,6 +26,10 @@ Error codes stored per feed: `planner.feed_not_published`, `planner.feed_source_
 - **Success rates.** Kraków applied 95.5% of trip updates in the spike; OTP rejects updates with errors such as `NEGATIVE_DWELL_TIME`, and its Prometheus endpoint reports them per feed (`batch_trip_updates_successful` / `_failed`).
 - **Vehicle positions.** OTP drops positions whose trip it cannot match, so vehicles without a valid `trip_id` are not shown.
 - **Blocks (brigades).** A block is the GTFS `block_id`: the sequence of trips one vehicle runs in a day. 21 of the 44 published feeds set it (e.g. Kraków `T/72-04`). Block IDs can contain `/`, which is why planner IDs are passed as query parameters, never path segments.
+  - One block ID covers the trips of every day type (weekday, Saturday, holiday), so a block is resolved for a date: Kraków's largest has 366 trips in the feed, 62 of them on a weekday.
+  - OTP cannot list a block's trips, so the search index stores which trips share a block (85k for Kraków, copied in under 3 s). OTP then says which of them run on the date.
+- **Vehicles in the API** come from one snapshot of every line's positions, refreshed at most every 10 s per web process; positions older than 5 minutes are dropped. Kraków reports vehicles waiting at the depot under their first trip of the day.
+- **Service date without a date.** A trip after midnight belongs to yesterday's service day, so `trip/` and `trip/block/` default to yesterday while yesterday's run of the trip has not ended.
 
 ## Trip planning
 

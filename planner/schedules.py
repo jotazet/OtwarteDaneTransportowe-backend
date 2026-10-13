@@ -92,12 +92,45 @@ query Trip($id: String!, $date: LocalDate!, $withGeometry: Boolean!) {{
 }}
 """
 
+# A block is one vehicle's trips; its trips of every day type are asked for at
+# once (Kraków's largest: 366 trips, 21 ms). More means a feed misuses block_id.
+MAX_BLOCK_TRIPS = 1000
+
+# Whether yesterday's run of a trip is still under way (a trip after midnight).
+CURRENT_RUN_DOCUMENT = """
+query CurrentRun($id: String!, $yesterday: LocalDate!) {
+  trip(id: $id) {
+    onServiceDate(date: $yesterday) {
+      end {
+        schedule { time { ... on ArrivalDepartureTime { arrival } } }
+        realTime { arrival { time } }
+      }
+    }
+  }
+}
+"""
+
 _ZONE = ZoneInfo(TRANSIT_TIME_ZONE)
 
 
 def today() -> date:
     """The current calendar day in Poland, the default service date."""
     return datetime.now(_ZONE).date()
+
+
+def current_service_date(data: dict, now: datetime) -> date:
+    """Yesterday while yesterday's run of the trip has not ended (after midnight), else today.
+
+    ``data`` answers CURRENT_RUN_DOCUMENT for yesterday.
+    """
+    end = (((data.get('trip') or {}).get('onServiceDate')) or {}).get('end') or {}
+    predicted = ((end.get('realTime') or {}).get('arrival') or {}).get('time')
+    scheduled = ((end.get('schedule') or {}).get('time') or {}).get('arrival')
+    ends = predicted or scheduled
+    day = today()
+    if ends and datetime.fromisoformat(ends) >= now:
+        return day - timedelta(days=1)
+    return day
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +233,73 @@ def stop_timetable(data: dict, route_ids=None) -> dict | None:
 # ---------------------------------------------------------------------------
 # Line and trip
 # ---------------------------------------------------------------------------
+
+
+def block_document(trip_count: int) -> str:
+    """One alias per trip (OTP has no query for several trips); IDs stay variables."""
+    ids = ', '.join(f'$t{n}: String!' for n in range(trip_count))
+    trips = '\n'.join(f'  t{n}: trip(id: $t{n}) {{ ...BlockTrip }}' for n in range(trip_count))
+    return f"""
+query Block($date: LocalDate!, {ids}) {{
+  serviceTimeRange {{ start end }}
+{trips}
+}}
+
+fragment BlockTrip on Trip {{
+  gtfsId tripHeadsign
+  route {{ {ROUTE_FIELDS} }}
+  onServiceDate(date: $date) {{ start {{ ...BlockCall }} end {{ ...BlockCall }} }}
+}}
+
+fragment BlockCall on StopCall {{
+  stopLocation {{ ... on Stop {{ gtfsId name }} }}
+  schedule {{ time {{ ... on ArrivalDepartureTime {{ arrival departure }} }} }}
+  realTime {{ arrival {{ time delay }} departure {{ time delay }} }}
+}}
+"""
+
+
+def block_variables(trip_ids: list[str], day: date) -> dict:
+    return {'date': day.isoformat(), **{f't{n}': trip_id for n, trip_id in enumerate(trip_ids)}}
+
+
+def block_trips(data: dict, trip_count: int, now: datetime) -> list[dict]:
+    """The block's trips running on the date, in order; ``current`` marks the one under way."""
+    trips = []
+    for n in range(trip_count):
+        trip = data.get(f't{n}')
+        on_date = (trip or {}).get('onServiceDate')
+        if not on_date:
+            continue
+        start = _block_call(on_date['start'], 'departure')
+        end = _block_call(on_date['end'], 'arrival')
+        trips.append(
+            {
+                'id': trip['gtfsId'],
+                'route': route_summary(trip['route']),
+                'headsign': trip.get('tripHeadsign'),
+                'start': start,
+                'end': end,
+                'realtime': bool(start['estimated'] or end['estimated']),
+            }
+        )
+    trips.sort(key=lambda trip: trip['start']['scheduled'] or '')
+    for trip in trips:
+        began = trip['start']['estimated'] or trip['start']['scheduled']
+        ends = trip['end']['estimated'] or trip['end']['scheduled']
+        trip['current'] = bool(
+            began and ends and datetime.fromisoformat(began) <= now <= datetime.fromisoformat(ends)
+        )
+    return trips
+
+
+def _block_call(call: dict, which: str) -> dict:
+    scheduled = ((call.get('schedule') or {}).get('time') or {}).get(which)
+    estimate = (call.get('realTime') or {}).get(which)
+    return {
+        'stop': _stop(call.get('stopLocation') or {}),
+        **_call_time(scheduled, estimate),
+    }
 
 
 def route_detail(data: dict) -> dict | None:
