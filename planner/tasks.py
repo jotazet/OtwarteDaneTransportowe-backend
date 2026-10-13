@@ -30,6 +30,8 @@ def scheduled_graph_build_task():
         services.request_build(GraphBuild.TRIGGER_SCHEDULE)
     except services.BuildInProgress:
         logger.info('Scheduled graph build skipped: a build is already queued or running')
+    except services.OsmDownloadInProgress:
+        logger.warning('Scheduled graph build skipped: an OSM download is under way')
 
 
 @shared_task(name='planner.watchdog')
@@ -43,6 +45,9 @@ def watchdog_task():
     failed = pipeline.fail_stale_builds()
     if failed:
         logger.error('Marked %d interrupted graph build(s) as failed', failed)
+    failed = pipeline.fail_stale_osm_downloads()
+    if failed:
+        logger.error('Marked %d interrupted OSM download(s) as failed', failed)
     active = GraphBuild.objects.filter(is_active=True).first()
     if active is not None:
         enqueue(ensure_serving_task)

@@ -1,28 +1,28 @@
 """Planner operations shared by the admin API and Celery tasks (no DRF here)."""
 
 import os
-from datetime import timedelta
 
 from django.conf import settings
 from django.db import connection, transaction
-from django.utils import timezone
 from django_celery_beat.models import CrontabSchedule, PeriodicTask
 
 from data_manager.tasks import enqueue_on_commit
 from planner.models import GraphBuild, OsmDownload
-from planner.pipeline import OSM_DOWNLOAD_TIMEOUT_SECONDS, graph_dir
+from planner.pipeline import graph_dir
 
 SCHEDULE_TASK_NAME = 'planner-graph-build'
 DEFAULT_SCHEDULE = {'enabled': False, 'weekdays': [3, 7], 'time_utc': '01:40'}
 # Any constant shared by every build request: serialises them in Postgres.
-BUILD_REQUEST_LOCK = 7_331_001
-OSM_REQUEST_LOCK = 7_331_002
-# A download still marked queued or running after this long lost its worker.
-OSM_QUEUED_STALE_AFTER = timedelta(hours=8)  # may wait behind a build (up to 6 h)
-OSM_RUNNING_STALE_AFTER = timedelta(seconds=OSM_DOWNLOAD_TIMEOUT_SECONDS + 900)
+# Builds and OSM downloads exclude each other: a build reads the OSM file a
+# download replaces, and the planner worker runs two tasks at once.
+PLANNER_JOBS_LOCK = 7_331_001
 
 
 class BuildInProgress(Exception):
+    pass
+
+
+class OsmDownloadInProgress(Exception):
     pass
 
 
@@ -57,44 +57,28 @@ def request_rollback(target: GraphBuild, user=None) -> GraphBuild:
 def _queue_build(**fields) -> GraphBuild:
     from planner.tasks import run_graph_build_task
 
-    with transaction.atomic():
-        # Serialises concurrent requests: a row lock cannot cover a row that does not exist yet.
-        with connection.cursor() as cursor:
-            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [BUILD_REQUEST_LOCK])
-        if GraphBuild.objects.filter(status__in=GraphBuild.ACTIVE_STATUSES).exists():
-            raise BuildInProgress
-        build = GraphBuild.objects.create(**fields)
-        enqueue_on_commit(run_graph_build_task, build.id)
-    return build
-
-
-class OsmDownloadInProgress(Exception):
-    pass
+    return _queue_job(GraphBuild, run_graph_build_task, **fields)
 
 
 def request_osm_download(url: str, user=None) -> OsmDownload:
-    """Queue a download of a new OSM extract; one at a time."""
+    """Queue a download of a new OSM extract, unless a build or download is under way."""
     from planner.tasks import download_osm_task
 
-    now = timezone.now()
+    return _queue_job(OsmDownload, download_osm_task, url=url, requested_by=user)
+
+
+def _queue_job(model, task, **fields):
     with transaction.atomic():
+        # Serialises concurrent requests: a row lock cannot cover a row that does not exist yet.
         with connection.cursor() as cursor:
-            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [OSM_REQUEST_LOCK])
-        stale = OsmDownload.objects.filter(
-            status=OsmDownload.STATUS_QUEUED, created_at__lt=now - OSM_QUEUED_STALE_AFTER
-        ) | OsmDownload.objects.filter(
-            status=OsmDownload.STATUS_RUNNING, started_at__lt=now - OSM_RUNNING_STALE_AFTER
-        )
-        stale.update(
-            status=OsmDownload.STATUS_FAILED,
-            error_code='planner.osm_download_interrupted',
-            finished_at=now,
-        )
+            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [PLANNER_JOBS_LOCK])
+        if GraphBuild.objects.filter(status__in=GraphBuild.ACTIVE_STATUSES).exists():
+            raise BuildInProgress
         if OsmDownload.objects.filter(status__in=OsmDownload.ACTIVE_STATUSES).exists():
             raise OsmDownloadInProgress
-        download = OsmDownload.objects.create(url=url, requested_by=user)
-        enqueue_on_commit(download_osm_task, download.id)
-    return download
+        job = model.objects.create(**fields)
+        enqueue_on_commit(task, job.id)
+    return job
 
 
 def maintenance_active() -> bool:

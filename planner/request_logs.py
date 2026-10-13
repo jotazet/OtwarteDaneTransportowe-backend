@@ -5,27 +5,13 @@ finished day is first summarised into PlannerDailyStat, which holds no IPs.
 Everything per IP, per minute or per hour comes from the raw rows.
 """
 
-from collections import defaultdict
+import math
 from datetime import UTC, date, datetime, timedelta
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import (
-    Aggregate,
-    Avg,
-    Case,
-    CharField,
-    Count,
-    F,
-    FloatField,
-    Max,
-    Min,
-    Q,
-    Sum,
-    Value,
-    When,
-)
-from django.db.models.functions import Trunc
+from django.db.models import Aggregate, Avg, Count, FloatField, IntegerField, Max, Min, Q, Sum
+from django.db.models.functions import Cast, Collate, Trunc
 from django.utils import timezone
 
 from planner.models import PlannerDailyStat, PlannerRequestLog
@@ -36,11 +22,13 @@ INTERVALS = {'minute': timedelta(minutes=1), 'hour': timedelta(hours=1), 'day': 
 MAX_BUCKETS = 1000
 # A chart split by endpoint shows the busiest ones and puts the rest in "other".
 SPLIT_ENDPOINTS = 8
-STATUS_CLASSES = ('ok', 'client_errors', 'rate_limited', 'server_errors')
-
-
-class TooManyBuckets(Exception):
-    pass
+# The one definition of the status classes (429 is rate_limited, not a client error).
+STATUS_CLASSES = {
+    'ok': Q(status_code__lt=400),
+    'client_errors': Q(status_code__gte=400, status_code__lt=500) & ~Q(status_code=429),
+    'rate_limited': Q(status_code=429),
+    'server_errors': Q(status_code__gte=500),
+}
 
 
 class Percentile(Aggregate):
@@ -59,40 +47,29 @@ class Mode(Aggregate):
 
     function = 'MODE'
     template = '%(function)s() WITHIN GROUP (ORDER BY %(expressions)s)'
-    output_field = CharField()
 
 
-def _class_counts() -> dict:
-    """Requests per status class, as in daily_stats (429 is rate_limited, not a client error)."""
-    return {
-        'ok': Count('id', filter=Q(status_code__lt=400)),
-        'client_errors': Count(
-            'id', filter=Q(status_code__gte=400, status_code__lt=500) & ~Q(status_code=429)
-        ),
-        'rate_limited': Count('id', filter=Q(status_code=429)),
-        'server_errors': Count('id', filter=Q(status_code__gte=500)),
-    }
+def _class_counts(count=lambda q: Count('id', filter=q)) -> dict:
+    return {name: count(q) for name, q in STATUS_CLASSES.items()}
 
 
 def _latency() -> dict:
+    # Whole milliseconds, rounded by PostgreSQL's cast.
     return {
-        'avg_latency_ms': Avg('latency_ms'),
-        'p95_latency_ms': Percentile('latency_ms', 0.95),
+        'avg_latency_ms': Cast(Avg('latency_ms'), IntegerField()),
+        'p95_latency_ms': Cast(Percentile('latency_ms', 0.95), IntegerField()),
         'max_latency_ms': Max('latency_ms'),
     }
 
 
-STATUS_CLASS = Case(
-    When(status_code=429, then=Value('rate_limited')),
-    When(status_code__gte=500, then=Value('server_errors')),
-    When(status_code__gte=400, then=Value('client_errors')),
-    default=Value('ok'),
-    output_field=CharField(),
-)
+# Sorting text in the database's locale made grouping by user agent several times
+# slower (16 s vs 3 s at 3M rows); byte order is all a group or a mode needs.
+def _byte_order(field: str):
+    return Collate(field, 'C')
 
 
 def filtered(since, until, endpoint=None, api_key=None, ip=None, status=None):
-    """Raw log rows in [since, until) matching the dashboard filters."""
+    """Raw log rows in [since, until) matching the dashboard and request-log filters."""
     rows = PlannerRequestLog.objects.filter(created_at__gte=since, created_at__lt=until)
     if endpoint:
         rows = rows.filter(endpoint=endpoint)
@@ -105,15 +82,26 @@ def filtered(since, until, endpoint=None, api_key=None, ip=None, status=None):
     return rows
 
 
+def share(part: int, total: int) -> float:
+    return round(part / total, 4) if total else 0.0
+
+
 def summary(rows) -> dict:
-    totals = rows.aggregate(
+    return rows.aggregate(
         requests=Count('id'),
         unique_ips=Count('client_ip', distinct=True),
         unique_api_keys=Count('api_key', distinct=True),
         **_class_counts(),
         **_latency(),
     )
-    return _rounded(totals)
+
+
+def bucket_starts(since: datetime, until: datetime, interval: str) -> list[datetime]:
+    """UTC bucket starts covering [since, until); every interval divides a UTC day."""
+    step = INTERVALS[interval]
+    seconds = step.total_seconds()
+    first = datetime.fromtimestamp(since.timestamp() // seconds * seconds, UTC)
+    return [first + n * step for n in range(math.ceil((until - first) / step))]
 
 
 def timeseries(rows, since: datetime, until: datetime, interval: str, split: str) -> dict:
@@ -122,54 +110,49 @@ def timeseries(rows, since: datetime, until: datetime, interval: str, split: str
     ``split``: ``status`` (one series per status class), ``endpoint`` (the
     busiest endpoints and ``other``) or ``none`` (one series ``all``).
     """
-    step = INTERVALS[interval]
-    buckets = []
-    moment = _floor(since, interval)
-    while moment < until:
-        buckets.append(moment)
-        moment += step
-        if len(buckets) > MAX_BUCKETS:
-            raise TooManyBuckets
+    buckets = bucket_starts(since, until, interval)
     in_buckets = rows.annotate(bucket=Trunc('created_at', interval, tzinfo=UTC))
-
-    if split == 'status':
-        key, names = STATUS_CLASS, list(STATUS_CLASSES)
-    elif split == 'endpoint':
-        busiest = [
-            row['endpoint']
-            for row in rows.values('endpoint')
-            .annotate(n=Count('id'))
-            .order_by('-n', 'endpoint')[:SPLIT_ENDPOINTS]
-        ]
-        key = Case(
-            When(endpoint__in=busiest, then=F('endpoint')),
-            default=Value('other'),
-            output_field=CharField(),
-        )
-        names = [*busiest, 'other']
-    else:
-        key, names = Value('all', output_field=CharField()), ['all']
-
-    counts = defaultdict(dict)
-    for row in in_buckets.annotate(key=key).values('bucket', 'key').annotate(n=Count('id')):
-        counts[row['key']][row['bucket']] = row['n']
-    latency = {
+    per_bucket = {
         row['bucket']: row
         for row in in_buckets.values('bucket').annotate(
-            avg=Avg('latency_ms'), p95=Percentile('latency_ms', 0.95)
+            all=Count('id'),
+            **_class_counts(),
+            avg=Cast(Avg('latency_ms'), IntegerField()),
+            p95=Cast(Percentile('latency_ms', 0.95), IntegerField()),
         )
     }
+
+    if split == 'endpoint':
+        counts, totals = {}, {}
+        for row in in_buckets.values('bucket', 'endpoint').annotate(n=Count('id')):
+            counts[row['endpoint'], row['bucket']] = row['n']
+            totals[row['endpoint']] = totals.get(row['endpoint'], 0) + row['n']
+        busiest = sorted(totals, key=lambda name: (-totals[name], name))[:SPLIT_ENDPOINTS]
+
+        def requests(name, bucket):
+            if name != 'other':
+                return counts.get((name, bucket), 0)
+            return (per_bucket.get(bucket) or {}).get('all', 0) - sum(
+                counts.get((busy, bucket), 0) for busy in busiest
+            )
+
+        names = busiest + (['other'] if len(totals) > len(busiest) else [])
+    else:
+        names = list(STATUS_CLASSES) if split == 'status' else ['all']
+
+        def requests(name, bucket):
+            return (per_bucket.get(bucket) or {}).get(name, 0)
+
     return {
         'interval': interval,
         'split': split,
-        'buckets': [_iso(bucket) for bucket in buckets],
+        'buckets': buckets,
         'series': [
-            {'name': name, 'requests': [counts[name].get(bucket, 0) for bucket in buckets]}
+            {'name': name, 'requests': [requests(name, bucket) for bucket in buckets]}
             for name in names
-            if name != 'other' or counts.get('other')
         ],
         'latency_ms': {
-            kind: [_round((latency.get(bucket) or {}).get(kind)) for bucket in buckets]
+            kind: [(per_bucket.get(bucket) or {}).get(kind) for bucket in buckets]
             for kind in ('avg', 'p95')
         },
     }
@@ -177,72 +160,43 @@ def timeseries(rows, since: datetime, until: datetime, interval: str, split: str
 
 def endpoints(rows) -> list[dict]:
     """Requests, errors and latency per endpoint, busiest first."""
-    total = rows.count()
-    table = (
+    table = list(
         rows.values('endpoint')
         .annotate(requests=Count('id'), **_class_counts(), **_latency())
         .order_by('-requests', 'endpoint')
     )
-    return [{**_rounded(row), 'share': _share(row['requests'], total)} for row in table]
+    total = sum(row['requests'] for row in table)  # every request has one endpoint
+    return [{**row, 'share': share(row['requests'], total)} for row in table]
 
 
 def top_clients(rows, by: str = 'ip'):
     """Busiest clients by IP address or by API key, as a queryset of dicts (paginate it)."""
-    common = {
-        'requests': Count('id'),
-        **_class_counts(),
-        'endpoints': Count('endpoint', distinct=True),
-        'first_seen': Min('created_at'),
-        'last_seen': Max('created_at'),
-        'user_agent': Mode('user_agent'),
-    }
     if by == 'api_key':
-        grouped = rows.filter(api_key__isnull=False).values(
-            'api_key', 'api_key__name', 'api_key__prefix'
-        )
-        common['ips'] = Count('client_ip', distinct=True)
-        order = ['-requests', 'api_key']
+        keys = ['api_key', 'api_key__name', 'api_key__prefix']
+        grouped = rows.filter(api_key__isnull=False).values(*keys)
+        extra = {'ips': Count('client_ip', distinct=True)}
     else:
-        grouped = rows.values('client_ip')
-        common['api_keys'] = Count('api_key', distinct=True)
-        order = ['-requests', 'client_ip']
-    return grouped.annotate(**common).order_by(*order)
+        keys = ['client_ip']
+        grouped = rows.values(*keys)
+        extra = {'api_keys': Count('api_key', distinct=True)}
+    return grouped.annotate(
+        requests=Count('id'),
+        **_class_counts(),
+        endpoints=Count('endpoint', distinct=True),
+        first_seen=Min('created_at'),
+        last_seen=Max('created_at'),
+        user_agent=Mode(_byte_order('user_agent')),
+        **extra,
+    ).order_by('-requests', keys[0])
 
 
 def user_agents(rows):
     """User-Agents by requests, with how many IPs sent each (a queryset of dicts)."""
     return (
-        rows.values('user_agent')
+        rows.values(agent=_byte_order('user_agent'))
         .annotate(requests=Count('id'), ips=Count('client_ip', distinct=True))
-        .order_by('-requests', 'user_agent')
+        .order_by('-requests', 'agent')
     )
-
-
-def _floor(moment: datetime, interval: str) -> datetime:
-    moment = moment.astimezone(UTC).replace(second=0, microsecond=0)
-    if interval in ('hour', 'day'):
-        moment = moment.replace(minute=0)
-    if interval == 'day':
-        moment = moment.replace(hour=0)
-    return moment
-
-
-def _iso(moment: datetime) -> str:
-    return moment.astimezone(UTC).isoformat().replace('+00:00', 'Z')
-
-
-def _round(value):
-    return round(value) if value is not None else None
-
-
-def _rounded(row: dict) -> dict:
-    return {
-        key: _round(value) if key.endswith('latency_ms') else value for key, value in row.items()
-    }
-
-
-def _share(part: int, total: int) -> float:
-    return round(part / total, 4) if total else 0.0
 
 
 def roll_up_and_purge(today: date | None = None) -> None:
@@ -296,10 +250,18 @@ def daily_stats(date_from: date, date_to: date, endpoint=None, api_key=None) -> 
     if api_key:
         filters['api_key'] = api_key
     rows = list(
-        PlannerDailyStat.objects.filter(date__range=(date_from, date_to), **filters).values(
-            'date', 'status_code', 'requests', 'latency_ms_sum', 'latency_ms_max'
+        PlannerDailyStat.objects.filter(date__range=(date_from, date_to), **filters)
+        .values('date')
+        # Not `requests=`: that name would hide the field the class sums read.
+        .annotate(
+            total=Sum('requests'),
+            **_class_counts(lambda q: Sum('requests', filter=q, default=0)),
+            latency_ms_sum=Sum('latency_ms_sum'),
+            max_latency_ms=Max('latency_ms_max'),
         )
     )
+    for row in rows:
+        row['requests'] = row.pop('total')
     # Days not summarised yet (today, and yesterday until the nightly rollup)
     # come from the raw log.
     summarised = set(PlannerDailyStat.objects.values_list('date', flat=True).distinct())
@@ -308,46 +270,19 @@ def daily_stats(date_from: date, date_to: date, endpoint=None, api_key=None) -> 
         for row in PlannerRequestLog.objects.filter(
             created_at__date__range=(date_from, date_to), **filters
         )
-        .values('created_at__date', 'status_code')
+        .values('created_at__date')
         .annotate(
             requests=Count('id'),
+            **_class_counts(),
             latency_ms_sum=Sum('latency_ms'),
-            latency_ms_max=Max('latency_ms'),
+            max_latency_ms=Max('latency_ms'),
         )
         if row['created_at__date'] not in summarised
     ]
-    days = defaultdict(
-        lambda: {
-            'requests': 0,
-            'ok': 0,
-            'client_errors': 0,
-            'rate_limited': 0,
-            'server_errors': 0,
-            'latency_ms_sum': 0,
-            'max_latency_ms': 0,
-        }
-    )
-    for row in rows:
-        day = days[row['date']]
-        day['requests'] += row['requests']
-        day[_status_class(row['status_code'])] += row['requests']
-        day['latency_ms_sum'] += row['latency_ms_sum']
-        day['max_latency_ms'] = max(day['max_latency_ms'], row['latency_ms_max'])
     return [
         {
-            'date': day,
-            **{k: v for k, v in totals.items() if k != 'latency_ms_sum'},
-            'avg_latency_ms': round(totals['latency_ms_sum'] / totals['requests']),
+            **{key: value for key, value in row.items() if key != 'latency_ms_sum'},
+            'avg_latency_ms': round(row['latency_ms_sum'] / row['requests']),
         }
-        for day, totals in sorted(days.items())
+        for row in sorted(rows, key=lambda row: row['date'])
     ]
-
-
-def _status_class(code: int) -> str:
-    if code == 429:
-        return 'rate_limited'
-    if code >= 500:
-        return 'server_errors'
-    if code >= 400:
-        return 'client_errors'
-    return 'ok'

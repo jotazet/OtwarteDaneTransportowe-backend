@@ -90,7 +90,7 @@ def test_summary_tiles(admin_client, traffic):
 
 
 def test_chart_by_status_class_with_empty_buckets_filled(admin_client, traffic):
-    body = get(admin_client, 'timeseries', interval='hour').data
+    body = get(admin_client, 'timeseries', interval='hour').json()
 
     assert body['buckets'] == ['2026-10-13T10:00:00Z', '2026-10-13T11:00:00Z']
     assert {s['name']: s['requests'] for s in body['series']} == {

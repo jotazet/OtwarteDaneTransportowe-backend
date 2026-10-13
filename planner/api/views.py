@@ -3,7 +3,7 @@ from datetime import timedelta
 
 from django.core.cache import cache
 from django.utils import timezone
-from rest_framework import generics, mixins, serializers, status, viewsets
+from rest_framework import generics, mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -43,7 +43,6 @@ from planner.models import (
     OsmDownload,
     PlannerFeed,
     PlannerRentalSource,
-    PlannerRequestLog,
     PlannerSettings,
 )
 
@@ -55,14 +54,18 @@ def _error(code: str, http_status: int) -> Response:
     return Response({'code': code, 'details': {}}, status=http_status)
 
 
-def _queued(request_build) -> Response:
+def _queued(request_job, serializer_class=None) -> Response:
+    """202 with the queued build or download, or 409 while another job is under way."""
     try:
-        build = request_build()
+        job = request_job()
     except services.BuildInProgress:
         return _error('planner.build_in_progress', status.HTTP_409_CONFLICT)
+    except services.OsmDownloadInProgress:
+        return _error('planner.osm_download_in_progress', status.HTTP_409_CONFLICT)
     except services.BuildNotActivatable:
         return _error('planner.build_not_activatable', status.HTTP_409_CONFLICT)
-    return Response(GraphBuildSerializer(build).data, status=status.HTTP_202_ACCEPTED)
+    serializer_class = serializer_class or GraphBuildSerializer
+    return Response(serializer_class(job).data, status=status.HTTP_202_ACCEPTED)
 
 
 class PlannerFeedViewSet(viewsets.ModelViewSet):
@@ -166,11 +169,10 @@ class OsmDownloadView(generics.ListAPIView):
     def post(self, request):
         params = OsmDownloadRequestSerializer(data=request.data)
         params.is_valid(raise_exception=True)
-        try:
-            download = services.request_osm_download(params.validated_data['url'], request.user)
-        except services.OsmDownloadInProgress:
-            return _error('planner.osm_download_in_progress', status.HTTP_409_CONFLICT)
-        return Response(OsmDownloadSerializer(download).data, status=status.HTTP_202_ACCEPTED)
+        return _queued(
+            lambda: services.request_osm_download(params.validated_data['url'], request.user),
+            OsmDownloadSerializer,
+        )
 
 
 class BuildScheduleView(APIView):
@@ -277,30 +279,35 @@ class IpBanViewSet(viewsets.ModelViewSet):
         access.forget_cached_access()
 
 
-class PlannerRequestLogListView(generics.ListAPIView):
-    """Requests of the last 30 days (default: the last 24 hours), newest first."""
+class StatsView(generics.GenericAPIView):
+    """Base of the request-log views: Admin only, filtered by ``filters_class``."""
 
     permission_classes = [RequiresAdminGroup]
+    filters_class = StatsFilterSerializer
+
+    def filtered_rows(self):
+        filters = self.filters_class(data=self.request.query_params)
+        filters.is_valid(raise_exception=True)
+        params = filters.validated_data
+        rows = request_logs.filtered(
+            params['since'],
+            params['until'],
+            endpoint=params.get('endpoint'),
+            api_key=params.get('api_key'),
+            ip=params.get('ip'),
+            status=params.get('status'),
+        )
+        return rows, params
+
+
+class PlannerRequestLogListView(StatsView, generics.ListAPIView):
+    """Requests of the last 30 days (default: the last 24 hours), newest first."""
+
+    filters_class = RequestLogFilterSerializer
     serializer_class = PlannerRequestLogSerializer
 
     def get_queryset(self):
-        filters = RequestLogFilterSerializer(data=self.request.query_params)
-        filters.is_valid(raise_exception=True)
-        params = filters.validated_data
-        rows = PlannerRequestLog.objects.select_related('api_key').filter(
-            created_at__gte=params.get('since', timezone.now() - timedelta(days=1))
-        )
-        if 'until' in params:
-            rows = rows.filter(created_at__lt=params['until'])
-        for param, lookup in (
-            ('endpoint', 'endpoint'),
-            ('status', 'status_code'),
-            ('ip', 'client_ip'),
-            ('api_key', 'api_key_id'),
-        ):
-            if param in params:
-                rows = rows.filter(**{lookup: params[param]})
-        return rows
+        return self.filtered_rows()[0].select_related('api_key')
 
 
 class DailyStatsView(generics.GenericAPIView):
@@ -320,77 +327,50 @@ class DailyStatsView(generics.GenericAPIView):
         return self.get_paginated_response(self.paginate_queryset(days))
 
 
-def _stats_rows(filters_class, query_params):
-    filters = filters_class(data=query_params)
-    filters.is_valid(raise_exception=True)
-    params = filters.validated_data
-    rows = request_logs.filtered(
-        params['since'],
-        params['until'],
-        endpoint=params.get('endpoint'),
-        api_key=params.get('api_key'),
-        ip=params.get('ip'),
-    )
-    return rows, params
-
-
-def _range(params) -> dict:
-    return {'since': params['since'], 'until': params['until']}
-
-
-class StatsSummaryView(APIView):
+class StatsSummaryView(StatsView):
     """Totals for the dashboard tiles (raw log; default: the last 24 hours)."""
 
-    permission_classes = [RequiresAdminGroup]
-
     def get(self, request):
-        rows, params = _stats_rows(StatsFilterSerializer, request.query_params)
-        return Response({**_range(params), **request_logs.summary(rows)})
+        rows, params = self.filtered_rows()
+        return Response(
+            {'since': params['since'], 'until': params['until'], **request_logs.summary(rows)}
+        )
 
 
-class StatsTimeseriesView(APIView):
+class StatsTimeseriesView(StatsView):
     """Requests per minute, hour or day for a chart, split by status class or endpoint."""
 
-    permission_classes = [RequiresAdminGroup]
+    filters_class = TimeseriesFilterSerializer
 
     def get(self, request):
-        rows, params = _stats_rows(TimeseriesFilterSerializer, request.query_params)
-        try:
-            series = request_logs.timeseries(
-                rows, params['since'], params['until'], params['interval'], params['split']
-            )
-        except request_logs.TooManyBuckets:
-            raise serializers.ValidationError(
-                {'interval': ['Too many points for this range.']}, code='planner.too_many_buckets'
-            ) from None
-        return Response({**_range(params), **series})
+        rows, params = self.filtered_rows()
+        series = request_logs.timeseries(
+            rows, params['since'], params['until'], params['interval'], params['split']
+        )
+        return Response({'since': params['since'], 'until': params['until'], **series})
 
 
-class StatsEndpointsView(generics.GenericAPIView):
+class StatsEndpointsView(StatsView):
     """Requests, errors and latency per endpoint, busiest first."""
 
-    permission_classes = [RequiresAdminGroup]
-
     def get(self, request):
-        rows, params = _stats_rows(StatsFilterSerializer, request.query_params)
+        rows, _ = self.filtered_rows()
         return self.get_paginated_response(self.paginate_queryset(request_logs.endpoints(rows)))
 
 
-class TopClientsView(generics.GenericAPIView):
+class TopClientsView(StatsView):
     """The busiest IP addresses or API keys, with what they sent and whether they are banned."""
 
-    permission_classes = [RequiresAdminGroup]
+    filters_class = TopClientsFilterSerializer
 
     def get(self, request):
-        rows, params = _stats_rows(TopClientsFilterSerializer, request.query_params)
+        rows, params = self.filtered_rows()
         total = rows.count()
         page = self.paginate_queryset(request_logs.top_clients(rows, by=params['by']))
+        banned = access.banned_among(row.get('client_ip') for row in page)
         clients = []
         for row in page:
-            client = {
-                **row,
-                'share': round(row['requests'] / total, 4) if total else 0.0,
-            }
+            client = {**row, 'share': request_logs.share(row['requests'], total)}
             if params['by'] == 'api_key':
                 client['api_key'] = {
                     'id': client.pop('api_key'),
@@ -398,16 +378,20 @@ class TopClientsView(generics.GenericAPIView):
                     'prefix': client.pop('api_key__prefix'),
                 }
             else:
-                client['banned'] = access.is_banned(row['client_ip'])
+                client['banned'] = row['client_ip'] in banned
             clients.append(client)
         return self.get_paginated_response(clients)
 
 
-class UserAgentsView(generics.GenericAPIView):
+class UserAgentsView(StatsView):
     """User-Agents by requests: telling apps from scrapers behind one address."""
 
-    permission_classes = [RequiresAdminGroup]
-
     def get(self, request):
-        rows, _params = _stats_rows(StatsFilterSerializer, request.query_params)
-        return self.get_paginated_response(self.paginate_queryset(request_logs.user_agents(rows)))
+        rows, _ = self.filtered_rows()
+        page = self.paginate_queryset(request_logs.user_agents(rows))
+        return self.get_paginated_response(
+            [
+                {'user_agent': row['agent'], 'requests': row['requests'], 'ips': row['ips']}
+                for row in page
+            ]
+        )

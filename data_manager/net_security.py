@@ -3,9 +3,10 @@ from __future__ import annotations
 import atexit
 import os
 import socket
+import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from ipaddress import ip_address
 from urllib.parse import urljoin, urlsplit
 
@@ -318,15 +319,8 @@ class _Deadline:
             raise requests.exceptions.Timeout('Total download time budget exceeded.')
 
 
-def _drain_to_spool(response, *, max_bytes: int, chunk_size: int, deadline: _Deadline, into=None):
-    """Stream a response body into a spooled temp file (or ``into``), enforcing ``max_bytes``.
-
-    Returns the file positioned at 0. Small bodies never touch the disk
-    (SpooledTemporaryFile keeps them in RAM up to SPOOL_MAX_MEMORY_BYTES).
-    """
-    import tempfile
-
-    spool = into or tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES, mode='w+b')
+def _drain(response, body, *, max_bytes: int, chunk_size: int, deadline: _Deadline) -> None:
+    """Stream a response body into ``body``, enforcing ``max_bytes``, and rewind it."""
     try:
         total = 0
         for chunk in response.iter_content(chunk_size=chunk_size):
@@ -336,13 +330,8 @@ def _drain_to_spool(response, *, max_bytes: int, chunk_size: int, deadline: _Dea
             total += len(chunk)
             if total > max_bytes:
                 raise ResponseTooLarge(max_bytes)
-            spool.write(chunk)
-        spool.seek(0)
-        return spool
-    except BaseException:
-        if into is None:
-            spool.close()
-        raise
+            body.write(chunk)
+        body.seek(0)
     finally:
         response.close()
 
@@ -440,14 +429,16 @@ def safe_download(
             current_url = urljoin(current_url, location)
             continue
 
-        body = _drain_to_spool(
-            response, max_bytes=max_bytes, chunk_size=chunk_size, deadline=deadline, into=into
+        # The caller's file stays open for the caller; small bodies of our own
+        # never touch the disk (kept in RAM up to SPOOL_MAX_MEMORY_BYTES).
+        target = (
+            nullcontext(into)
+            if into is not None
+            else tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES, mode='w+b')
         )
-        try:
+        with target as body:
+            _drain(response, body, max_bytes=max_bytes, chunk_size=chunk_size, deadline=deadline)
             yield response, body
-        finally:
-            if into is None:
-                body.close()
         return
 
     raise OutboundURLBlocked(f"Too many redirects (>{max_redirects}).")

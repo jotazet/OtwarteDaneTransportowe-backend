@@ -131,14 +131,18 @@ def client_identity(request) -> tuple[str | None, str]:
 
 
 def is_banned(ip: str | None) -> bool:
-    if ip is None:
-        return False
-    address = ipaddress.ip_address(ip)
+    return bool(banned_among([ip]))
+
+
+def banned_among(ips) -> set[str]:
+    """The addresses a current ban covers (bans are read and parsed once)."""
     now = time.time()
-    return any(
-        address in ipaddress.ip_network(network) and (expiry is None or expiry > now)
+    networks = [
+        ipaddress.ip_network(network)
         for network, expiry in active_bans()
-    )
+        if expiry is None or expiry > now
+    ]
+    return {ip for ip in ips if ip and any(ipaddress.ip_address(ip) in net for net in networks)}
 
 
 # ---------------------------------------------------------------------------

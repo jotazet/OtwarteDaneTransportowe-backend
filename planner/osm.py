@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import zipfile
+from datetime import datetime
 
 # About 3 x 3 km in Poland.
 CELL_LAT = 0.027
@@ -35,14 +36,14 @@ class OsmPreparationError(Exception):
 
 
 def pbf_header(path: str) -> dict:
-    """osmium's reading of a PBF file's header: format, bounding boxes, data timestamp.
+    """``{'boxes': [...], 'timestamp': datetime | None}`` from a PBF file's header.
 
-    Raises OsmPreparationError for anything that is not an OSM PBF extract.
+    ``timestamp`` is when the data was exported. Raises OsmPreparationError for
+    anything that is not an OSM PBF extract with a bounding box.
     """
     try:
         result = subprocess.run(
-            # The format explicitly: osmium guesses it from the name, and a
-            # download in progress ends in .download.
+            # Read as PBF whatever the file is called (osmium guesses from the name).
             ['osmium', 'fileinfo', '--json', '--input-format', 'pbf', path],
             capture_output=True,
             text=True,
@@ -52,10 +53,12 @@ def pbf_header(path: str) -> dict:
         raise OsmPreparationError(str(exc)) from exc
     if result.returncode != 0:
         raise OsmPreparationError(result.stderr[-2000:])
-    info = json.loads(result.stdout)
-    if info.get('file', {}).get('format') != 'PBF' or not info.get('header', {}).get('boxes'):
-        raise OsmPreparationError('Not an OSM PBF extract with a bounding box.')
-    return info
+    header = json.loads(result.stdout).get('header') or {}
+    if not header.get('boxes'):
+        raise OsmPreparationError('Not an OSM extract with a bounding box.')
+    options = header.get('option') or {}
+    stamp = options.get('osmosis_replication_timestamp') or options.get('timestamp')
+    return {'boxes': header['boxes'], 'timestamp': datetime.fromisoformat(stamp) if stamp else None}
 
 
 def stop_cells(feed_paths) -> set[tuple[int, int]]:

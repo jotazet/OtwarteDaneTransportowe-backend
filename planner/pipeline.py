@@ -15,11 +15,12 @@ import shutil
 import time
 import zipfile
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import requests
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from data_manager.models import completed_submission_ids
@@ -143,9 +144,9 @@ OSM_READ_TIMEOUT_SECONDS = 60
 def download_osm(download_id: int) -> None:
     """Replace the OSM extract with the file at the download's URL, if it is a valid PBF.
 
-    Runs on the planner queue, so never during a build. The file is written next
-    to the current one and swapped in atomically only after osmium reads its
-    header; on any failure the current file stays.
+    Never runs during a build (services._queue_job). The file is written next to
+    the current one and swapped in atomically only after osmium reads its header;
+    on any failure the current file stays.
     """
     with transaction.atomic():
         download = OsmDownload.objects.select_for_update().filter(pk=download_id).first()
@@ -160,30 +161,27 @@ def download_osm(download_id: int) -> None:
     os.makedirs(os.path.dirname(target), exist_ok=True)
     error_code = ''
     try:
-        with open(partial, 'w+b') as file:
-            with safe_download(
+        with (
+            open(partial, 'w+b') as file,
+            safe_download(
                 download.url,
                 timeout=OSM_READ_TIMEOUT_SECONDS,
                 total_timeout=OSM_DOWNLOAD_TIMEOUT_SECONDS,
                 max_bytes=settings.PLANNER_OSM_MAX_BYTES,
                 into=file,
-            ) as (response, _):
-                if response.status_code != 200:
-                    error_code = 'planner.osm_download_failed'
-        if not error_code:
-            header = osm.pbf_header(partial)
-            download.size_bytes = os.path.getsize(partial)
-            options = header['header'].get('option') or {}
-            stamp = options.get('osmosis_replication_timestamp') or options.get('timestamp')
-            download.data_timestamp = datetime.fromisoformat(stamp) if stamp else None
-            os.replace(partial, target)
+            ) as (response, _),
+        ):
+            response.raise_for_status()
+        download.data_timestamp = osm.pbf_header(partial)['timestamp']
+        download.size_bytes = os.path.getsize(partial)
+        os.replace(partial, target)
     except ResponseTooLarge:
         error_code = 'planner.osm_too_large'
     except OutboundURLBlocked:
         error_code = 'planner.osm_url_blocked'
     except osm.OsmPreparationError:
         error_code = 'planner.osm_invalid'
-    except (requests.exceptions.RequestException, OSError, ValueError):
+    except Exception:  # noqa: BLE001 - any failure must still end the download, like a build
         logger.warning('OSM download %s failed', download.id, exc_info=True)
         error_code = 'planner.osm_download_failed'
     finally:
@@ -220,6 +218,24 @@ def ensure_serving() -> None:
     _point_serving_at(graph_dir(active))
     if not otp_runtime.server_running():
         otp_runtime.start_server()
+
+
+def fail_stale_osm_downloads() -> int:
+    """Mark downloads whose worker disappeared as failed; returns how many."""
+    now = timezone.now()
+    return OsmDownload.objects.filter(
+        Q(status=OsmDownload.STATUS_QUEUED, created_at__lt=now - HEARTBEAT_STALE_AFTER)
+        | Q(
+            status=OsmDownload.STATUS_RUNNING,
+            started_at__lt=now
+            - timedelta(seconds=OSM_DOWNLOAD_TIMEOUT_SECONDS)
+            - HEARTBEAT_STALE_AFTER,
+        )
+    ).update(
+        status=OsmDownload.STATUS_FAILED,
+        error_code='planner.osm_download_interrupted',
+        finished_at=now,
+    )
 
 
 def fail_stale_builds() -> int:

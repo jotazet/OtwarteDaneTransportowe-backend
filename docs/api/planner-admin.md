@@ -114,7 +114,7 @@ GET  /api/planner/admin/osm/
 POST /api/planner/admin/osm/   {"url": "https://download.geofabrik.de/europe/poland-latest.osm.pbf"}
 ```
 
-`POST` answers `202` with the queued download, or `409 planner.osm_download_in_progress` while one is queued or running. `GET` lists downloads, newest first; the newest `succeeded` one describes the file in use.
+`POST` answers `202` with the queued download, or `409` while another download (`planner.osm_download_in_progress`) or a graph build (`planner.build_in_progress`) is queued or running: a build reads the file a download replaces. For the same reason `POST builds/` answers `409 planner.osm_download_in_progress` during a download, and a scheduled build that falls on one is skipped. `GET` lists downloads, newest first; the newest `succeeded` one describes the file in use.
 
 ```json
 {
@@ -133,8 +133,8 @@ POST /api/planner/admin/osm/   {"url": "https://download.geofabrik.de/europe/pol
 
 | Field | Values |
 | --- | --- |
-| `status` | `queued` (waits for a running build), `running`, `succeeded`, `failed` |
-| `error_code` | `planner.osm_download_failed` (HTTP error or connection), `planner.osm_too_large` (over `PLANNER_OSM_MAX_BYTES`), `planner.osm_url_blocked` (private address), `planner.osm_invalid` (not an OSM PBF extract), `planner.osm_download_interrupted` (the worker stopped) |
+| `status` | `queued`, `running`, `succeeded`, `failed` |
+| `error_code` | `planner.osm_download_failed` (HTTP error or connection), `planner.osm_too_large` (over `PLANNER_OSM_MAX_BYTES`), `planner.osm_url_blocked` (private address), `planner.osm_invalid` (not an OSM PBF extract), `planner.osm_download_interrupted` (the worker stopped; the watchdog notices within about 15 minutes, or an hour and a quarter for a running one) |
 | `data_timestamp` | When the OSM data was exported, from the file's header. |
 
 A failed download leaves the current file in place.
@@ -148,7 +148,7 @@ GET  /api/planner/admin/builds/{id}/
 POST /api/planner/admin/builds/{id}/activate/
 ```
 
-- `POST /builds/` builds now. It returns `202` with the queued build, or `409 {"code": "planner.build_in_progress"}` when a build is already queued or running.
+- `POST /builds/` builds now. It returns `202` with the queued build, or `409 {"code": "planner.build_in_progress"}` when a build is already queued or running (`planner.osm_download_in_progress` during an OSM download).
 - `POST /builds/{id}/activate/` serves that earlier build's graph again (a rollback). It returns `202`, or `409` with `planner.build_in_progress` or `planner.build_not_activatable` (the build did not succeed, is already served, was built with another OTP image, or its graph was removed). Only the served graph and the newest other one are kept.
 - Lists are newest first; the detail adds `feed_results` and `log_excerpt`.
 

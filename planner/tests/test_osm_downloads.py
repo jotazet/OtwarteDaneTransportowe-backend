@@ -3,25 +3,30 @@
 import contextlib
 import json
 import subprocess
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import requests
 from django.utils import timezone
 
 from data_manager.net_security import OutboundURLBlocked, ResponseTooLarge
-from planner import osm, pipeline
-from planner.models import OsmDownload
+from planner import osm, pipeline, tasks
+from planner.models import GraphBuild, OsmDownload
 
 pytestmark = pytest.mark.django_db
 
 URL = 'https://download.example.org/poland-latest.osm.pbf'
-HEADER = {
+OSMIUM_JSON = {
     'file': {'format': 'PBF'},
     'header': {
         'boxes': [[14.07, 49.0, 24.15, 54.84]],
         'option': {'osmosis_replication_timestamp': '2026-10-11T20:21:06Z'},
     },
+}
+HEADER = {
+    'boxes': [[14.07, 49.0, 24.15, 54.84]],
+    'timestamp': datetime(2026, 10, 11, 20, 21, 6, tzinfo=UTC),
 }
 
 
@@ -47,6 +52,10 @@ def fake_download(monkeypatch, *, body=b'new extract', status=200, error=None):
 
         class Response:
             status_code = status
+
+            def raise_for_status(self):
+                if status >= 400:
+                    raise requests.HTTPError(status)
 
         yield Response(), into
 
@@ -77,18 +86,33 @@ def test_admin_queues_a_download_and_only_one_at_a_time(
     assert [row['id'] for row in listed['results']] == [first.data['id']]
 
 
-def test_a_download_whose_worker_died_does_not_block_the_next(admin, celery_send_task):
+def test_the_watchdog_fails_a_download_whose_worker_died(admin, celery_send_task, monkeypatch):
     stuck = OsmDownload.objects.create(
         url=URL,
         status=OsmDownload.STATUS_RUNNING,
         started_at=timezone.now() - timedelta(hours=2),
     )
+    fresh = OsmDownload.objects.create(url=URL)  # queued a moment ago: still fine
+    monkeypatch.setattr(tasks, 'enqueue', lambda *args: None)
 
-    response = admin.post('/api/planner/admin/osm/', {'url': URL}, format='json')
+    tasks.watchdog_task()
 
     stuck.refresh_from_db()
-    assert response.status_code == 202
+    fresh.refresh_from_db()
     assert (stuck.status, stuck.error_code) == ('failed', 'planner.osm_download_interrupted')
+    assert fresh.status == 'queued'
+
+
+def test_builds_and_downloads_exclude_each_other(admin, celery_send_task):
+    OsmDownload.objects.create(url=URL)
+
+    build = admin.post('/api/planner/admin/builds/')
+    OsmDownload.objects.all().delete()
+    GraphBuild.objects.create(trigger='manual', otp_image='x', status=GraphBuild.STATUS_RUNNING)
+    download = admin.post('/api/planner/admin/osm/', {'url': URL}, format='json')
+
+    assert (build.status_code, build.data['code']) == (409, 'planner.osm_download_in_progress')
+    assert (download.status_code, download.data['code']) == (409, 'planner.build_in_progress')
 
 
 @pytest.mark.parametrize('role', ['Helper', 'DataProvider', None])
@@ -165,7 +189,7 @@ def test_osmium_reads_the_header(monkeypatch):
 
     def run(args, **kwargs):
         calls.append(args)
-        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(HEADER))
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(OSMIUM_JSON))
 
     monkeypatch.setattr(osm.subprocess, 'run', run)
 
@@ -175,7 +199,7 @@ def test_osmium_reads_the_header(monkeypatch):
 
 @pytest.mark.parametrize(
     ('result', 'stdout'),
-    [(1, ''), (0, '{"file": {"format": "XML"}, "header": {"boxes": [[1, 2, 3, 4]]}}')],
+    [(1, ''), (0, '{"file": {"format": "PBF"}, "header": {"boxes": []}}')],
 )
 def test_anything_but_a_pbf_extract_is_rejected(monkeypatch, result, stdout):
     monkeypatch.setattr(

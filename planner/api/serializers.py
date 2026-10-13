@@ -10,7 +10,7 @@ from data_manager.models import (
     completed_realtime_submission_ids,
     completed_submission_ids,
 )
-from planner import otp_config
+from planner import otp_config, request_logs
 from planner.models import (
     ApiKey,
     GraphBuild,
@@ -229,10 +229,10 @@ class OsmDownloadSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class OsmDownloadRequestSerializer(serializers.Serializer):
-    url = serializers.URLField(
-        max_length=1000, help_text='An OSM PBF extract, e.g. from Geofabrik.'
-    )
+class OsmDownloadRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OsmDownload
+        fields = ['url']
 
 
 class BuildScheduleSerializer(serializers.Serializer):
@@ -317,15 +317,6 @@ class PlannerRequestLogSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class RequestLogFilterSerializer(serializers.Serializer):
-    since = serializers.DateTimeField(required=False)
-    until = serializers.DateTimeField(required=False)
-    endpoint = serializers.CharField(required=False)
-    status = serializers.IntegerField(required=False, min_value=100, max_value=599)
-    ip = serializers.IPAddressField(required=False)
-    api_key = serializers.IntegerField(required=False)
-
-
 class DailyStatsFilterSerializer(serializers.Serializer):
     date_from = serializers.DateField(required=False)
     date_to = serializers.DateField(required=False)
@@ -363,9 +354,22 @@ class StatsFilterSerializer(serializers.Serializer):
         return attrs
 
 
+class RequestLogFilterSerializer(StatsFilterSerializer):
+    status = serializers.IntegerField(required=False, min_value=100, max_value=599)
+
+
 class TimeseriesFilterSerializer(StatsFilterSerializer):
-    interval = serializers.ChoiceField(choices=['minute', 'hour', 'day'], default='hour')
+    interval = serializers.ChoiceField(choices=list(request_logs.INTERVALS), default='hour')
     split = serializers.ChoiceField(choices=['status', 'endpoint', 'none'], default='status')
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        buckets = request_logs.bucket_starts(attrs['since'], attrs['until'], attrs['interval'])
+        if len(buckets) > request_logs.MAX_BUCKETS:
+            raise serializers.ValidationError(
+                {'interval': 'Too many points for this range.'}, code='planner.too_many_buckets'
+            )
+        return attrs
 
 
 class TopClientsFilterSerializer(StatsFilterSerializer):
