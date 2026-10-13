@@ -309,7 +309,11 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 | `PATCH/DELETE` | `/api/planner/admin/ip-bans/{id}/` | `Admin` | One ban |
 | `GET` | `/api/planner/admin/requests/` | `Admin` | Request log of the public planner API (30 days, no query strings) |
 | `GET` | `/api/planner/admin/stats/daily/` | `Admin` | Requests per day by status class |
-| `GET` | `/api/planner/admin/stats/top-clients/` | `Admin` | Busiest IPs and keys of the last days |
+| `GET` | `/api/planner/admin/stats/summary/` | `Admin` | Dashboard totals: requests, unique IPs and keys, errors, latency |
+| `GET` | `/api/planner/admin/stats/timeseries/` | `Admin` | Chart points per minute, hour or day, by status class or endpoint |
+| `GET` | `/api/planner/admin/stats/endpoints/` | `Admin` | Requests, errors and latency per endpoint |
+| `GET` | `/api/planner/admin/stats/top-clients/` | `Admin` | Busiest IPs or API keys, with user agent and ban status |
+| `GET` | `/api/planner/admin/stats/user-agents/` | `Admin` | User-Agents by requests |
 
 ### Journey planner (public)
 

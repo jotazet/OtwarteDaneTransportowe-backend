@@ -1,5 +1,7 @@
 import ipaddress
+from datetime import timedelta
 
+from django.utils import timezone
 from rest_framework import serializers
 
 from data_manager.models import (
@@ -342,6 +344,29 @@ class DailyStatsFilterSerializer(serializers.Serializer):
         return attrs
 
 
-class TopClientsFilterSerializer(serializers.Serializer):
-    days = serializers.IntegerField(required=False, default=7, min_value=1, max_value=30)
-    endpoint = serializers.CharField(required=False)
+class StatsFilterSerializer(serializers.Serializer):
+    """Filters of the raw-log statistics; the default range is the last 24 hours."""
+
+    since = serializers.DateTimeField(required=False)
+    until = serializers.DateTimeField(required=False)
+    endpoint = serializers.CharField(required=False, help_text='URL name, e.g. planner-v1-plan.')
+    api_key = serializers.IntegerField(required=False)
+    ip = serializers.IPAddressField(required=False)
+
+    def validate(self, attrs):
+        attrs['until'] = attrs.get('until') or timezone.now()
+        attrs['since'] = attrs.get('since') or attrs['until'] - timedelta(days=1)
+        if attrs['since'] >= attrs['until']:
+            raise serializers.ValidationError(
+                {'since': 'since is not before until.'}, code='planner.invalid_range'
+            )
+        return attrs
+
+
+class TimeseriesFilterSerializer(StatsFilterSerializer):
+    interval = serializers.ChoiceField(choices=['minute', 'hour', 'day'], default='hour')
+    split = serializers.ChoiceField(choices=['status', 'endpoint', 'none'], default='status')
+
+
+class TopClientsFilterSerializer(StatsFilterSerializer):
+    by = serializers.ChoiceField(choices=['ip', 'api_key'], default='ip')

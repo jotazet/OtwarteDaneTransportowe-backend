@@ -137,7 +137,7 @@ def test_daily_stats_combine_rollups_and_today(admin_client):
     assert days[1]['server_errors'] == 1
 
 
-def test_top_clients_name_keys_and_ips(admin_client):
+def test_top_api_keys_are_named(admin_client):
     key = ApiKey.objects.create(name='Gmina app', prefix='odt_abc', key_hash='h')
     for _ in range(3):
         PlannerRequestLog.objects.create(
@@ -147,10 +147,11 @@ def test_top_clients_name_keys_and_ips(admin_client):
         endpoint='a', status_code=200, latency_ms=1, client_ip='198.51.100.1'
     )
 
-    clients = admin_client.get(f'{BASE}/stats/top-clients/?days=7').data['results']
+    clients = admin_client.get(f'{BASE}/stats/top-clients/?by=api_key').data['results']
 
-    assert clients[0]['api_key'] == {'id': key.id, 'name': 'Gmina app', 'prefix': 'odt_abc'}
-    assert clients[0]['requests'] == 3
+    assert [(c['api_key'], c['requests'], c['ips']) for c in clients] == [
+        ({'id': key.id, 'name': 'Gmina app', 'prefix': 'odt_abc'}, 3, 1)
+    ]
 
 
 def test_logs_are_summarised_without_ips_then_purged_after_retention(settings):

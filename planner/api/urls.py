@@ -15,7 +15,11 @@ from planner.api.views import (
     PlannerSettingsView,
     PlannerStatusView,
     RentalCandidateListView,
+    StatsEndpointsView,
+    StatsSummaryView,
+    StatsTimeseriesView,
     TopClientsView,
+    UserAgentsView,
 )
 
 router = DefaultRouter()
@@ -35,5 +39,9 @@ urlpatterns = [
     path('settings/', PlannerSettingsView.as_view(), name='planner-settings'),
     path('requests/', PlannerRequestLogListView.as_view(), name='planner-requests'),
     path('stats/daily/', DailyStatsView.as_view(), name='planner-stats-daily'),
+    path('stats/summary/', StatsSummaryView.as_view(), name='planner-stats-summary'),
+    path('stats/timeseries/', StatsTimeseriesView.as_view(), name='planner-stats-timeseries'),
+    path('stats/endpoints/', StatsEndpointsView.as_view(), name='planner-stats-endpoints'),
     path('stats/top-clients/', TopClientsView.as_view(), name='planner-stats-top-clients'),
+    path('stats/user-agents/', UserAgentsView.as_view(), name='planner-stats-user-agents'),
 ]

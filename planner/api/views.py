@@ -3,7 +3,7 @@ from datetime import timedelta
 
 from django.core.cache import cache
 from django.utils import timezone
-from rest_framework import generics, mixins, status, viewsets
+from rest_framework import generics, mixins, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -32,6 +32,8 @@ from planner.api.serializers import (
     PlannerSettingsSerializer,
     RentalCandidateSerializer,
     RequestLogFilterSerializer,
+    StatsFilterSerializer,
+    TimeseriesFilterSerializer,
     TopClientsFilterSerializer,
 )
 from planner.models import (
@@ -318,29 +320,94 @@ class DailyStatsView(generics.GenericAPIView):
         return self.get_paginated_response(self.paginate_queryset(days))
 
 
-class TopClientsView(generics.GenericAPIView):
-    """The busiest IPs and keys of the last days (from the 30-day raw log)."""
+def _stats_rows(filters_class, query_params):
+    filters = filters_class(data=query_params)
+    filters.is_valid(raise_exception=True)
+    params = filters.validated_data
+    rows = request_logs.filtered(
+        params['since'],
+        params['until'],
+        endpoint=params.get('endpoint'),
+        api_key=params.get('api_key'),
+        ip=params.get('ip'),
+    )
+    return rows, params
+
+
+def _range(params) -> dict:
+    return {'since': params['since'], 'until': params['until']}
+
+
+class StatsSummaryView(APIView):
+    """Totals for the dashboard tiles (raw log; default: the last 24 hours)."""
 
     permission_classes = [RequiresAdminGroup]
 
     def get(self, request):
-        filters = TopClientsFilterSerializer(data=request.query_params)
-        filters.is_valid(raise_exception=True)
-        params = filters.validated_data
-        clients = [
-            {
-                'client_ip': row['client_ip'],
-                'api_key': (
-                    {
-                        'id': row['api_key'],
-                        'name': row['api_key__name'],
-                        'prefix': row['api_key__prefix'],
-                    }
-                    if row['api_key']
-                    else None
-                ),
-                'requests': row['requests'],
+        rows, params = _stats_rows(StatsFilterSerializer, request.query_params)
+        return Response({**_range(params), **request_logs.summary(rows)})
+
+
+class StatsTimeseriesView(APIView):
+    """Requests per minute, hour or day for a chart, split by status class or endpoint."""
+
+    permission_classes = [RequiresAdminGroup]
+
+    def get(self, request):
+        rows, params = _stats_rows(TimeseriesFilterSerializer, request.query_params)
+        try:
+            series = request_logs.timeseries(
+                rows, params['since'], params['until'], params['interval'], params['split']
+            )
+        except request_logs.TooManyBuckets:
+            raise serializers.ValidationError(
+                {'interval': ['Too many points for this range.']}, code='planner.too_many_buckets'
+            ) from None
+        return Response({**_range(params), **series})
+
+
+class StatsEndpointsView(generics.GenericAPIView):
+    """Requests, errors and latency per endpoint, busiest first."""
+
+    permission_classes = [RequiresAdminGroup]
+
+    def get(self, request):
+        rows, params = _stats_rows(StatsFilterSerializer, request.query_params)
+        return self.get_paginated_response(self.paginate_queryset(request_logs.endpoints(rows)))
+
+
+class TopClientsView(generics.GenericAPIView):
+    """The busiest IP addresses or API keys, with what they sent and whether they are banned."""
+
+    permission_classes = [RequiresAdminGroup]
+
+    def get(self, request):
+        rows, params = _stats_rows(TopClientsFilterSerializer, request.query_params)
+        total = rows.count()
+        page = self.paginate_queryset(request_logs.top_clients(rows, by=params['by']))
+        clients = []
+        for row in page:
+            client = {
+                **row,
+                'share': round(row['requests'] / total, 4) if total else 0.0,
             }
-            for row in request_logs.top_clients(params['days'], endpoint=params.get('endpoint'))
-        ]
-        return self.get_paginated_response(self.paginate_queryset(clients))
+            if params['by'] == 'api_key':
+                client['api_key'] = {
+                    'id': client.pop('api_key'),
+                    'name': client.pop('api_key__name'),
+                    'prefix': client.pop('api_key__prefix'),
+                }
+            else:
+                client['banned'] = access.is_banned(row['client_ip'])
+            clients.append(client)
+        return self.get_paginated_response(clients)
+
+
+class UserAgentsView(generics.GenericAPIView):
+    """User-Agents by requests: telling apps from scrapers behind one address."""
+
+    permission_classes = [RequiresAdminGroup]
+
+    def get(self, request):
+        rows, _params = _stats_rows(StatsFilterSerializer, request.query_params)
+        return self.get_paginated_response(self.paginate_queryset(request_logs.user_agents(rows)))

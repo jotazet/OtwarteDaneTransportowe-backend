@@ -297,14 +297,62 @@ Requests to `/api/planner/v1/` of the last 30 days, newest first (default: the l
 - Refused requests (`401`, `403`, `429`, `503`) are logged at most once a minute per client and status.
 - Rows are deleted after `PLANNER_REQUEST_LOG_RETENTION_DAYS` (30) days, once each day has been summarised (see below). The log contains IP addresses, which are personal data; it is for the `Admin` group only.
 
-## Statistics
+## Statistics (dashboard)
+
+For the admin dashboard: charts of API use, the most used endpoints and who sends the most requests.
 
 ```http
+GET /api/planner/admin/stats/summary/?since=&until=&endpoint=&api_key=&ip=
+GET /api/planner/admin/stats/timeseries/?interval=hour&split=status&since=&until=&endpoint=&api_key=&ip=
+GET /api/planner/admin/stats/endpoints/?since=&until=&api_key=&ip=
+GET /api/planner/admin/stats/top-clients/?by=ip&since=&until=&endpoint=&api_key=
+GET /api/planner/admin/stats/user-agents/?since=&until=&endpoint=&api_key=&ip=
 GET /api/planner/admin/stats/daily/?date_from=&date_to=&endpoint=&api_key=
-GET /api/planner/admin/stats/top-clients/?days=7&endpoint=
 ```
 
-`stats/daily/` (default: the last 30 days) counts requests per day, paginated like every list. It reads the daily summaries, which keep no IP addresses and are kept indefinitely; days not summarised yet (today, and yesterday until the 00:30 UTC rollup) come from the raw log:
+The first five read the raw request log, so they cover the last 30 days (`PLANNER_REQUEST_LOG_RETENTION_DAYS`) and can be narrowed to one IP or key. They share the filters `since` and `until` (ISO 8601, default: the last 24 hours), `endpoint` (the URL name, e.g. `planner-v1-plan`), `api_key` (ID) and `ip`. A dashboard drills down by adding them: the whole API, then one endpoint, then one address. Longer history comes from `stats/daily/`.
+
+Counts are split into status classes: `ok` (below 400), `client_errors` (400–499 except 429), `rate_limited` (429) and `server_errors` (500 and above, which includes `503` while the planner is switched off or rebuilding). Rejections (401, 403, 429, 503) are logged at most once a minute per client, so their counts are lower bounds. Latencies are in milliseconds; `p95_latency_ms` is the 95th percentile.
+
+**`stats/summary/`**: totals for the dashboard tiles.
+
+```json
+{ "since": "2026-10-12T10:00:00Z", "until": "2026-10-13T10:00:00Z",
+  "requests": 15230, "unique_ips": 412, "unique_api_keys": 3,
+  "ok": 14980, "client_errors": 120, "rate_limited": 85, "server_errors": 45,
+  "avg_latency_ms": 64, "p95_latency_ms": 410, "max_latency_ms": 12000 }
+```
+
+**`stats/timeseries/`**: points for a chart, every bucket present (zero when empty), in UTC.
+
+| Parameter | Values |
+| --- | --- |
+| `interval` | `minute`, `hour` (default) or `day`; at most 1000 points (`planner.too_many_buckets`), e.g. 16 hours by the minute or 41 days by the hour. |
+| `split` | `status` (default; one series per status class), `endpoint` (the 8 busiest endpoints and `other`) or `none` (one series `all`). |
+
+```json
+{ "since": "…", "until": "…", "interval": "hour", "split": "status",
+  "buckets": ["2026-10-13T08:00:00Z", "2026-10-13T09:00:00Z"],
+  "series": [ { "name": "ok", "requests": [620, 710] }, { "name": "rate_limited", "requests": [3, 0] } ],
+  "latency_ms": { "avg": [58, 61], "p95": [380, 402] } }
+```
+
+**`stats/endpoints/`**: one row per endpoint, busiest first, paginated: `endpoint`, `requests`, `share` (of all requests in the range), the status classes and `avg_latency_ms`, `p95_latency_ms`, `max_latency_ms`.
+
+**`stats/top-clients/`**: the busiest clients, paginated. With `by=ip` (default), one row per IP address:
+
+```json
+{ "client_ip": "203.0.113.9", "requests": 5310, "share": 0.3486,
+  "ok": 5100, "client_errors": 10, "rate_limited": 200, "server_errors": 0,
+  "endpoints": 2, "api_keys": 0, "user_agent": "python-requests/2.32",
+  "first_seen": "2026-10-12T10:02:11Z", "last_seen": "2026-10-13T09:59:58Z", "banned": false }
+```
+
+`user_agent` is the most frequent one; `banned` is whether a current ban covers the address (ban it with `ip-bans/`). With `by=api_key`, one row per key with `api_key: {id, name, prefix}` and `ips` (how many addresses used it) instead of `client_ip`, `api_keys` and `banned`. IPv6 clients are counted per address here, while limits and bans apply to their `/64`.
+
+**`stats/user-agents/`**: User-Agents by requests, paginated, with `ips` (how many addresses sent each): telling an app from a scraper behind one address.
+
+**`stats/daily/`** (default: the last 30 days) counts requests per day, paginated like every list. It reads the daily summaries, which keep no IP addresses and are kept indefinitely; days not summarised yet (today, and yesterday until the 00:30 UTC rollup) come from the raw log:
 
 ```json
 { "count": 30, "next": null, "previous": null,
@@ -312,8 +360,4 @@ GET /api/planner/admin/stats/top-clients/?days=7&endpoint=
                  "server_errors": 15, "avg_latency_ms": 41, "max_latency_ms": 2310 } ] }
 ```
 
-`rate_limited` counts logged rejections, which are sampled once a minute per client, so it is a lower bound.
-
-`stats/top-clients/` lists the 20 busiest clients of the last `days` days (1–30, from the raw log), in the page envelope: `results: [{"client_ip": "198.51.100.7", "api_key": {"id": 3, "name": "…", "prefix": "odt_Q2mS8xk"}, "requests": 812}]`.
-
-Error codes on these routes: field codes `planner.invalid_network`, `planner.invalid_range`, and DRF's defaults.
+Error codes on these routes: field codes `planner.invalid_range` (`since` not before `until`, or `date_from` after `date_to`), `planner.too_many_buckets`, and DRF's defaults.
