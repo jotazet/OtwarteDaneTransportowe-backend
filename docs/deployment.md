@@ -781,8 +781,36 @@ Without the profile, nothing of the planner runs and the rest of ODT is unchange
 | Single-feed test (largest: Warsaw) | ~6 GB | ≤ 30 s |
 
 - **Builds and the planner never use memory at the same time.** A build stops the serving OTP first (maintenance window; the OTP-backed endpoints answer `503`), so the server needs RAM for the app stack plus ~7 GB, and swap for the rest of a build.
-- **Production VPS.** It has 11 GB RAM, so it needs **at least 10 GB of swap**. Build times on disk swap are longer than in the table and should be measured on the first build.
+- **Production VPS.** It has 11 GB RAM, so it needs **at least 10 GB of swap**. Builds measured there are below.
 - **Disk.** Two graphs (~2 GB each), the street graph (~1.3 GB), the OSM extract (~2 GB for Poland) and snapshots of every feed's last good version (~0.5 GB).
+
+### Production VPS (measured 2026-10-14)
+
+11 GB RAM, 16 GB swap file on disk, 6 vCPU; FeedsODT's nightly routing engines were running on the same host. Build containers had `PLANNER_OTP_BUILD_MEMSWAP_LIMIT=18g` (8 GB RAM + at most 10 GB swap).
+
+| Build | Feed tests | Street graph | Graph build | OTP down in total | Peak swap | Lowest available RAM |
+| --- | --- | --- | --- | --- | --- | --- |
+| 7 feeds (POLREGIO and six with realtime) | 2 min | 11 min | 11 min | 28 min | 8.5 GB | 0.5 GB |
+| 35 feeds (all of Poland, one per service) | 5 min (28 changed feeds) | 12 min | 31 min | 52 min | 9.0 GB | 0.4 GB |
+
+- **Serving all of Poland** with `-Xmx6g`: the `otp` container holds ~6.4 GB, graph 1.8 GB on disk, search index copied in 2 minutes. With 6 parallel plans the first answers took up to 5 s, later 1.3–2.5 s; a seventh parallel request gets `503 planner.busy` after 1 s, as designed.
+- **The host stayed usable during builds:** the API answered in 0.1–0.2 s, the frontend in up to 1 s and SSH in under 1 s, while swap moved up to 380 MB/s.
+- **Night window.** FeedsODT starts its routing engines (up to 3.4 GB) at 00:45–07:30 Europe/Warsaw, and the default build time (01:40 UTC) falls inside it. Both builds above ran with the engines up; the kernel swapped out their idle memory.
+
+### Host memory guard
+
+Builds deliberately fill RAM and spill into swap, so the VPS has a last-resort guard against a memory runaway freezing the whole machine (set up 2026-10-14, outside Docker):
+
+- **earlyoom** (EPEL package `earlyoom`), `/etc/default/earlyoom`:
+
+  ```sh
+  EARLYOOM_ARGS="-r 3600 -m 5,3 -s 20,10 --prefer ^java$ --avoid ^(sshd|sshd-session|systemd|systemd-.*|dbus-broker|dockerd|containerd|containerd-shim|postgres|caddy|firewalld|dnf|earlyoom)$"
+  ```
+
+  It acts only when **both** available RAM is at most 5% **and** free swap at most 20% (SIGKILL at 3% and 10%), preferring JVMs (OTP, the FeedsODT engines: all restartable). Planned builds stay above it: available RAM dropped below 5% during the builds above, but swap stayed more than half free, and each build container is capped by its own limits.
+- **SSH stays reachable:** `systemctl set-property` with `MemoryMin=128M` on `system.slice`, `64M` on `sshd.service` and `256M` on `user.slice` (the kernel does not reclaim that memory; `system.slice` needs it too because cgroups are mounted with `memory_recursiveprot`). `sshd` itself runs with `oom_score_adj=-1000`.
+- **Kernel reserve,** `/etc/sysctl.d/90-odt-memory.conf`: `vm.min_free_kbytes = 131072` and `vm.watermark_scale_factor = 100` (defaults here 67584 and 10), so reclaim starts earlier and allocations stall less under pressure.
+- **Not used:** systemd-oomd needs pressure stall information, which Rocky Linux's kernel ships switched off (`psi=1` on the kernel command line and a reboot would enable it).
 
 ### First run
 
