@@ -11,7 +11,7 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 
-from planner import otp_runtime, schedules, vehicles
+from planner import alerts, otp_runtime, schedules, vehicles
 from planner.access import OTP_BUSY_RETRY_AFTER_SECONDS, PlannerError, PlannerPublicView
 from planner.api.lookup_views import LookupListView, MapPagination
 from planner.api.params import (
@@ -21,10 +21,12 @@ from planner.api.params import (
     InstantField,
     OperatorFilter,
     QueryBoolean,
+    agency_filter,
     id_list,
+    organization_list,
 )
 from planner.api.public_views import AgencySummarySerializer
-from planner.models import IndexedBlockTrip
+from planner.models import IndexedBlockTrip, IndexedRoute
 
 SCHEDULE_TIMEOUT_SECONDS = 10
 STATUSES = ['scheduled', 'updated', 'canceled', 'added', 'modified']
@@ -179,6 +181,28 @@ class BlockSerializer(serializers.Serializer):
     trips = BlockTripSerializer(many=True)
 
 
+class ActivePeriodSerializer(serializers.Serializer):
+    start = serializers.CharField(allow_null=True)
+    end = serializers.CharField(allow_null=True)
+
+
+class ServiceAlertSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    feed_id = serializers.CharField(allow_null=True)
+    header = serializers.CharField(allow_null=True, help_text="The operator's text.")
+    description = serializers.CharField(allow_null=True, help_text="The operator's text.")
+    url = serializers.CharField(allow_null=True)
+    effect = serializers.CharField(allow_null=True, help_text='GTFS-RT effect, lowercase.')
+    cause = serializers.CharField(allow_null=True, help_text='GTFS-RT cause, lowercase.')
+    severity = serializers.CharField(allow_null=True, help_text='info, warning, severe, …')
+    active = serializers.BooleanField(help_text='In force now.')
+    active_periods = ActivePeriodSerializer(many=True)
+    agencies = serializers.ListField(child=serializers.CharField())
+    routes = serializers.ListField(child=serializers.CharField())
+    stops = serializers.ListField(child=serializers.CharField())
+    trips = serializers.ListField(child=serializers.CharField())
+
+
 # ---------------------------------------------------------------------------
 # Parameters
 # ---------------------------------------------------------------------------
@@ -226,6 +250,17 @@ class VehicleParams(OperatorFilter):
         help_text='`min_lon,min_lat,max_lon,max_lat`, at most 1° a side.',
     )
     routes = id_list(help_text='Only these lines.')
+
+
+class AlertParams(serializers.Serializer):
+    routes = id_list(help_text='About these lines (or their trips).')
+    stops = id_list(help_text='About these stops.')
+    agencies = id_list(help_text='About these operators or their lines.')
+    organizations = organization_list(help_text='About the operators of these ODT organizations.')
+
+    def validate(self, attrs):
+        attrs['agency_ids'] = agency_filter(attrs.get('agencies'), attrs.get('organizations'))
+        return attrs
 
 
 class BlockParams(serializers.Serializer):
@@ -417,3 +452,32 @@ class VehicleListView(LookupListView):
             agency_ids=params['agency_ids'],
             route_ids=set(params.get('routes') or []),
         )
+
+
+@extend_schema(parameters=[AlertParams], summary='Service alerts')
+class AlertListView(LookupListView):
+    """Service alerts from the operators, those in force first; filtered by what they affect."""
+
+    params_class = AlertParams
+    serializer_class = ServiceAlertSerializer
+    limit_group = 'realtime'
+    uses_otp = True
+
+    def get_queryset(self):
+        params = self.params()
+        route_ids = set(params.get('routes') or [])
+        stop_ids = set(params.get('stops') or [])
+        agency_ids = params['agency_ids']
+        if agency_ids:
+            # An alert about a line counts for its operator.
+            route_ids |= set(
+                IndexedRoute.objects.filter(agency__agency_id__in=agency_ids).values_list(
+                    'route_id', flat=True
+                )
+            )
+        requested = route_ids | stop_ids | set(agency_ids or [])
+        feeds = sorted({item.split(':', 1)[0] for item in requested}) or None
+        data = self.otp_query(
+            alerts.ALERTS_DOCUMENT, {'feeds': feeds}, timeout=SCHEDULE_TIMEOUT_SECONDS
+        )
+        return alerts.matching(alerts.alerts(data, timezone.now()), route_ids, stop_ids, agency_ids)

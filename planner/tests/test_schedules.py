@@ -729,3 +729,96 @@ def test_a_vehicle_without_id_is_listed_last_not_a_crash(otp):
     otp.answer = answer
 
     assert [row['id'] for row in get('vehicles/').json()['results']] == [None, 'krk:T:2']
+
+
+# ---------------------------------------------------------------------------
+# Alerts
+# ---------------------------------------------------------------------------
+
+
+def otp_alert(alert_id, entities, periods=(), effect='DETOUR'):
+    return {
+        'id': alert_id,
+        'feed': 'krk',
+        'alertHeaderText': 'Objazd',
+        'alertDescriptionText': None,
+        'alertUrl': None,
+        'alertEffect': effect,
+        'alertCause': 'CONSTRUCTION',
+        'alertSeverityLevel': 'WARNING',
+        'activityPeriods': [{'start': start, 'end': end} for start, end in periods],
+        'entities': entities,
+    }
+
+
+ALERTS = {
+    'alerts': [
+        otp_alert(
+            'a-trip',
+            [
+                {
+                    '__typename': 'StopOnTrip',
+                    'stop': {'gtfsId': 'krk:1'},
+                    'trip': {'gtfsId': 'krk:t1', 'route': {'gtfsId': 'krk:70'}},
+                }
+            ],
+        ),
+        otp_alert(
+            'b-later',
+            [{'__typename': 'Route', 'gtfsId': 'krk:152'}],
+            periods=[('2026-12-01T00:00:00+01:00', None)],
+        ),
+        otp_alert('c-agency', [{'__typename': 'Agency', 'gtfsId': 'krk:302'}]),
+        otp_alert('d-stop', [{'__typename': 'Stop', 'gtfsId': 'krk:9'}]),
+    ]
+}
+
+
+def test_alerts_say_what_they_affect_and_whether_they_are_in_force(otp, monkeypatch):
+    monkeypatch.setattr(timezone, 'now', lambda: datetime(2026, 10, 14, 6, tzinfo=UTC))
+    otp.answer = ALERTS
+
+    body = get('alerts/').json()
+
+    assert otp.variables == {'feeds': None}
+    assert [row['id'] for row in body['results']] == ['a-trip', 'c-agency', 'd-stop', 'b-later']
+    assert body['results'][0] == {
+        'id': 'a-trip',
+        'feed_id': 'krk',
+        'header': 'Objazd',
+        'description': None,
+        'url': None,
+        'effect': 'detour',
+        'cause': 'construction',
+        'severity': 'warning',
+        'active': True,
+        'active_periods': [],
+        'agencies': [],
+        'routes': ['krk:70'],
+        'stops': ['krk:1'],
+        'trips': ['krk:t1'],
+    }
+    later = body['results'][3]
+    assert (later['active'], later['active_periods']) == (
+        False,
+        [{'start': '2026-11-30T23:00:00Z', 'end': None}],
+    )
+
+
+def test_alerts_about_a_line_a_stop_or_an_operator(otp):
+    from planner.models import IndexedAgency
+
+    agency = IndexedAgency.objects.create(agency_id='krk:302', feed_id='krk', name='MPK')
+    agency.routes.create(
+        route_id='krk:152', mode='bus', sort_key='0', short_name_search='152', name_search='152'
+    )
+    otp.answer = ALERTS
+
+    def ids(params):
+        return [row['id'] for row in get('alerts/', params).json()['results']]
+
+    assert ids({'routes': 'krk:70'}) == ['a-trip']
+    assert otp.variables == {'feeds': ['krk']}
+    assert ids({'stops': 'krk:9'}) == ['d-stop']
+    # The operator's own alerts and those about its lines.
+    assert ids({'agencies': 'krk:302'}) == ['c-agency', 'b-later']

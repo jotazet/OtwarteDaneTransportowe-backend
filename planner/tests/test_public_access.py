@@ -252,6 +252,7 @@ def test_public_schema_is_open_and_lists_only_planner_routes():
         f'/api/planner/v1/{path}'
         for path in (
             'agencies/',
+            'alerts/',
             'plan/',
             'route/',
             'routes/',

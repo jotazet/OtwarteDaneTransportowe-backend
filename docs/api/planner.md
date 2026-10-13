@@ -4,7 +4,7 @@ The public API of ODT's journey planner, for ODT's website and for anyone buildi
 
 The planner routes over the feeds ODT publishes with [OpenTripPlanner](https://www.opentripplanner.org/); how it works and its limits are described in [journey planner](../domain/journey-planner.md). Admin routes: [planner-admin](planner-admin.md).
 
-> Status: being built. Available now: `status/`, `plan/`, stop, line and operator search, departures, stop timetables, lines, trips, blocks and vehicles. Alerts and bike sharing follow.
+> Status: being built. Available now: `status/`, `plan/`, stop, line and operator search, departures, stop timetables, lines, trips, blocks, vehicles and alerts. Bike sharing follows.
 
 ## Access
 
@@ -19,7 +19,7 @@ Requests per minute, counted separately for three groups of endpoints:
 | Group | Endpoints |
 | --- | --- |
 | `plan` | trip planning |
-| `realtime` | answers computed by the routing engine: departures, timetables, lines, trips, blocks, vehicles |
+| `realtime` | answers computed by the routing engine: departures, timetables, lines, trips, blocks, vehicles, alerts |
 | `lookup` | stop, line and operator search, status |
 
 Each group has a limit per client (an IP address, an IPv6 `/64`, or an API key) and a limit for all clients together. The numbers are set by ODT and may change; a client over a limit gets:
@@ -475,6 +475,37 @@ Paged like `stops/` (default 500, at most 2000 a page). Each result:
 ```
 
 `label` is the number painted on the vehicle; `heading` degrees clockwise from north; `stop_status` (`incoming_at`, `stopped_at`, `in_transit_to`) refers to `stop`. Some operators report a vehicle waiting for its first trip of the day under that trip, at the depot with speed 0. Follow `trip_id` to `trip/` and `trip/block/`.
+
+### `GET /api/planner/v1/alerts/`
+
+Service alerts published by the operators (GTFS-RT), those in force now first. Without filters, every alert; with filters, those about any of them.
+
+| Parameter | Meaning |
+| --- | --- |
+| `routes` | About these lines, including alerts about one of their trips. |
+| `stops` | About these stops. |
+| `agencies`, `organizations` | About these operators or any of their lines. |
+
+```json
+{
+  "id": "QWxlcnQ6a3JrOjE",
+  "feed_id": "krk",
+  "header": "Objazd",
+  "description": "Tramwaje linii 70 kursują objazdem…",
+  "url": null,
+  "effect": "detour",
+  "cause": "construction",
+  "severity": "warning",
+  "active": true,
+  "active_periods": [{ "start": "2026-10-14T03:00:00Z", "end": "2026-10-20T22:00:00Z" }],
+  "agencies": [],
+  "routes": ["krk:352529"],
+  "stops": [],
+  "trips": []
+}
+```
+
+`header` and `description` are the operator's own texts, in its language (the API does not translate them). `effect` and `cause` are the GTFS-RT values in lowercase; `active` is whether an `active_periods` entry (or none, meaning always) covers now. `routes`, `stops`, `agencies` and `trips` list what the alert names; an alert about a trip also lists its line. Paged with the standard envelope.
 
 ## Versioning
 

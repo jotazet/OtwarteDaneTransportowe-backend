@@ -325,6 +325,7 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 | `GET` | `/api/planner/v1/trip/` | public | A trip on its service date with realtime (`?id=&date=`) |
 | `GET` | `/api/planner/v1/trip/block/` | public | Every trip of a trip's block (brigade) on a day |
 | `GET` | `/api/planner/v1/vehicles/` | public | Vehicles reporting their position now |
+| `GET` | `/api/planner/v1/alerts/` | public | Operators' service alerts, by line, stop or operator |
 | `GET` | `/api/planner/v1/schema/` | public | OpenAPI document of the public planner API |
 | `GET` | `/api/planner/v1/docs/` | public | ReDoc for the public planner API |
 
