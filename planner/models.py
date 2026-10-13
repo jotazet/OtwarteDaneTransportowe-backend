@@ -4,7 +4,8 @@ See docs/architecture/decisions/0008 and 0009 and docs/domain/journey-planner.md
 """
 
 from django.conf import settings
-from django.contrib.postgres.indexes import BrinIndex
+from django.contrib.postgres.fields import ArrayField
+from django.contrib.postgres.indexes import BrinIndex, GinIndex
 from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Q
@@ -97,6 +98,8 @@ class GraphBuild(models.Model):
     finished_at = models.DateTimeField(null=True, blank=True)
 
     is_active = models.BooleanField(default=False)
+    # When the search index was copied from this build's graph (None: not yet).
+    indexed_at = models.DateTimeField(null=True, blank=True)
 
     # One entry per planner feed: planner_feed, feed_id, submission, outcome,
     # sha256, version_at, error_code, log_excerpt, realtime_skipped.
@@ -256,3 +259,109 @@ class PlannerDailyStat(models.Model):
 
     def __str__(self):
         return f'PlannerDailyStat({self.date}, {self.endpoint}, {self.status_code})'
+
+
+# ---------------------------------------------------------------------------
+# Search index: agencies, lines and stops of the served graph, copied from OTP
+# after every activation (planner/search_index.py). Replaced as a whole, never edited.
+# Text is unbounded: lengths come from the feeds, and one long value must not
+# stop the index of every feed.
+# ---------------------------------------------------------------------------
+
+
+class IndexedAgency(models.Model):
+    agency_id = models.TextField(unique=True)  # feed-scoped, e.g. krk:302
+    feed_id = models.TextField()
+    name = models.TextField()
+    url = models.TextField(blank=True)
+    organization = models.ForeignKey(
+        'cases.TransportOrganization',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+    )
+
+    class Meta:
+        ordering = ['name', 'agency_id']
+
+    def __str__(self):
+        return self.agency_id
+
+
+class IndexedRoute(models.Model):
+    route_id = models.TextField(unique=True)
+    agency = models.ForeignKey(IndexedAgency, on_delete=models.CASCADE, related_name='routes')
+    short_name = models.TextField(blank=True)
+    long_name = models.TextField(blank=True)
+    mode = models.TextField()
+    color = models.TextField(blank=True)
+    text_color = models.TextField(blank=True)
+    # Lines in timetable order: "2" before "10" before "A".
+    sort_key = models.TextField()
+    short_name_search = models.TextField()
+    name_search = models.TextField()
+    # Centre of the line's stops, to rank lines near the user first.
+    lat = models.FloatField(null=True, blank=True)
+    lon = models.FloatField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['sort_key', 'route_id']
+        indexes = [
+            models.Index(fields=['short_name_search'], name='planner_route_short_name'),
+            GinIndex(
+                fields=['name_search'], opclasses=['gin_trgm_ops'], name='planner_route_name_trgm'
+            ),
+        ]
+
+    def __str__(self):
+        return self.route_id
+
+
+class IndexedStopGroup(models.Model):
+    """Stops with the same name close together, e.g. every pole of "Rondo Mogilskie".
+
+    Stop search returns groups, not single poles; few feeds group poles under a
+    GTFS parent station (docs/domain/journey-planner.md).
+    """
+
+    name = models.TextField()
+    name_search = models.TextField()
+    lat = models.FloatField()
+    lon = models.FloatField()
+    modes = ArrayField(models.TextField(), default=list)
+    agency_ids = ArrayField(models.TextField(), default=list)
+    route_ids = ArrayField(models.TextField(), default=list)
+    route_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        indexes = [
+            GinIndex(
+                fields=['name_search'], opclasses=['gin_trgm_ops'], name='planner_group_name_trgm'
+            ),
+            GinIndex(fields=['agency_ids'], name='planner_group_agencies'),
+            models.Index(fields=['lat', 'lon'], name='planner_group_position'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class IndexedStop(models.Model):
+    stop_id = models.TextField(unique=True)
+    group = models.ForeignKey(IndexedStopGroup, on_delete=models.CASCADE, related_name='stops')
+    name = models.TextField()
+    code = models.TextField(blank=True)
+    platform = models.TextField(blank=True)
+    lat = models.FloatField()
+    lon = models.FloatField()
+    mode = models.TextField(blank=True)
+    station_id = models.TextField(blank=True)
+    route_ids = ArrayField(models.TextField(), default=list)
+
+    class Meta:
+        ordering = ['stop_id']
+        indexes = [models.Index(fields=['lat', 'lon'], name='planner_stop_position')]
+
+    def __str__(self):
+        return self.stop_id

@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 from rest_framework.test import APIClient
 
+from cases.models import TransportOrganization
 from planner import otp_runtime, planning
-from planner.models import PlannerSettings
+from planner.models import IndexedAgency, PlannerSettings
 
 pytestmark = pytest.mark.django_db
 
@@ -71,6 +72,7 @@ def test_minimal_query_uses_defaults(otp):
             },
         },
         'withStops': False,
+        'withGeometry': False,
         'first': 5,
     }
 
@@ -118,7 +120,57 @@ def test_every_parameter_reaches_otp_as_a_variable(otp):
         },
     }
     assert (variables['first'], variables['withStops']) == (3, True)
+    assert variables['withGeometry'] is False
     assert otp.calls[0]['timeout'] == 12
+
+
+def test_organizations_stand_for_all_their_operators(otp):
+    mpk = TransportOrganization.objects.create(region='Kraków', transport_organization='ZTP')
+    kml = TransportOrganization.objects.create(region='Małopolska', transport_organization='KML')
+    for agency_id, org in (('krk:302', mpk), ('krk:303', mpk), ('kml:1', kml)):
+        IndexedAgency.objects.create(agency_id=agency_id, feed_id='x', name='x', organization=org)
+
+    response = get(
+        {
+            'from': '50.06,19.93',
+            'to': '50.07,20.03',
+            'exclude_organizations': [kml.id],
+            'organizations': [mpk.id],
+            'agencies': ['ext:9'],
+        }
+    )
+
+    assert response.status_code == 200
+    assert otp.variables['preferences']['transit']['filters'] == [
+        {
+            'include': [{'agencies': ['ext:9', 'krk:302', 'krk:303']}],
+            'exclude': [{'agencies': ['kml:1']}],
+        }
+    ]
+
+
+def test_organization_outside_the_planner_is_a_field_error(otp):
+    response = get({'from': '50.06,19.93', 'to': '50.07,20.03', 'exclude_organizations': [42]})
+
+    assert response.json()['details']['fields'] == {
+        'exclude_organizations': ['planner.organization_not_found']
+    }
+    assert otp.calls == []
+
+
+def test_geometry_only_on_request(otp):
+    answer = copy.deepcopy(OTP_ANSWER)
+    for leg in answer['planConnection']['edges'][0]['node']['legs']:
+        del leg['legGeometry']  # OTP leaves it out unless withGeometry is true
+    otp.answer = answer
+
+    legs = get({'from': '50.06,19.93', 'to': '50.07,20.03'}).json()['itineraries'][0]['legs']
+    assert [leg['geometry'] for leg in legs] == [None, None, None]
+
+    otp.answer = OTP_ANSWER
+    legs = get({'from': '50.06,19.93', 'to': '50.07,20.03', 'geometry': 'true'}).json()
+    assert otp.variables['withGeometry'] is True
+    assert legs['itineraries'][0]['legs'][1]['geometry'] == 'uxopH}uvxBA?'
 
 
 @pytest.mark.parametrize(

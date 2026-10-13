@@ -4,7 +4,7 @@ The public API of ODT's journey planner, for ODT's website and for anyone buildi
 
 The planner routes over the feeds ODT publishes with [OpenTripPlanner](https://www.opentripplanner.org/); how it works and its limits are described in [journey planner](../domain/journey-planner.md). Admin routes: [planner-admin](planner-admin.md).
 
-> Status: being built. Available now: `status/` and `plan/`. Stops, lines, departures, timetables, vehicles and blocks follow.
+> Status: being built. Available now: `status/`, `plan/`, stop, line and operator search. Departures, timetables, vehicles and blocks follow.
 
 ## Access
 
@@ -113,12 +113,15 @@ GET /api/planner/v1/plan/?from=50.0617,19.9373&to=krk:2047513&time=2026-10-14T08
 | `max_transfers` | engine default | 0–8. |
 | `min_transfer_minutes` | `2` | 0–30: extra time added to every transfer. |
 | `via` | — | Up to 2 stop IDs the trip must pass through, in order; repeat the parameter. |
-| `agencies`, `routes` | — | Use only these operators or lines (IDs, up to 20 each, repeated). |
-| `exclude_agencies`, `exclude_routes` | — | Never use these (IDs, up to 20 each); they win over `agencies` and `routes`. |
+| `agencies`, `routes` | — | Use only these operators or lines (IDs, up to 20 each, repeated). Several include filters add up: a trip qualifies if it matches any of them. |
+| `organizations` | — | Use only the operators whose data these ODT organizations publish (organization IDs from `agencies/` or `status/`, up to 20). |
+| `exclude_agencies`, `exclude_routes` | — | Never use these (IDs, up to 20 each); they win over the include filters. |
+| `exclude_organizations` | — | Never use the operators of these ODT organizations. |
 | `realtime` | `true` | `false`: plan on the timetable only, ignoring delays and cancellations. |
 | `num_itineraries` | `5` | 1–10 itineraries per page. |
 | `cursor` | — | `next_cursor` or `previous_cursor` of an earlier answer, with the same other parameters: later or earlier departures. |
 | `stops` | `false` | `true`: list the stops of every transit leg. |
+| `geometry` | `false` | `true`: return every leg's path in `geometry`; otherwise it is `null`. Paths are most of the answer's size. |
 
 Operator, line and stop IDs come from the other planner endpoints or from the feeds themselves (`<feed_id>:<agency_id>`, `<feed_id>:<route_id>`, `<feed_id>:<stop_id>`).
 
@@ -128,6 +131,7 @@ Invalid parameters return `400 planner.invalid_request` with the codes in `detai
 | --- | --- |
 | `planner.invalid_location` | `from`, `to`: neither coordinates in range nor a `<feed_id>:<id>` ID. |
 | `planner.invalid_id` | `via`, `agencies`, `routes`, `exclude_*`: not a `<feed_id>:<id>` ID (reported per position). |
+| `planner.organization_not_found` | `organizations`, `exclude_organizations`: an organization with no operator in the planner. |
 | `planner.stop_not_found` | `via`: no such stop or station. |
 | `planner.time_without_offset` | `time` has no UTC offset. |
 | `planner.arrive_by_without_time` | `arrive_by=true` without `time`. |
@@ -161,7 +165,7 @@ An unknown `from` or `to` stop is not a parameter error: the answer is `200` wit
           "service_date": null,
           "headsign": null,
           "realtime": false,
-          "geometry": "utppHe_uxB…",
+          "geometry": null,
           "alerts": [],
           "stops": null
         },
@@ -179,7 +183,7 @@ An unknown `from` or `to` stop is not a parameter error: the answer is `200` wit
           "service_date": "2026-10-14",
           "headsign": "Pleszów",
           "realtime": true,
-          "geometry": "uxopH}uvxB…",
+          "geometry": null,
           "alerts": [],
           "stops": null
         }
@@ -200,7 +204,7 @@ An unknown `from` or `to` stop is not a parameter error: the answer is `200` wit
 | `legs[].start.estimated`, `delay_s` | The realtime prediction and its difference from the timetable in seconds (negative: early); `null` without realtime data. `realtime` is `true` when the leg has a prediction. |
 | `legs[].route.color`, `text_color` | Hex colour without `#`, as in the feed; often `null`. |
 | `legs[].trip_id`, `service_date` | Identify the vehicle's trip on that day (`service_date` is the timetable day, which for trips after midnight can be the day before). |
-| `legs[].geometry` | The leg's path as an [encoded polyline](https://developers.google.com/maps/documentation/utilities/polylinealgorithm) (precision 5). |
+| `legs[].geometry` | With `geometry=true`: the leg's path as an [encoded polyline](https://developers.google.com/maps/documentation/utilities/polylinealgorithm) (precision 5); otherwise `null`. |
 | `legs[].alerts` | Service alerts published by the operator for that leg. `header` and `description` are the operator's own texts, usually in Polish; `effect` and `severity` are the lowercase GTFS-RT values (`detour`, `no_service`, …; `info`, `warning`, `severe`). |
 | `legs[].stops` | With `stops=true`: the stops of a transit leg from boarding to alighting (walking legs: `[]`); otherwise `null`. |
 | `next_cursor`, `previous_cursor` | Pass as `cursor` for the next or previous page. |
@@ -222,6 +226,95 @@ There are no turn-by-turn walking directions: the engine names unnamed paths in 
 | `planner.no_direct_mode_connection` | No walking route was found and no transit was searched. |
 
 New codes may be added; show a generic message for unknown ones.
+
+## Stops, lines and operators
+
+These answer from ODT's own index of the served data, so they keep working while the timetables are being rebuilt. Limit group: `lookup`. Lists use the standard page envelope `{count, next, previous, results}` with `page` and `page_size`.
+
+**Names.** Search ignores case, Polish letters and punctuation: `lodz` finds `Łódź Kaliska`, `rondo mog` finds `Rondo Mogilskie`. Close misspellings match too, ranked below exact ones.
+
+**Stops** here are those at least one line calls at; others cannot start or end a trip and are left out.
+
+**Places.** Most feeds publish every pole (each direction, each platform) as a separate stop. Stop search and `stops/nearby/` therefore return **places**: poles with the same name less than 400 m apart, with every pole in `stops`. To plan a trip from a place, use its `lat,lon` or one of its stop IDs.
+
+**Filters** (all list endpoints except `agencies/`): `modes` (repeat; values as in `plan/`), `agencies` (operator IDs) and `organizations` (ODT organization IDs); operators and organizations add up.
+
+### `GET /api/planner/v1/stops/search/`
+
+| Parameter | Meaning |
+| --- | --- |
+| `q` | Required, at most 100 characters with at least 3 letters or digits (shorter fragments match too much to rank). |
+| `near` | `lat,lon`: places near it rank higher (and get `distance_m`). |
+| filters | See above. |
+
+Best matches first: name similarity, then names starting with `q`, places with more lines and, with `near`, nearer places. Default page size 10, at most 50 (each result carries its poles and lines).
+
+```json
+{
+  "count": 2,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "name": "Rondo Mogilskie",
+      "lat": 50.0651,
+      "lon": 19.9585,
+      "modes": ["bus", "tram"],
+      "distance_m": null,
+      "routes": [
+        { "id": "krk:352529", "short_name": "70", "long_name": null, "mode": "tram", "color": null, "text_color": null, "agency": { "id": "krk:302", "name": "Kraków" } }
+      ],
+      "stops": [
+        { "id": "krk:2047520", "name": "Rondo Mogilskie", "code": "121-01", "platform": null, "lat": 50.065, "lon": 19.958, "mode": "tram", "station_id": null }
+      ]
+    }
+  ]
+}
+```
+
+`routes` are sorted by mode, then number. `stops[].code` is the code shown to passengers when the feed has one; `station_id` is the GTFS parent station (mostly railway).
+
+### `GET /api/planner/v1/stops/nearby/`
+
+Places within `radius` metres (default 500, at most 2000) of `near` (`lat,lon`, required), nearest first, with `distance_m`. Same result shape and paging as search; filters apply.
+
+### `GET /api/planner/v1/stops/`
+
+Every single pole inside `bbox`, for drawing on a map.
+
+| Parameter | Meaning |
+| --- | --- |
+| `bbox` | Required: `min_lon,min_lat,max_lon,max_lat` (GeoJSON order, as map libraries give bounds), at most 0.5° on each side; larger areas get `planner.bbox_too_large`, show stops only when zoomed in. |
+| filters | See above. |
+
+Results are `stops[]` objects as above, by ID. Operator filters apply per pole: only poles where a line of those operators calls. Default page size 500, at most 2000, so that one request usually covers the view.
+
+### `GET /api/planner/v1/stop/?id=krk:2047470`
+
+One stop: the fields above plus `routes` (lines calling there) and `group` (`name`, `lat`, `lon` and every pole of the same place). An unknown ID returns `404 planner.stop_not_found`.
+
+### `GET /api/planner/v1/routes/`
+
+Lines (GTFS routes) by number or name.
+
+| Parameter | Meaning |
+| --- | --- |
+| `q` | Optional, at least one letter or digit. An exact number comes first (`70`), then numbers starting with it (`704`), then names. Without `q`, every line matching the filters. |
+| `near` | `lat,lon`: lines whose stops are centred nearer come first (useful when many towns have a line `1`). |
+| filters | See above. |
+
+Results: `id`, `short_name`, `long_name`, `mode`, `color`, `text_color`, `agency` `{id, name}`. Lines without `q` are in timetable order: numbers numerically (`2`, `10`, `52`), then letters. Many feeds leave `long_name` empty; then a line is found by its number only.
+
+### `GET /api/planner/v1/agencies/`
+
+Every operator in the planner, by name: `id`, `name`, `url`, `feed_id`, `organization` (the ODT organization that publishes the feed: `id`, `name`, `region`; `null` if unknown) and `route_count`. Filter with `organizations` (an organization without operators in the planner is `planner.organization_not_found`). Use these IDs for the `agencies` and `organizations` filters.
+
+### Lookup errors
+
+| HTTP | Code | Meaning |
+| --- | --- | --- |
+| 400 | `planner.invalid_request` | With field codes: `planner.invalid_location` (`near`), `planner.invalid_bbox`, `planner.bbox_too_large`, `planner.invalid_id`, `planner.organization_not_found`, or DRF's generic ones. |
+| 404 | `planner.stop_not_found` | `stop/`: no stop with that ID in the planner. |
 
 ## Versioning
 

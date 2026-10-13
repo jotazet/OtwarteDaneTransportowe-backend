@@ -17,7 +17,7 @@ A spike on 2026-10-12 (all 44 published GTFS feeds, OSM for Poland, OTP 2.10.0) 
 - The pinned image is `opentripplanner/opentripplanner:2.10.0`; a graph file only loads in the OTP version that built it. Only the GTFS GraphQL API and the actuator (health, metrics) are enabled. Transmodel, the debug UI and costly assertions are off.
 - ODT exposes its **own REST API** (`/api/planner/v1/`, later PRs) with fixed parameters. Each endpoint translates its parameters into one of a set of fixed GraphQL documents; client input travels only in GraphQL variables. GraphQL is never passed through.
 - The admin API lives under `/api/planner/admin/` and is restricted to the `Admin` group (`RequiresAdminGroup`).
-- Search (stops, lines, operators) is served from a Postgres index rebuilt after each graph build (later PR). OTP's name search is prefix-only and does not fold Polish diacritics.
+- Search (stops, lines, operators) is served from a Postgres index copied from OTP after each graph build, with names folded to ASCII and matched with `pg_trgm`. OTP's name search is prefix-only and does not fold Polish diacritics, and a Postgres copy keeps search up while OTP is stopped for a build.
 - OTP serves trip planning, departures, timetables, vehicle positions and blocks (brigades); its GTFS-RT updaters feed it the realtime data.
 - Memory follows the spike: the graph is built from OSM cropped to about 3 km around the stops of the included feeds, and served with a 6 GB heap (~7 GB container).
 

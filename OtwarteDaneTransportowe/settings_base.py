@@ -318,6 +318,7 @@ CELERY_TASK_ROUTES = {
     'data_manager.fetch_static_entry': {'queue': 'feeds'},
     'planner.run_graph_build': {'queue': 'planner'},
     'planner.ensure_serving': {'queue': 'planner'},
+    'planner.refresh_index': {'queue': 'planner'},
 }
 CELERY_TASK_SOFT_TIME_LIMIT = 90
 CELERY_TASK_TIME_LIMIT = 120

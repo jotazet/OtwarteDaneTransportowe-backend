@@ -147,8 +147,16 @@ class FakeOtp:
     def is_healthy(self):
         return self.healthy
 
-    def query(self, document, variables=None):
-        return {'feeds': [{'feedId': feed_id} for feed_id in sorted(self.served_feeds)]}
+    def query(self, document, variables=None, timeout=None):
+        # Enough for the activation check and the search index (one agency per feed).
+        return {
+            'feeds': [
+                {'feedId': feed_id, 'agencies': [{'gtfsId': f'{feed_id}:1', 'name': feed_id}]}
+                for feed_id in sorted(self.served_feeds)
+            ],
+            'routes': [],
+            'stops': [],
+        }
 
     def remove_build_containers(self):
         return 0

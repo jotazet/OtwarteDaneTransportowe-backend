@@ -43,13 +43,21 @@ def watchdog_task():
     failed = pipeline.fail_stale_builds()
     if failed:
         logger.error('Marked %d interrupted graph build(s) as failed', failed)
-    if GraphBuild.objects.filter(is_active=True).exists():
+    active = GraphBuild.objects.filter(is_active=True).first()
+    if active is not None:
         enqueue(ensure_serving_task)
+        if active.indexed_at is None:
+            enqueue(refresh_index_task)
 
 
 @shared_task(name='planner.ensure_serving', soft_time_limit=300, time_limit=360)
 def ensure_serving_task():
     pipeline.ensure_serving()
+
+
+@shared_task(name='planner.refresh_index', soft_time_limit=600, time_limit=660)
+def refresh_index_task():
+    pipeline.refresh_index()
 
 
 @shared_task(name='planner.maintain_request_logs', soft_time_limit=1800, time_limit=1900)

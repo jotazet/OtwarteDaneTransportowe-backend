@@ -94,6 +94,7 @@ POST /api/planner/admin/builds/{id}/activate/
   "otp_stopped_at": "2026-10-14T01:40:30Z",
   "finished_at": "2026-10-14T01:56:12Z",
   "is_active": true,
+  "indexed_at": "2026-10-14T01:56:25Z",
   "error_code": "",
   "feed_results": [
     { "planner_feed": 3, "feed_id": "kml", "submission": 38, "outcome": "stale", "sha256": "…",
@@ -109,6 +110,7 @@ POST /api/planner/admin/builds/{id}/activate/
 | `status` | `queued`, `running`, `succeeded`, `failed` |
 | `trigger` | `schedule`, `manual`, `rollback` |
 | `otp_stopped_at` | Start of the maintenance window: the serving OTP is stopped from then until the build ends. |
+| `indexed_at` | When stop and line search was refreshed from this build's graph; `null` until then (retried every 5 minutes while the build is active). |
 | `feed_results[].outcome` | `fresh`, `stale`, `excluded` (see [journey planner](../domain/journey-planner.md#build-outcomes-per-feed)) |
 | `feed_results[].error_code` | `planner.feed_not_published`, `planner.feed_source_unavailable`, `planner.feed_invalid`, `planner.feed_no_service_in_period` |
 | `feed_results[].realtime_skipped` | `[{feed_id, endpoint_type, error_code: "planner.rt_url_blocked"}]` |

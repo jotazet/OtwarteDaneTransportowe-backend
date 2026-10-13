@@ -37,6 +37,16 @@ Error codes stored per feed: `planner.feed_not_published`, `planner.feed_source_
 - **No walking directions.** OTP's step-by-step instructions name unnamed paths in English ("path", "sidewalk"), which would be backend prose; legs carry only the geometry. OTP's labels "Origin" and "Destination" for requested points are dropped for the same reason.
 - **Routing errors** are OTP's `RoutingErrorCode` values, lowercased and prefixed (`planner.location_not_found`). See [the API reference](../api/planner.md#routing-errors).
 
+## Search
+
+- **Source.** After a graph goes live, the planner worker copies its operators, lines and stops from OTP into Postgres (`planner/search_index.py`), replacing the previous copy in one transaction. Search therefore shows exactly what the planner routes on and keeps working while OTP is stopped for a build. If OTP does not answer, the previous copy stays and the watchdog retries every 5 minutes. On the Małopolska test graph (7,773 stops) the copy took 1 s.
+- **Names.** Compared after lowercasing, removing diacritics (`ł` by hand, as Unicode does not decompose it) and punctuation, with PostgreSQL trigram word similarity (`pg_trgm`).
+- **Places.** Feeds list every pole separately: in the 2026-10-12 audit only 13 of 44 feeds use GTFS `parent_station`, mostly railways. Search groups poles with the same name within 400 m of each other into one place (single linkage, so a place can be longer than 400 m). Places with the same name farther apart (`Kościół` in many villages) stay separate; `near` ranks the closest first.
+- **Unserved stops** (no line calls there in the graph) are not indexed.
+- **Search has no town.** GTFS stops have no locality field, so two places with the same name are told apart only by position (`lat`, `lon`, `distance_m`) and their lines.
+- **Organizations.** Operators (GTFS agencies) are linked to the ODT organization that publishes their feed. OTP can filter trips only by agency or route, so a plan filter on an organization becomes a filter on all its operators.
+- **Lines.** Many feeds leave `route_long_name` empty (Kraków), so such lines are found by number only.
+
 ## Street map
 
 - **Source and cropping.** The street graph comes from an OSM extract (Geofabrik). Before building, it is filtered to the ways OTP routes on (osmium tag filter from [OTP's docs](https://docs.opentripplanner.org/en/v2.10.0/Preparing-OSM/)) and cropped to ~3 km grid cells around the included stops, plus one cell of margin. In the spike the stops covered about 40% of Poland.

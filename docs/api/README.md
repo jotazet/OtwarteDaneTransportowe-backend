@@ -313,6 +313,12 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 |--------|----------|-------------|------|
 | `GET` | `/api/planner/v1/status/` | public | Availability, served graph, feeds with licences, attribution |
 | `GET` | `/api/planner/v1/plan/` | public | Trip planning with realtime delays |
+| `GET` | `/api/planner/v1/stops/search/` | public | Stop search by name (places with their poles) |
+| `GET` | `/api/planner/v1/stops/nearby/` | public | Places with stops near a point |
+| `GET` | `/api/planner/v1/stops/` | public | Every stop in a map area (`bbox`) |
+| `GET` | `/api/planner/v1/stop/` | public | One stop with its lines (`?id=`) |
+| `GET` | `/api/planner/v1/routes/` | public | Line search and lists |
+| `GET` | `/api/planner/v1/agencies/` | public | Operators with their ODT organization |
 | `GET` | `/api/planner/v1/schema/` | public | OpenAPI document of the public planner API |
 | `GET` | `/api/planner/v1/docs/` | public | ReDoc for the public planner API |
 

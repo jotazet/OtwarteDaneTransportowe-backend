@@ -2,14 +2,16 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
-## 2026-10-13: journey planner (administration, public API access and trip planning)
+## 2026-10-13: journey planner (administration, public API access, trip planning and search)
 
 Not breaking: new routes only. Admin routes require the `Admin` group.
 
 - `/api/planner/admin/` adds what the team needs to run the journey planner: choosing published GTFS feeds for the OpenTripPlanner graph, building it on a schedule or on demand, per-feed build outcomes (`fresh`, `stale`, `excluded` with error codes), rollback to the previous graph and a status endpoint. See [Journey planner: admin API](planner-admin.md).
 - A public journey planner API starts under `/api/planner/v1/` (switched off until an admin enables it): `status/`, an OpenAPI document (`schema/`) and ReDoc (`docs/`). It is open to any origin (CORS), works without a key, limits requests per minute and returns errors as `{code, details}`. See [Journey planner API](planner.md).
-- `GET /api/planner/v1/plan/` plans trips between coordinates or stop IDs, with modes, wheelchair access, walking speed, transfers, via stops, operator and line filters, realtime on or off and cursor paging. Times are UTC instants; a `time` parameter without a UTC offset is rejected. Parameter errors carry codes such as `planner.invalid_location` and `planner.stop_not_found`; routing errors (`planner.no_transit_connection`, …) come in a `200` answer. New error code `planner.busy` (`503`). See [Journey planner API](planner.md#get-apiplannerv1plan).
+- `GET /api/planner/v1/plan/` plans trips between coordinates or stop IDs, with modes, wheelchair access, walking speed, transfers, via stops, operator and line filters, realtime on or off and cursor paging. Times are UTC instants; a `time` parameter without a UTC offset is rejected. Parameter errors carry codes such as `planner.invalid_location` and `planner.stop_not_found`; routing errors (`planner.no_transit_connection`, …) come in a `200` answer. New error code `planner.busy` (`503`). Operators can be filtered by ODT organization (`organizations`, `exclude_organizations`), and leg paths come only with `geometry=true`. See [Journey planner API](planner.md#get-apiplannerv1plan).
+- Stop, line and operator search under `/api/planner/v1/`: `stops/search/`, `stops/nearby/`, `stops/` (map area), `stop/`, `routes/` and `agencies/`. Search folds Polish letters and returns places (poles with the same name close together). These keep answering while timetables are rebuilt. See [Stops, lines and operators](planner.md#stops-lines-and-operators).
 - Admin routes for its access: `settings/` (kill switch, limits), `api-keys/`, `ip-bans/`, `requests/` (30-day log without query strings), `stats/daily/` and `stats/top-clients/`. See [planner-admin](planner-admin.md).
+- Builds in `/api/planner/admin/builds/` carry `indexed_at`: when search was refreshed from that graph.
 - `GET /feed/rt/{realtime_submission_id}/{endpoint_type}/` is not throttled for requests carrying the planner's internal token (`X-ODT-Internal-Token`), which OTP sends when it polls proxied realtime files over the internal network. Nothing changes for other clients.
 
 ---

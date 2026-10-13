@@ -24,7 +24,7 @@ from django.utils import timezone
 
 from data_manager.models import completed_submission_ids
 from data_manager.net_security import OutboundURLBlocked, safe_download
-from planner import osm, otp_config, otp_runtime
+from planner import osm, otp_config, otp_runtime, search_index
 from planner.models import GraphBuild, PlannerFeed
 
 logger = logging.getLogger(__name__)
@@ -132,6 +132,15 @@ def run_build(build_id: int) -> None:
         shutil.rmtree(workdir, ignore_errors=True)
         if build.otp_stopped_at:
             _start_serving()
+    refresh_index()
+
+
+def refresh_index() -> None:
+    """Best effort: the watchdog retries while the active graph has no index."""
+    try:
+        search_index.refresh_active()
+    except Exception:  # noqa: BLE001 - search keeps the previous index; never fail a build over it
+        logger.warning('Could not refresh the planner search index', exc_info=True)
 
 
 def ensure_serving() -> None:

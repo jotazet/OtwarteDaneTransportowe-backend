@@ -766,4 +766,5 @@ The first build also builds the street graph. Until then `otp` waits for a graph
   1. Change `PLANNER_OTP_IMAGE` in `.env`.
   2. Run `up -d` so the serving container uses the new image too.
   3. Build now: the next build re-tests every feed and rebuilds the street graph, and graphs built with the old image can no longer be activated.
+- **Search index.** After each build the planner worker copies operators, lines and stops from OTP into Postgres (~1 s per 8k stops; all of Poland is ~93k). If that fails, search keeps the previous data and the watchdog queues `planner.refresh_index` every 5 minutes until it succeeds; `GraphBuild.indexed_at` shows when it last did. The migration creates the `pg_trgm` extension, which needs `CREATE` on the database (the default `postgres` user has it).
 - **Backups.** Back up `planner_data/snapshots/` (the last good version of each feed cannot be recreated). Graphs, the street graph and the OSM extract can be rebuilt or downloaded again.

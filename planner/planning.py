@@ -23,6 +23,7 @@ query Plan(
   $last: Int
   $before: String
   $withStops: Boolean!
+  $withGeometry: Boolean!
 ) {
   planConnection(
     origin: $origin
@@ -58,7 +59,7 @@ query Plan(
           route { gtfsId shortName longName color textColor }
           agency { gtfsId name }
           trip { gtfsId }
-          legGeometry { points }
+          legGeometry @include(if: $withGeometry) { points }
           alerts {
             id
             alertHeaderText
@@ -136,6 +137,7 @@ def plan_variables(params: dict) -> dict:
         'destination': {'location': parse_place(params['to'])},
         'preferences': preferences,
         'withStops': params['stops'],
+        'withGeometry': params['geometry'],
     }
     if params.get('time'):
         key = 'latestArrival' if params['arrive_by'] else 'earliestDeparture'

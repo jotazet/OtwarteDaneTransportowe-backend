@@ -1,6 +1,5 @@
 """Public planner API (/api/planner/v1/). Documented in docs/api/planner.md."""
 
-from django.core.validators import RegexValidator
 from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
@@ -8,6 +7,7 @@ from rest_framework.response import Response
 
 from planner import planning, services
 from planner.access import PlannerPublicView, planner_settings
+from planner.api.params import QueryBoolean, agency_filter, id_list, organization_list
 from planner.models import GraphBuild, PlannerFeed
 
 # Routing results are computed on OpenStreetMap data, which must be credited.
@@ -107,12 +107,6 @@ def _feeds(build) -> list[dict]:
 PLAN_TIMEOUT_SECONDS = 12
 
 
-class QueryBoolean(serializers.BooleanField):
-    """A query-string flag that falls back to its default when absent (not to False)."""
-
-    default_empty_html = serializers.empty
-
-
 class InstantField(serializers.DateTimeField):
     """ISO 8601 with a UTC offset. DRF would read a time without one as UTC,
     which is an hour or two off in Poland and ambiguous on the DST change."""
@@ -127,20 +121,6 @@ class InstantField(serializers.DateTimeField):
                 'Give a UTC offset.', code='planner.time_without_offset'
             )
         return super().to_internal_value(value)
-
-
-class FeedScopedIdField(serializers.CharField):
-    """`<feed_id>:<id in the feed>`, as OTP expects every stop, route and agency ID."""
-
-    def __init__(self, **kwargs):
-        super().__init__(max_length=128, **kwargs)
-        self.validators.append(
-            RegexValidator(planning.FEED_SCOPED_ID, 'Not a feed-scoped ID.', 'planner.invalid_id')
-        )
-
-
-def _id_list(max_length):
-    return serializers.ListField(child=FeedScopedIdField(), max_length=max_length, required=False)
 
 
 class FromFieldMixin:
@@ -167,17 +147,20 @@ class PlanQuerySerializer(FromFieldMixin, serializers.Serializer):
     walk_speed = serializers.ChoiceField(choices=list(planning.WALK_SPEEDS), default='normal')
     max_transfers = serializers.IntegerField(min_value=0, max_value=8, required=False)
     min_transfer_minutes = serializers.IntegerField(min_value=0, max_value=30, default=2)
-    via = _id_list(2)
-    agencies = _id_list(20)
-    exclude_agencies = _id_list(20)
-    routes = _id_list(20)
-    exclude_routes = _id_list(20)
+    via = id_list(2)
+    agencies = id_list()
+    exclude_agencies = id_list()
+    organizations = organization_list(help_text='ODT organization IDs: use only their operators.')
+    exclude_organizations = organization_list(help_text='ODT organization IDs to leave out.')
+    routes = id_list()
+    exclude_routes = id_list()
     realtime = QueryBoolean(default=True, help_text='Use realtime delays and cancellations.')
     num_itineraries = serializers.IntegerField(min_value=1, max_value=10, default=5)
     cursor = serializers.CharField(
         max_length=1024, required=False, help_text='`next_cursor` or `previous_cursor` of a result.'
     )
     stops = QueryBoolean(default=False, help_text='List the stops of every transit leg.')
+    geometry = QueryBoolean(default=False, help_text="Return every leg's path.")
 
     def validate_cursor(self, value):
         if not value.startswith((planning.CURSOR_NEXT, planning.CURSOR_PREVIOUS)):
@@ -199,6 +182,15 @@ class PlanQuerySerializer(FromFieldMixin, serializers.Serializer):
             raise serializers.ValidationError(
                 {'arrive_by': 'Needs time.'}, code='planner.arrive_by_without_time'
             )
+        # OTP filters by agency only: an organization stands for all its operators.
+        for prefix in ('', 'exclude_'):
+            agencies = agency_filter(
+                attrs.get(f'{prefix}agencies'),
+                attrs.pop(f'{prefix}organizations', None),
+                field=f'{prefix}organizations',
+            )
+            if agencies is not None:
+                attrs[f'{prefix}agencies'] = agencies
         return attrs
 
 
