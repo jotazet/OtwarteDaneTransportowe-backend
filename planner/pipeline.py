@@ -15,7 +15,7 @@ import shutil
 import time
 import zipfile
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import requests
 from django.conf import settings
@@ -23,9 +23,9 @@ from django.db import transaction
 from django.utils import timezone
 
 from data_manager.models import completed_submission_ids
-from data_manager.net_security import OutboundURLBlocked, safe_download
+from data_manager.net_security import OutboundURLBlocked, ResponseTooLarge, safe_download
 from planner import osm, otp_config, otp_runtime, search_index
-from planner.models import GraphBuild, PlannerFeed, PlannerRentalSource
+from planner.models import GraphBuild, OsmDownload, PlannerFeed, PlannerRentalSource
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +133,68 @@ def run_build(build_id: int) -> None:
         if build.otp_stopped_at:
             _start_serving()
     refresh_index()
+
+
+# Poland (~2.1 GB) takes 1-2 minutes from Geofabrik on a server link.
+OSM_DOWNLOAD_TIMEOUT_SECONDS = 3600
+OSM_READ_TIMEOUT_SECONDS = 60
+
+
+def download_osm(download_id: int) -> None:
+    """Replace the OSM extract with the file at the download's URL, if it is a valid PBF.
+
+    Runs on the planner queue, so never during a build. The file is written next
+    to the current one and swapped in atomically only after osmium reads its
+    header; on any failure the current file stays.
+    """
+    with transaction.atomic():
+        download = OsmDownload.objects.select_for_update().filter(pk=download_id).first()
+        if download is None or download.status != OsmDownload.STATUS_QUEUED:
+            return
+        download.status = OsmDownload.STATUS_RUNNING
+        download.started_at = timezone.now()
+        download.save(update_fields=['status', 'started_at'])
+
+    target = data_path(settings.PLANNER_OSM_FILE)
+    partial = f'{target}.download'
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    error_code = ''
+    try:
+        with open(partial, 'w+b') as file:
+            with safe_download(
+                download.url,
+                timeout=OSM_READ_TIMEOUT_SECONDS,
+                total_timeout=OSM_DOWNLOAD_TIMEOUT_SECONDS,
+                max_bytes=settings.PLANNER_OSM_MAX_BYTES,
+                into=file,
+            ) as (response, _):
+                if response.status_code != 200:
+                    error_code = 'planner.osm_download_failed'
+        if not error_code:
+            header = osm.pbf_header(partial)
+            download.size_bytes = os.path.getsize(partial)
+            options = header['header'].get('option') or {}
+            stamp = options.get('osmosis_replication_timestamp') or options.get('timestamp')
+            download.data_timestamp = datetime.fromisoformat(stamp) if stamp else None
+            os.replace(partial, target)
+    except ResponseTooLarge:
+        error_code = 'planner.osm_too_large'
+    except OutboundURLBlocked:
+        error_code = 'planner.osm_url_blocked'
+    except osm.OsmPreparationError:
+        error_code = 'planner.osm_invalid'
+    except (requests.exceptions.RequestException, OSError, ValueError):
+        logger.warning('OSM download %s failed', download.id, exc_info=True)
+        error_code = 'planner.osm_download_failed'
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
+    download.status = OsmDownload.STATUS_FAILED if error_code else OsmDownload.STATUS_SUCCEEDED
+    download.error_code = error_code
+    download.finished_at = timezone.now()
+    download.save(
+        update_fields=['status', 'error_code', 'size_bytes', 'data_timestamp', 'finished_at']
+    )
 
 
 def refresh_index() -> None:

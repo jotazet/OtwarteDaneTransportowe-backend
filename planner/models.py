@@ -159,6 +159,44 @@ class GraphBuild(models.Model):
         return f'GraphBuild(id={self.id}, {self.status})'
 
 
+class OsmDownload(models.Model):
+    """An admin's replacement of the OSM extract by a file from a URL (e.g. Geofabrik).
+
+    The newest succeeded one describes the file the next build uses.
+    """
+
+    STATUS_QUEUED = 'queued'
+    STATUS_RUNNING = 'running'
+    STATUS_SUCCEEDED = 'succeeded'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, 'Queued'),
+        (STATUS_RUNNING, 'Running'),
+        (STATUS_SUCCEEDED, 'Succeeded'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+    ACTIVE_STATUSES = (STATUS_QUEUED, STATUS_RUNNING)
+
+    url = models.URLField(max_length=1000)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_QUEUED)
+    error_code = models.CharField(max_length=64, blank=True, default='')
+    size_bytes = models.BigIntegerField(null=True, blank=True)
+    # When the OSM data was exported (from the file's header), not when it was downloaded.
+    data_timestamp = models.DateTimeField(null=True, blank=True)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f'OsmDownload(id={self.id}, {self.status})'
+
+
 # ---------------------------------------------------------------------------
 # Public API access: settings, keys, bans, request log (ADR 0010)
 # ---------------------------------------------------------------------------
@@ -179,10 +217,10 @@ class PlannerSettings(models.Model):
 
     anonymous_plan_per_minute = models.PositiveIntegerField(default=20)
     anonymous_realtime_per_minute = models.PositiveIntegerField(default=120)
-    anonymous_lookup_per_minute = models.PositiveIntegerField(default=300)
+    anonymous_lookup_per_minute = models.PositiveIntegerField(default=150)
     key_plan_per_minute = models.PositiveIntegerField(default=120)
     key_realtime_per_minute = models.PositiveIntegerField(default=600)
-    key_lookup_per_minute = models.PositiveIntegerField(default=1200)
+    key_lookup_per_minute = models.PositiveIntegerField(default=500)
     global_plan_per_minute = models.PositiveIntegerField(default=300)
     global_realtime_per_minute = models.PositiveIntegerField(default=3000)
     global_lookup_per_minute = models.PositiveIntegerField(default=6000)

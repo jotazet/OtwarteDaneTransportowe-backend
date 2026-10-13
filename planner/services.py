@@ -1,19 +1,25 @@
 """Planner operations shared by the admin API and Celery tasks (no DRF here)."""
 
 import os
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import connection, transaction
+from django.utils import timezone
 from django_celery_beat.models import CrontabSchedule, PeriodicTask
 
 from data_manager.tasks import enqueue_on_commit
-from planner.models import GraphBuild
-from planner.pipeline import graph_dir
+from planner.models import GraphBuild, OsmDownload
+from planner.pipeline import OSM_DOWNLOAD_TIMEOUT_SECONDS, graph_dir
 
 SCHEDULE_TASK_NAME = 'planner-graph-build'
 DEFAULT_SCHEDULE = {'enabled': False, 'weekdays': [3, 7], 'time_utc': '01:40'}
 # Any constant shared by every build request: serialises them in Postgres.
 BUILD_REQUEST_LOCK = 7_331_001
+OSM_REQUEST_LOCK = 7_331_002
+# A download still marked queued or running after this long lost its worker.
+OSM_QUEUED_STALE_AFTER = timedelta(hours=8)  # may wait behind a build (up to 6 h)
+OSM_RUNNING_STALE_AFTER = timedelta(seconds=OSM_DOWNLOAD_TIMEOUT_SECONDS + 900)
 
 
 class BuildInProgress(Exception):
@@ -60,6 +66,35 @@ def _queue_build(**fields) -> GraphBuild:
         build = GraphBuild.objects.create(**fields)
         enqueue_on_commit(run_graph_build_task, build.id)
     return build
+
+
+class OsmDownloadInProgress(Exception):
+    pass
+
+
+def request_osm_download(url: str, user=None) -> OsmDownload:
+    """Queue a download of a new OSM extract; one at a time."""
+    from planner.tasks import download_osm_task
+
+    now = timezone.now()
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [OSM_REQUEST_LOCK])
+        stale = OsmDownload.objects.filter(
+            status=OsmDownload.STATUS_QUEUED, created_at__lt=now - OSM_QUEUED_STALE_AFTER
+        ) | OsmDownload.objects.filter(
+            status=OsmDownload.STATUS_RUNNING, started_at__lt=now - OSM_RUNNING_STALE_AFTER
+        )
+        stale.update(
+            status=OsmDownload.STATUS_FAILED,
+            error_code='planner.osm_download_interrupted',
+            finished_at=now,
+        )
+        if OsmDownload.objects.filter(status__in=OsmDownload.ACTIVE_STATUSES).exists():
+            raise OsmDownloadInProgress
+        download = OsmDownload.objects.create(url=url, requested_by=user)
+        enqueue_on_commit(download_osm_task, download.id)
+    return download
 
 
 def maintenance_active() -> bool:

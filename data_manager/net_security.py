@@ -318,15 +318,15 @@ class _Deadline:
             raise requests.exceptions.Timeout('Total download time budget exceeded.')
 
 
-def _drain_to_spool(response, *, max_bytes: int, chunk_size: int, deadline: _Deadline):
-    """Stream a response body into a spooled temp file, enforcing ``max_bytes``.
+def _drain_to_spool(response, *, max_bytes: int, chunk_size: int, deadline: _Deadline, into=None):
+    """Stream a response body into a spooled temp file (or ``into``), enforcing ``max_bytes``.
 
     Returns the file positioned at 0. Small bodies never touch the disk
     (SpooledTemporaryFile keeps them in RAM up to SPOOL_MAX_MEMORY_BYTES).
     """
     import tempfile
 
-    spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES, mode='w+b')
+    spool = into or tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES, mode='w+b')
     try:
         total = 0
         for chunk in response.iter_content(chunk_size=chunk_size):
@@ -340,7 +340,8 @@ def _drain_to_spool(response, *, max_bytes: int, chunk_size: int, deadline: _Dea
         spool.seek(0)
         return spool
     except BaseException:
-        spool.close()
+        if into is None:
+            spool.close()
         raise
     finally:
         response.close()
@@ -356,12 +357,15 @@ def safe_download(
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
     chunk_size: int = 65536,
     total_timeout: float | None = None,
+    into=None,
 ):
     """SSRF-hardened GET that streams the body to a spooled temp file.
 
     Yields ``(response, body_file)``; ``body_file`` is positioned at 0 and is
     closed on exit. The response body is NOT loaded into ``response.content``
     — use this for feed-sized downloads and :func:`safe_get` for small ones.
+    With ``into`` (an open binary file) the body is written there instead and
+    left open for the caller, so a large file goes straight to its place.
 
     Guarantees, per hop:
     - the URL and every redirect target is re-validated and re-resolved,
@@ -437,12 +441,13 @@ def safe_download(
             continue
 
         body = _drain_to_spool(
-            response, max_bytes=max_bytes, chunk_size=chunk_size, deadline=deadline
+            response, max_bytes=max_bytes, chunk_size=chunk_size, deadline=deadline, into=into
         )
         try:
             yield response, body
         finally:
-            body.close()
+            if into is None:
+                body.close()
         return
 
     raise OutboundURLBlocked(f"Too many redirects (>{max_redirects}).")

@@ -296,6 +296,7 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 | `GET/POST` | `/api/planner/admin/rental-sources/` | `Admin` | Bike and scooter sharing feeds the planner routes with |
 | `GET/PATCH/DELETE` | `/api/planner/admin/rental-sources/{id}/` | `Admin` | One rental source (`network` cannot change) |
 | `GET/PATCH/DELETE` | `/api/planner/admin/feeds/{id}/` | `Admin` | One planner feed (`feed_id` cannot change) |
+| `GET/POST` | `/api/planner/admin/osm/` | `Admin` | OSM extract downloads; `POST` replaces the map from a URL (`202`, `409` while one runs) |
 | `GET/POST` | `/api/planner/admin/builds/` | `Admin` | Graph builds; `POST` builds now (`202`, `409` while one runs) |
 | `GET` | `/api/planner/admin/builds/{id}/` | `Admin` | Build with per-feed outcomes and log excerpt |
 | `POST` | `/api/planner/admin/builds/{id}/activate/` | `Admin` | Serve an earlier build's graph again (rollback) |

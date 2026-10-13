@@ -60,6 +60,15 @@ def refresh_index_task():
     pipeline.refresh_index()
 
 
+@shared_task(
+    name='planner.download_osm',
+    soft_time_limit=pipeline.OSM_DOWNLOAD_TIMEOUT_SECONDS + 300,
+    time_limit=pipeline.OSM_DOWNLOAD_TIMEOUT_SECONDS + 600,
+)
+def download_osm_task(download_id: int):
+    pipeline.download_osm(download_id)
+
+
 @shared_task(name='planner.maintain_request_logs', soft_time_limit=1800, time_limit=1900)
 def maintain_request_logs_task():
     request_logs.roll_up_and_purge()

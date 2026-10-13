@@ -24,6 +24,8 @@ from planner.api.serializers import (
     GraphBuildDetailSerializer,
     GraphBuildSerializer,
     IpBanSerializer,
+    OsmDownloadRequestSerializer,
+    OsmDownloadSerializer,
     PlannerFeedSerializer,
     PlannerRentalSourceSerializer,
     PlannerRequestLogSerializer,
@@ -36,6 +38,7 @@ from planner.models import (
     ApiKey,
     GraphBuild,
     IpBan,
+    OsmDownload,
     PlannerFeed,
     PlannerRentalSource,
     PlannerRequestLog,
@@ -149,6 +152,23 @@ class GraphBuildViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
         """Serve this earlier build's graph again (rollback)."""
         target = self.get_object()
         return _queued(lambda: services.request_rollback(target, request.user))
+
+
+class OsmDownloadView(generics.ListAPIView):
+    """Replacements of the OSM extract by a URL; the newest succeeded one is in use."""
+
+    permission_classes = [RequiresAdminGroup]
+    serializer_class = OsmDownloadSerializer
+    queryset = OsmDownload.objects.select_related('requested_by')
+
+    def post(self, request):
+        params = OsmDownloadRequestSerializer(data=request.data)
+        params.is_valid(raise_exception=True)
+        try:
+            download = services.request_osm_download(params.validated_data['url'], request.user)
+        except services.OsmDownloadInProgress:
+            return _error('planner.osm_download_in_progress', status.HTTP_409_CONFLICT)
+        return Response(OsmDownloadSerializer(download).data, status=status.HTTP_202_ACCEPTED)
 
 
 class BuildScheduleView(APIView):

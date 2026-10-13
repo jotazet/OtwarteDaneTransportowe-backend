@@ -15,6 +15,7 @@ Not breaking: new routes only. Admin routes require the `Admin` group.
 - Bike and scooter sharing (GBFS): `plan/?rental=bicycle|scooter` may use shared vehicles (legs with `rented`, places with `rental_station_id` / `rental_vehicle_id`); `rentals/` shows stations and free vehicles in an area. Admin routes `rental-sources/` and `rental-candidates/`; builds carry `rental_results`; `status/` lists `rental_networks` with their licences.
 - `alerts/`: operators' GTFS-RT service alerts with what they affect and whether they are in force, filtered by line, stop, operator or organization. See [Departures, timetables, lines and trips](planner.md#departures-timetables-lines-and-trips).
 - Admin routes for its access: `settings/` (kill switch, limits), `api-keys/`, `ip-bans/`, `requests/` (30-day log without query strings), `stats/daily/` and `stats/top-clients/`. See [planner-admin](planner-admin.md).
+- `/api/planner/admin/osm/` replaces the OSM extract from a URL (downloaded and checked by the planner worker); default lookup limits are 150 a minute without a key and 500 with one.
 - Builds in `/api/planner/admin/builds/` carry `indexed_at`: when search was refreshed from that graph.
 - `GET /feed/rt/{realtime_submission_id}/{endpoint_type}/` is not throttled for requests carrying the planner's internal token (`X-ODT-Internal-Token`), which OTP sends when it polls proxied realtime files over the internal network. Nothing changes for other clients.
 

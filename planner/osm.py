@@ -26,10 +26,36 @@ TAG_FILTER = [
     'r/type=route',
 ]
 OSMIUM_TIMEOUT_SECONDS = 1800
+# Reading a header takes well under a second, even for all of Poland.
+HEADER_TIMEOUT_SECONDS = 60
 
 
 class OsmPreparationError(Exception):
     pass
+
+
+def pbf_header(path: str) -> dict:
+    """osmium's reading of a PBF file's header: format, bounding boxes, data timestamp.
+
+    Raises OsmPreparationError for anything that is not an OSM PBF extract.
+    """
+    try:
+        result = subprocess.run(
+            # The format explicitly: osmium guesses it from the name, and a
+            # download in progress ends in .download.
+            ['osmium', 'fileinfo', '--json', '--input-format', 'pbf', path],
+            capture_output=True,
+            text=True,
+            timeout=HEADER_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OsmPreparationError(str(exc)) from exc
+    if result.returncode != 0:
+        raise OsmPreparationError(result.stderr[-2000:])
+    info = json.loads(result.stdout)
+    if info.get('file', {}).get('format') != 'PBF' or not info.get('header', {}).get('boxes'):
+        raise OsmPreparationError('Not an OSM PBF extract with a bounding box.')
+    return info
 
 
 def stop_cells(feed_paths) -> set[tuple[int, int]]:

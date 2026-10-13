@@ -105,6 +105,40 @@ DELETE /api/planner/admin/rental-sources/{id}/
 
 Field error codes: `planner.feed_not_gbfs`, `planner.feed_not_published`, `planner.rental_source_without_gbfs`, `planner.rental_source_requires_auth` (on `submission`); `planner.invalid_network`, `planner.network_immutable`, `unique` (on `network`). Changes take effect at the next build. Sources that need credentials cannot be used: OTP follows the provider's links inside `gbfs.json` itself.
 
+## OSM extract
+
+The street map comes from an OpenStreetMap extract (`.osm.pbf`). Admins replace it with a file from a URL; the planner worker downloads it, checks it, and the next build uses it (rebuilding the street graph).
+
+```http
+GET  /api/planner/admin/osm/
+POST /api/planner/admin/osm/   {"url": "https://download.geofabrik.de/europe/poland-latest.osm.pbf"}
+```
+
+`POST` answers `202` with the queued download, or `409 planner.osm_download_in_progress` while one is queued or running. `GET` lists downloads, newest first; the newest `succeeded` one describes the file in use.
+
+```json
+{
+  "id": 3,
+  "url": "https://download.geofabrik.de/europe/poland-latest.osm.pbf",
+  "status": "succeeded",
+  "error_code": "",
+  "size_bytes": 2147483648,
+  "data_timestamp": "2026-10-12T20:21:35Z",
+  "requested_by": "admin",
+  "created_at": "2026-10-13T08:00:00Z",
+  "started_at": "2026-10-13T08:00:01Z",
+  "finished_at": "2026-10-13T08:01:40Z"
+}
+```
+
+| Field | Values |
+| --- | --- |
+| `status` | `queued` (waits for a running build), `running`, `succeeded`, `failed` |
+| `error_code` | `planner.osm_download_failed` (HTTP error or connection), `planner.osm_too_large` (over `PLANNER_OSM_MAX_BYTES`), `planner.osm_url_blocked` (private address), `planner.osm_invalid` (not an OSM PBF extract), `planner.osm_download_interrupted` (the worker stopped) |
+| `data_timestamp` | When the OSM data was exported, from the file's header. |
+
+A failed download leaves the current file in place.
+
 ## Graph builds
 
 ```http
@@ -196,8 +230,8 @@ PATCH /api/planner/admin/settings/
 ```json
 {
   "public_api_enabled": false,
-  "anonymous_plan_per_minute": 20, "anonymous_realtime_per_minute": 120, "anonymous_lookup_per_minute": 300,
-  "key_plan_per_minute": 120, "key_realtime_per_minute": 600, "key_lookup_per_minute": 1200,
+  "anonymous_plan_per_minute": 20, "anonymous_realtime_per_minute": 120, "anonymous_lookup_per_minute": 150,
+  "key_plan_per_minute": 120, "key_realtime_per_minute": 600, "key_lookup_per_minute": 500,
   "global_plan_per_minute": 300, "global_realtime_per_minute": 3000, "global_lookup_per_minute": 6000,
   "updated_at": "2026-10-13T10:00:00Z"
 }

@@ -13,6 +13,7 @@ from planner.models import (
     ApiKey,
     GraphBuild,
     IpBan,
+    OsmDownload,
     PlannerFeed,
     PlannerRentalSource,
     PlannerRequestLog,
@@ -204,6 +205,32 @@ class GraphBuildDetailSerializer(GraphBuildSerializer):
             'log_excerpt',
         ]
         read_only_fields = fields
+
+
+class OsmDownloadSerializer(serializers.ModelSerializer):
+    requested_by = serializers.CharField(source='requested_by.username', default=None)
+
+    class Meta:
+        model = OsmDownload
+        fields = [
+            'id',
+            'url',
+            'status',
+            'error_code',
+            'size_bytes',
+            'data_timestamp',
+            'requested_by',
+            'created_at',
+            'started_at',
+            'finished_at',
+        ]
+        read_only_fields = fields
+
+
+class OsmDownloadRequestSerializer(serializers.Serializer):
+    url = serializers.URLField(
+        max_length=1000, help_text='An OSM PBF extract, e.g. from Geofabrik.'
+    )
 
 
 class BuildScheduleSerializer(serializers.Serializer):

@@ -731,20 +731,16 @@ Without the profile, nothing of the planner runs and the rest of ODT is unchange
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # -> PLANNER_INTERNAL_TOKEN
 # COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/opt/odt/planner_data
 
-# 2. The OSM extract the street graph is built from (Geofabrik, ~2 GB for Poland)
-mkdir -p planner_data/osm
-curl -L -o planner_data/osm/region.osm.pbf.tmp https://download.geofabrik.de/europe/poland-latest.osm.pbf
-mv planner_data/osm/region.osm.pbf.tmp planner_data/osm/region.osm.pbf
-
-# 3. Start the services
+# 2. Start the services
 ./scripts/deploy.sh up -d --build
 ```
 
 Then, in the admin panel (or the admin API under `/api/planner/admin/`):
 
-1. Add the feeds: one feed per service, because duplicates double the trips.
-2. Set the schedule.
-3. Build now.
+1. Download the OSM extract the street graph is built from: `POST /api/planner/admin/osm/` with `{"url": "https://download.geofabrik.de/europe/poland-latest.osm.pbf"}` (~2 GB, a minute or two), and wait until `GET /api/planner/admin/osm/` shows it `succeeded`.
+2. Add the feeds: one feed per service, because duplicates double the trips.
+3. Set the schedule.
+4. Build now.
 
 The first build also builds the street graph. Until then `otp` waits for a graph instead of restarting.
 
@@ -761,7 +757,7 @@ The first build also builds the street graph. Until then `otp` waits for a graph
 - **Status and logs.** Build status, per-feed outcomes and OTP's log excerpts are in `GET /api/planner/admin/builds/{id}/`; worker logs are in `./scripts/deploy.sh logs celery_planner_worker`.
 - **Failed builds.** A failed build leaves the previous graph serving. `POST /api/planner/admin/builds/{id}/activate/` serves an earlier graph again (only the served one and the newest other one are kept).
 - **Deploys.** Do not deploy during the build window: `up -d` would start `otp` next to the build. If a worker dies mid-build anyway, the watchdog marks the build `build_interrupted` within ~15 minutes and restarts the active graph.
-- **New OSM.** Replace `planner_data/osm/region.osm.pbf` atomically (download to a temporary name, then `mv`); the next build rebuilds the street graph.
+- **New OSM.** `POST /api/planner/admin/osm/ {"url": …}` (Geofabrik publishes Poland daily). The planner worker downloads it next to the current file (at most `PLANNER_OSM_MAX_BYTES`, default 4 GiB), checks it is a PBF extract with osmium, and only then swaps it in; the next build rebuilds the street graph. A failed download keeps the current file. Downloads wait for a running build to finish (same queue). Replacing the file by hand still works: write it under a temporary name, then `mv`.
 - **New OTP version.**
   1. Change `PLANNER_OTP_IMAGE` in `.env`.
   2. Run `up -d` so the serving container uses the new image too.

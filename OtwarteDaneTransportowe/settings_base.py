@@ -319,6 +319,7 @@ CELERY_TASK_ROUTES = {
     'planner.run_graph_build': {'queue': 'planner'},
     'planner.ensure_serving': {'queue': 'planner'},
     'planner.refresh_index': {'queue': 'planner'},
+    'planner.download_osm': {'queue': 'planner'},
 }
 CELERY_TASK_SOFT_TIME_LIMIT = 90
 CELERY_TASK_TIME_LIMIT = 120
@@ -384,6 +385,8 @@ HOST_PLANNER_DATA_DIR = os.getenv('HOST_PLANNER_DATA_DIR') or os.path.join(
 )
 # OSM extract the street graph is built from, relative to PLANNER_DATA_DIR.
 PLANNER_OSM_FILE = os.getenv('PLANNER_OSM_FILE') or 'osm/region.osm.pbf'
+# Largest OSM file an admin may download from a URL (Poland is ~2.1 GB in 2026).
+PLANNER_OSM_MAX_BYTES = int(os.getenv('PLANNER_OSM_MAX_BYTES') or 4 * 1024**3)
 # The serving OTP container (docker-compose service `otp`) and how web reaches it.
 PLANNER_OTP_CONTAINER = os.getenv('PLANNER_OTP_CONTAINER') or 'odt-otp'
 PLANNER_OTP_URL = (os.getenv('PLANNER_OTP_URL') or 'http://odt-otp:8080').rstrip('/')
