@@ -1,8 +1,10 @@
 """Public planner API access: kill switch, limits, keys, bans, maintenance, logs, CORS."""
 
+import io
 from datetime import timedelta
 
 import pytest
+from django.core.management import call_command
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -251,18 +253,34 @@ def test_public_schema_is_open_and_lists_only_planner_routes():
         for path in (
             'agencies/',
             'plan/',
+            'route/',
             'routes/',
             'status/',
             'stop/',
+            'stop/departures/',
+            'stop/timetable/',
             'stops/',
             'stops/nearby/',
             'stops/search/',
+            'trip/',
         )
     ]
     plan = schema['paths']['/api/planner/v1/plan/']['get']['parameters']
     required = {p['name'] for p in plan if p.get('required')}
     assert required == {'from', 'to'}
     assert schema['components']['securitySchemes']['ApiKey']['name'] == 'X-API-Key'
+
+
+def test_public_schema_generates_without_warnings():
+    # Warnings (e.g. two components with one name) mean a wrong published contract.
+    call_command(
+        'spectacular',
+        '--urlconf',
+        'planner.api.schema_urls',
+        '--validate',
+        '--fail-on-warn',
+        stdout=io.StringIO(),
+    )
 
 
 def test_ipv4_clients_seen_through_a_dual_stack_socket_stay_ipv4(enabled):

@@ -1,13 +1,18 @@
 """Public planner API (/api/planner/v1/). Documented in docs/api/planner.md."""
 
-from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 
 from planner import planning, services
 from planner.access import PlannerPublicView, planner_settings
-from planner.api.params import QueryBoolean, agency_filter, id_list, organization_list
+from planner.api.params import (
+    InstantField,
+    QueryBoolean,
+    agency_filter,
+    id_list,
+    organization_list,
+)
 from planner.models import GraphBuild, PlannerFeed
 
 # Routing results are computed on OpenStreetMap data, which must be credited.
@@ -105,22 +110,6 @@ def _feeds(build) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 PLAN_TIMEOUT_SECONDS = 12
-
-
-class InstantField(serializers.DateTimeField):
-    """ISO 8601 with a UTC offset. DRF would read a time without one as UTC,
-    which is an hour or two off in Poland and ambiguous on the DST change."""
-
-    def to_internal_value(self, value):
-        try:
-            parsed = parse_datetime(value) if isinstance(value, str) else None
-        except ValueError:  # well-formed but impossible, e.g. 30 February
-            parsed = None
-        if parsed is not None and parsed.tzinfo is None:
-            raise serializers.ValidationError(
-                'Give a UTC offset.', code='planner.time_without_offset'
-            )
-        return super().to_internal_value(value)
 
 
 class FromFieldMixin:
@@ -291,11 +280,9 @@ class PlanView(PlannerPublicView):
         summary='Plan a trip',
     )
     def get(self, request):
-        query = PlanQuerySerializer(data=request.query_params)
-        query.is_valid(raise_exception=True)
         data = self.otp_query(
             planning.PLAN_DOCUMENT,
-            planning.plan_variables(query.validated_data),
+            planning.plan_variables(self.validated(PlanQuerySerializer)),
             timeout=PLAN_TIMEOUT_SECONDS,
         )
         return Response(PlanResponseSerializer(planning.plan_response(data)).data)

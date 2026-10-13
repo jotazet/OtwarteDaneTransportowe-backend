@@ -113,7 +113,7 @@ def _replace(data: dict) -> dict:
             mode=(route.get('mode') or '').lower(),
             color=route.get('color') or '',
             text_color=route.get('textColor') or '',
-            sort_key=_sort_key(route.get('shortName') or '', route.get('longName') or ''),
+            sort_key=sort_key(route.get('shortName') or '', route.get('longName') or ''),
             short_name_search=search_text(route.get('shortName') or ''),
             name_search=search_text(
                 f"{route.get('shortName') or ''} {route.get('longName') or ''}"
@@ -184,7 +184,7 @@ def _route_centres(stops: list[dict]) -> dict[str, tuple[float, float]]:
     return {route: (lat / n, lon / n) for route, (lat, lon, n) in sums.items()}
 
 
-def _sort_key(short_name: str, long_name: str) -> str:
+def sort_key(short_name: str, long_name: str) -> str:
     """Numbers first and in numeric order ("2" < "10" < "52A"), then the rest by name."""
     match = re.match(r'(\d+)(.*)', short_name)
     if match:

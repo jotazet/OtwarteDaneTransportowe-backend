@@ -319,6 +319,10 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 | `GET` | `/api/planner/v1/stop/` | public | One stop with its lines (`?id=`) |
 | `GET` | `/api/planner/v1/routes/` | public | Line search and lists |
 | `GET` | `/api/planner/v1/agencies/` | public | Operators with their ODT organization |
+| `GET` | `/api/planner/v1/stop/departures/` | public | Next departures with realtime predictions |
+| `GET` | `/api/planner/v1/stop/timetable/` | public | A stop's timetable for one day |
+| `GET` | `/api/planner/v1/route/` | public | A line with its variants (`?id=`) |
+| `GET` | `/api/planner/v1/trip/` | public | A trip on its service date with realtime (`?id=&date=`) |
 | `GET` | `/api/planner/v1/schema/` | public | OpenAPI document of the public planner API |
 | `GET` | `/api/planner/v1/docs/` | public | ReDoc for the public planner API |
 

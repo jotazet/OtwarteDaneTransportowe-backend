@@ -207,9 +207,7 @@ class LookupListView(PlannerPublicView, generics.ListAPIView):
 
     def params(self) -> dict:
         if not hasattr(self, '_params'):
-            params = self.params_class(data=self.request.query_params)
-            params.is_valid(raise_exception=True)
-            self._params = params.validated_data
+            self._params = self.validated(self.params_class)
         return self._params
 
 
@@ -297,12 +295,10 @@ class StopView(PlannerPublicView):
 
     @extend_schema(parameters=[StopParams], responses=StopDetailSerializer, summary='A stop')
     def get(self, request):
-        params = StopParams(data=request.query_params)
-        params.is_valid(raise_exception=True)
         stop = (
             IndexedStop.objects.select_related('group')
             .prefetch_related('group__stops')
-            .filter(stop_id=params.validated_data['id'])
+            .filter(stop_id=self.validated(StopParams)['id'])
             .first()
         )
         if stop is None:

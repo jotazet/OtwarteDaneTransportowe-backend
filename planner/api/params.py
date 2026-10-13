@@ -1,6 +1,7 @@
 """Query parameters shared by the public planner endpoints (docs/api/planner.md)."""
 
 from django.core.validators import RegexValidator
+from django.utils.dateparse import parse_datetime
 from rest_framework import serializers
 
 from planner import planning, search
@@ -13,6 +14,22 @@ class QueryBoolean(serializers.BooleanField):
     """A query-string flag that falls back to its default when absent (not to False)."""
 
     default_empty_html = serializers.empty
+
+
+class InstantField(serializers.DateTimeField):
+    """ISO 8601 with a UTC offset. DRF would read a time without one as UTC,
+    which is an hour or two off in Poland and ambiguous on the DST change."""
+
+    def to_internal_value(self, value):
+        try:
+            parsed = parse_datetime(value) if isinstance(value, str) else None
+        except ValueError:  # well-formed but impossible, e.g. 30 February
+            parsed = None
+        if parsed is not None and parsed.tzinfo is None:
+            raise serializers.ValidationError(
+                'Give a UTC offset.', code='planner.time_without_offset'
+            )
+        return super().to_internal_value(value)
 
 
 class FeedScopedIdField(serializers.CharField):

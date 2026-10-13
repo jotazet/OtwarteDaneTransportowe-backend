@@ -267,6 +267,12 @@ class PlannerPublicView(APIView):
     def get_exception_handler(self):
         return planner_exception_handler
 
+    def validated(self, params_class) -> dict:
+        """Query parameters checked by ``params_class``; errors become planner.invalid_request."""
+        params = params_class(data=self.request.query_params)
+        params.is_valid(raise_exception=True)
+        return params.validated_data
+
     def otp_input_errors(self, messages: list[str]) -> dict:
         """Field errors for OTP errors caused by the client's input; override per endpoint."""
         return {}

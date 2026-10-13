@@ -20,6 +20,8 @@ UPDATER_TYPES = {
     'vehicle_position': 'vehicle-positions',
     'service_alert': 'real-time-alerts',
 }
+# Every published feed is Polish; OTP needs one zone for the whole transit model.
+TRANSIT_TIME_ZONE = 'Europe/Warsaw'
 
 
 def build_config(feed_files: dict[str, str], *, osm_file: str | None = None) -> dict:
@@ -29,10 +31,10 @@ def build_config(feed_files: dict[str, str], *, osm_file: str | None = None) -> 
     feed is tested before the full build.
     """
     return {
-        'transitModelTimeZone': 'Europe/Warsaw',
+        'transitModelTimeZone': TRANSIT_TIME_ZONE,
         'transitServiceStart': TRANSIT_SERVICE_START,
         'transitServiceEnd': TRANSIT_SERVICE_END,
-        'osm': [{'source': osm_file, 'timeZone': 'Europe/Warsaw'}] if osm_file else [],
+        'osm': [{'source': osm_file, 'timeZone': TRANSIT_TIME_ZONE}] if osm_file else [],
         'dem': [],
         'transitFeeds': [
             {'type': 'gtfs', 'feedId': feed_id, 'source': name}

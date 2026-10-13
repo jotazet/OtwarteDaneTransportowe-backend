@@ -4,7 +4,7 @@ The public API of ODT's journey planner, for ODT's website and for anyone buildi
 
 The planner routes over the feeds ODT publishes with [OpenTripPlanner](https://www.opentripplanner.org/); how it works and its limits are described in [journey planner](../domain/journey-planner.md). Admin routes: [planner-admin](planner-admin.md).
 
-> Status: being built. Available now: `status/`, `plan/`, stop, line and operator search. Departures, timetables, vehicles and blocks follow.
+> Status: being built. Available now: `status/`, `plan/`, stop, line and operator search, departures, stop timetables, lines and trips. Vehicles, blocks, alerts and bike sharing follow.
 
 ## Access
 
@@ -19,7 +19,7 @@ Requests per minute, counted separately for three groups of endpoints:
 | Group | Endpoints |
 | --- | --- |
 | `plan` | trip planning |
-| `realtime` | answers computed by the routing engine: departures, timetables, trips, vehicles, alerts |
+| `realtime` | answers computed by the routing engine: departures, timetables, lines, trips (later vehicles, alerts) |
 | `lookup` | stop, line and operator search, status |
 
 Each group has a limit per client (an IP address, an IPv6 `/64`, or an API key) and a limit for all clients together. The numbers are set by ODT and may change; a client over a limit gets:
@@ -315,6 +315,102 @@ Every operator in the planner, by name: `id`, `name`, `url`, `feed_id`, `organiz
 | --- | --- | --- |
 | 400 | `planner.invalid_request` | With field codes: `planner.invalid_location` (`near`), `planner.invalid_bbox`, `planner.bbox_too_large`, `planner.invalid_id`, `planner.organization_not_found`, or DRF's generic ones. |
 | 404 | `planner.stop_not_found` | `stop/`: no stop with that ID in the planner. |
+
+## Departures, timetables, lines and trips
+
+These ask the routing engine, so they include realtime predictions and cancellations where operators publish them, and answer `503 planner.unavailable` while timetables are rebuilt. Limit group: `realtime`. Times are UTC instants; `service_date` is the timetable day a trip belongs to (for trips after midnight, the day before).
+
+### `GET /api/planner/v1/stop/departures/`
+
+The next departures from one or more stops, soonest first (by predicted time when there is one).
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `id` | required | Stop ID; repeat for every pole of a place (up to 20), e.g. the `stops` of a stop search result. |
+| `time` | now | From when; ISO 8601 with a UTC offset. |
+| `window` | `60` | Minutes after `time` to look (1–720). |
+| `limit` | `10` | Departures to return (1–50). |
+| `routes` | — | Only these lines (IDs, repeat). |
+
+```json
+{
+  "departures": [
+    {
+      "stop_id": "krk:2047470",
+      "platform": null,
+      "route": { "id": "krk:352529", "short_name": "70", "long_name": null, "mode": "tram", "color": null, "text_color": null, "agency": { "id": "krk:302", "name": "Kraków" } },
+      "trip_id": "krk:53620397_256159",
+      "service_date": "2026-10-14",
+      "headsign": "Pleszów",
+      "scheduled": "2026-10-14T06:00:00Z",
+      "estimated": "2026-10-14T06:02:00Z",
+      "delay_s": 120,
+      "realtime": true,
+      "status": "updated"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `estimated`, `delay_s` | Realtime prediction and its difference from the timetable in seconds; `null` without realtime data (`realtime: false`). |
+| `status` | `scheduled` (no realtime data), `updated` (predicted), `canceled` (still listed, so a board can show it), `added` (not in the timetable), `modified`. |
+
+The answer is not paged: ask for later departures with a later `time`. With `routes`, the engine is asked per line variant, so other lines cannot take all `limit` places. Stops where passengers cannot board are left out. If none of the IDs is a known stop: `404 planner.stop_not_found`.
+
+### `GET /api/planner/v1/stop/timetable/`
+
+Every scheduled departure of one stop on one day, by line and headsign (a line's variants with the same headsign are merged).
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `id` | required | Stop ID. |
+| `date` | today in Poland | Service date, `YYYY-MM-DD`. |
+| `routes` | — | Only these lines; with one line this is that line's timetable at the stop. |
+
+```json
+{
+  "stop": { "id": "krk:2047470", "name": "Starowiślna", "platform": null },
+  "date": "2026-10-14",
+  "lines": [
+    {
+      "route": { "id": "krk:352529", "short_name": "70", "long_name": null, "mode": "tram", "color": null, "text_color": null, "agency": { "id": "krk:302", "name": "Kraków" } },
+      "headsign": "Pleszów",
+      "departures": [
+        { "time": "2026-10-14T03:00:00Z", "trip_id": "krk:53620001_256159", "canceled": false }
+      ]
+    }
+  ]
+}
+```
+
+Lines are in timetable order (numbers numerically). `canceled` is `true` for a run cancelled in realtime today. Departures after midnight belong to the day they were scheduled on, with their real instant.
+
+A `date` the served timetables do not cover: `404 planner.date_outside_service_period` with `details.first_date` and `details.last_date` (about one day back to two months ahead).
+
+### `GET /api/planner/v1/route/?id=krk:352529`
+
+A line with its variants (stop sequences, both directions).
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `id` | required | Line ID. |
+| `geometry` | `false` | `true`: each variant's path as an encoded polyline in `geometry`. |
+
+The answer has the line fields of `routes/` plus `variants[]`: `headsign`, `direction_id` (`0`/`1` as in GTFS, or `null` when the feed gives none), `stops[]` (`id`, `name`, `lat`, `lon`, `platform`) and `geometry`. Per direction, the variant with the most stops comes first. An unknown ID: `404 planner.route_not_found`.
+
+### `GET /api/planner/v1/trip/?id=…&date=2026-10-14`
+
+One trip on its service date, with every stop and realtime predictions.
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `id` | required | Trip ID (`trip_id` of a departure or a plan leg). |
+| `date` | today in Poland | Its `service_date`. |
+| `geometry` | `false` | `true`: the trip's path in `geometry`. |
+
+The answer: `id`, `headsign`, `direction_id`, `block_id` (the vehicle's block, if the feed has one), `route`, `service_date`, `realtime` (any prediction on the trip), `calls[]` with `stop` and `arrival`/`departure` (`scheduled`, `estimated`, `delay_s`), and `geometry`. An unknown trip: `404 planner.trip_not_found`; a date outside the timetables: `404 planner.date_outside_service_period` (as for `stop/timetable/`); a trip that does not run that day: `404 planner.trip_not_on_date`.
 
 ## Versioning
 
