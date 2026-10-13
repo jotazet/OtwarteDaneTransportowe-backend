@@ -186,6 +186,7 @@ POST /api/planner/admin/builds/{id}/activate/
 | `feed_results[].outcome` | `fresh`, `stale`, `excluded` (see [journey planner](../domain/journey-planner.md#build-outcomes-per-feed)) |
 | `feed_results[].error_code` | `planner.feed_not_published`, `planner.feed_source_unavailable`, `planner.feed_invalid`, `planner.feed_no_service_in_period` |
 | `feed_results[].realtime_skipped` | `[{feed_id, endpoint_type, error_code: "planner.rt_url_blocked"}]` |
+| `feed_results[].realtime_polled` | OTP updaters configured for the feed: `stop-time-updater`, `vehicle-positions`, `real-time-alerts` (empty for a `stale` feed). |
 | `error_code` (build) | `planner.no_feeds`, `planner.osm_missing`, `planner.osm_preparation_failed`, `planner.street_build_failed`, `planner.graph_build_failed`, `planner.build_out_of_memory`, `planner.graph_missing`, `planner.activation_failed`, `planner.docker_unavailable`, `planner.build_interrupted`, `planner.build_failed` |
 
 `log_excerpt` texts are OTP's own log output for operators and are not translated.

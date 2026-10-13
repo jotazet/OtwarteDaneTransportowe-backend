@@ -137,7 +137,7 @@ class GraphBuild(models.Model):
     indexed_at = models.DateTimeField(null=True, blank=True)
 
     # One entry per planner feed: planner_feed, feed_id, submission, outcome,
-    # sha256, version_at, error_code, log_excerpt, realtime_skipped.
+    # sha256, version_at, error_code, log_excerpt, realtime_skipped, realtime_polled.
     feed_results = models.JSONField(default=list, blank=True)
     # One entry per enabled rental source: rental_source, network, submission,
     # outcome (included or skipped), error_code.
@@ -434,6 +434,9 @@ class IndexedStop(models.Model):
     mode = models.TextField(blank=True)
     station_id = models.TextField(blank=True)
     route_ids = ArrayField(models.TextField(), default=list)
+    # Which way vehicles leave the pole, degrees clockwise from north, from the
+    # lines' paths (planner/search_index.py); None when its lines disagree.
+    heading = models.PositiveSmallIntegerField(null=True, blank=True)
 
     class Meta:
         ordering = ['stop_id']

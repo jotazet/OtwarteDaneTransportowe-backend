@@ -12,9 +12,8 @@ from django.db.models import Case, ExpressionWrapper, F, FloatField, Q, QuerySet
 from django.db.models.functions import Least, Power, Sqrt
 
 from planner.models import IndexedAgency, IndexedRoute, IndexedStop, IndexedStopGroup
-from planner.search_index import EARTH_RADIUS_M, search_text
+from planner.search_index import METERS_PER_DEGREE, search_text
 
-METERS_PER_DEGREE = math.pi * EARTH_RADIUS_M / 180
 # Ranking weights: name similarity is 0..1; a name starting with the query, a
 # busy stop (many lines) and nearness to `near` lift a result.
 PREFIX_BONUS = 0.3

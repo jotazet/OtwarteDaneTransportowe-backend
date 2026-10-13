@@ -101,6 +101,22 @@ def otp_index(monkeypatch):
                 {'gtfsId': 'krk:t3', 'blockId': None},
             ],
         }
+        # Tram 70 leaves Rondo Mogilskie (krk:1) eastwards along its path.
+        patterns = {
+            'krk': [
+                {
+                    'stops': [
+                        {'gtfsId': 'krk:1', 'lat': 50.0650, 'lon': 19.9580},
+                        {'gtfsId': 'krk:4', 'lat': 50.0480, 'lon': 19.9350},
+                    ],
+                    'patternGeometry': {
+                        'points': search_index_encode(
+                            [(50.0650, 19.9580), (50.0650, 19.9600), (50.0480, 19.9350)]
+                        )
+                    },
+                }
+            ]
+        }
         error = None
 
         def query(self, document, variables=None, timeout=None):
@@ -108,6 +124,8 @@ def otp_index(monkeypatch):
                 raise self.error
             if document == search_index.BLOCK_TRIPS_DOCUMENT:
                 return {'trips': self.trips.get(variables['feeds'][0], [])}
+            if document == search_index.PATTERNS_DOCUMENT:
+                return {'routes': [{'patterns': self.patterns.get(variables['feeds'][0], [])}]}
             return copy.deepcopy(self.answer)
 
     fake = Fake()
@@ -133,6 +151,21 @@ def indexed(otp_index, active_build, make_feed):
     PlannerSettings.objects.update_or_create(pk=1, defaults={'public_api_enabled': True})
     assert search_index.refresh_active()
     return feed.submission.transport_organization
+
+
+def search_index_encode(points):
+    """Google's polyline encoding, for paths in the fake OTP answers."""
+    out, last = [], (0, 0)
+    for lat, lon in points:
+        for value, previous in zip((round(lat * 1e5), round(lon * 1e5)), last, strict=True):
+            delta = value - previous
+            delta = ~(delta << 1) if delta < 0 else delta << 1
+            while delta >= 0x20:
+                out.append(chr((0x20 | (delta & 0x1F)) + 63))
+                delta >>= 5
+            out.append(chr(delta + 63))
+        last = (round(lat * 1e5), round(lon * 1e5))
+    return ''.join(out)
 
 
 def get(path, params=None):
@@ -334,6 +367,7 @@ def test_stops_in_a_map_area_are_single_poles(indexed):
         'lon': 19.958,
         'mode': 'tram',
         'station_id': None,
+        'heading': 90,
     }
 
 
@@ -451,3 +485,75 @@ def test_lookups_answer_while_otp_is_stopped_for_a_build(indexed):
 
     assert get('stops/search/', {'q': 'rondo'}).status_code == 200
     assert get('plan/', {'from': 'krk:1', 'to': 'krk:4'}).status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Stop headings (direction arrows)
+# ---------------------------------------------------------------------------
+
+
+def test_polylines_decode_as_otp_writes_them():
+    # Google's reference example.
+    assert search_index.decode_polyline('_p~iF~ps|U_ulLnnqC_mqNvxq`@') == [
+        (38.5, -120.2),
+        (40.7, -120.95),
+        (43.252, -126.453),
+    ]
+
+
+def pole(stop_id, lon):
+    return {'gtfsId': stop_id, 'lat': 50.0, 'lon': lon}
+
+
+def headings_for(monkeypatch, *patterns):
+    monkeypatch.setattr(
+        otp_runtime,
+        'query',
+        lambda document, variables=None, timeout=None: {'routes': [{'patterns': list(patterns)}]},
+    )
+    return search_index.stop_headings(['f'])
+
+
+def test_a_pole_points_where_its_lines_leave_and_a_terminus_where_they_arrive(monkeypatch):
+    eastbound = {'stops': [pole('f:a', 19.000), pole('f:b', 19.001), pole('f:end', 19.002)]}
+
+    headings = headings_for(monkeypatch, eastbound)
+
+    assert headings == {'f:a': 90, 'f:b': 90, 'f:end': 90}
+
+
+def test_the_path_beats_a_straight_line_to_the_next_stop(monkeypatch):
+    # Leaves north along the street, then turns east to the next stop.
+    pattern = {
+        'stops': [pole('f:a', 19.000), {'gtfsId': 'f:b', 'lat': 50.0005, 'lon': 19.002}],
+        'patternGeometry': {
+            'points': search_index_encode([(50.0, 19.0), (50.0005, 19.0), (50.0005, 19.002)])
+        },
+    }
+
+    assert headings_for(monkeypatch, pattern)['f:a'] == 0
+
+
+def test_a_pole_served_both_ways_gets_no_heading(monkeypatch):
+    eastbound = {'stops': [pole('f:mid', 19.001), pole('f:east', 19.002)]}
+    westbound = {'stops': [pole('f:mid', 19.001), pole('f:west', 19.000)]}
+
+    headings = headings_for(monkeypatch, eastbound, westbound)
+
+    assert 'f:mid' not in headings
+    assert (headings['f:east'], headings['f:west']) == (90, 270)
+
+
+def test_a_pole_just_before_a_turn_points_along_its_own_street(monkeypatch):
+    # East along the street past the pole, then south at the corner 7 m further.
+    pattern = {
+        'stops': [
+            {'gtfsId': 'f:a', 'lat': 50.0, 'lon': 19.0002},
+            {'gtfsId': 'f:b', 'lat': 49.999, 'lon': 19.0003},
+        ],
+        'patternGeometry': {
+            'points': search_index_encode([(50.0, 19.0), (50.0, 19.0003), (49.999, 19.0003)])
+        },
+    }
+
+    assert headings_for(monkeypatch, pattern)['f:a'] == 90

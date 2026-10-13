@@ -9,9 +9,10 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+from django.core.cache import cache
 from django.utils import timezone
 
-from planner import otp_runtime
+from planner import otp_runtime, schedules
 from planner.planning import utc
 from planner.schedules import ROUTE_FIELDS, route_summary
 
@@ -118,3 +119,98 @@ def matching(rows, bbox=None, modes=None, agency_ids=None, route_ids=None) -> li
     if route_ids:
         rows = [r for r in rows if r['route']['id'] in route_ids]
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Coverage: how many of an operator's trips under way report a position
+# ---------------------------------------------------------------------------
+
+_RUN = """
+  trip { gtfsId }
+  realTimeTripState { canceled }
+  start { schedule { time { ... on ArrivalDepartureTime { departure } } }
+          realTime { departure { time } } }
+  end { schedule { time { ... on ArrivalDepartureTime { arrival } } }
+        realTime { arrival { time } } }
+"""
+# Yesterday's service day too: its trips after midnight are under way today.
+RUNNING_DOCUMENT = f"""
+query Running($agency: String!, $today: LocalDate!, $yesterday: LocalDate!) {{
+  agency(id: $agency) {{
+    gtfsId name
+    routes {{
+      patterns {{
+        today: tripsOnServiceDate(serviceDate: $today) {{ {_RUN} }}
+        yesterday: tripsOnServiceDate(serviceDate: $yesterday) {{ {_RUN} }}
+      }}
+    }}
+  }}
+}}
+"""
+# Every trip of the operator for two days (MPK Kraków: 33k trips, ~10 MB, 0.8 s),
+# so the answer is reused for a minute, and while one request recounts, the
+# others use the previous count.
+RUNNING_CACHE_SECONDS = 60
+RUNNING_PREVIOUS_SECONDS = 600
+
+
+def running_trips(agency_id: str, graph_id: int, query) -> dict | None:
+    """``{'agency': {id, name}, 'trips': [IDs of its trips under way]}``; None if unknown.
+
+    Under way: started and not yet finished now, by predicted times where the
+    operator gives them; trips cancelled in realtime are not counted. Cached per
+    served graph, whose trip IDs they are.
+    """
+    key = f'planner:running:{graph_id}:{agency_id}'
+    cached = cache.get(key)
+    if cached is not None:
+        return cached or None
+    previous = cache.get(f'{key}:previous')
+    if previous is not None and not cache.add(f'{key}:lock', 1, RUNNING_CACHE_SECONDS):
+        return previous or None
+    try:
+        today = schedules.today()
+        data = query(
+            RUNNING_DOCUMENT,
+            {
+                'agency': agency_id,
+                'today': today.isoformat(),
+                'yesterday': (today - timedelta(days=1)).isoformat(),
+            },
+        )
+        agency = data.get('agency')
+        result = (
+            {
+                'agency': {'id': agency['gtfsId'], 'name': agency['name']},
+                'trips': sorted(_under_way(agency, timezone.now())),
+            }
+            if agency
+            else {}
+        )
+        cache.set(key, result, RUNNING_CACHE_SECONDS)
+        cache.set(f'{key}:previous', result, RUNNING_PREVIOUS_SECONDS)
+    finally:
+        cache.delete(f'{key}:lock')
+    return result or None
+
+
+def _under_way(agency: dict, now: datetime) -> set[str]:
+    trips = set()
+    for route in agency.get('routes') or []:
+        for pattern in route.get('patterns') or []:
+            for run in (pattern.get('today') or []) + (pattern.get('yesterday') or []):
+                if (run.get('realTimeTripState') or {}).get('canceled'):
+                    continue
+                began = _time(run.get('start'), 'departure')
+                ends = _time(run.get('end'), 'arrival')
+                if began and ends and began <= now <= ends:
+                    trips.add(run['trip']['gtfsId'])
+    return trips
+
+
+def _time(call: dict | None, which: str) -> datetime | None:
+    call = call or {}
+    value = ((call.get('realTime') or {}).get(which) or {}).get('time') or (
+        (call.get('schedule') or {}).get('time') or {}
+    ).get(which)
+    return datetime.fromisoformat(value) if value else None

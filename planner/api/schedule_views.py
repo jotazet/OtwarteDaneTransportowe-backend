@@ -27,7 +27,7 @@ from planner.api.params import (
     organization_list,
 )
 from planner.api.public_views import AgencySummarySerializer
-from planner.models import SCOPE_ID_PATTERN, IndexedBlockTrip, IndexedRoute
+from planner.models import SCOPE_ID_PATTERN, GraphBuild, IndexedBlockTrip, IndexedRoute
 
 SCHEDULE_TIMEOUT_SECONDS = 10
 STATUSES = ['scheduled', 'updated', 'canceled', 'added', 'modified']
@@ -305,6 +305,40 @@ class RentalParams(serializers.Serializer):
     )
 
 
+class CoverageSerializer(serializers.Serializer):
+    agency = AgencySummarySerializer()
+    vehicle_positions = serializers.BooleanField(
+        help_text='Whether the planner receives this operator\'s vehicle positions at all.'
+    )
+    trips_under_way = serializers.IntegerField(help_text='Trips running now (predicted times).')
+    trips_with_position = serializers.IntegerField(
+        help_text='Of those, how many a vehicle reports its position for.'
+    )
+    coverage = serializers.FloatField(
+        allow_null=True,
+        help_text='trips_with_position / trips_under_way; null when none run or no positions.',
+    )
+
+
+class CoverageParams(serializers.Serializer):
+    agencies = id_list(help_text='Operator IDs.')
+    organizations = organization_list(help_text='ODT organization IDs (all their operators).')
+
+    def validate(self, attrs):
+        agency_ids = agency_filter(attrs.get('agencies'), attrs.get('organizations'))
+        if not agency_ids:
+            # Counting an operator's trips is heavy: only for the operators asked about.
+            raise serializers.ValidationError(
+                {'agencies': ['Name the operators.']}, code='required'
+            )
+        if len(agency_ids) > MAX_IDS:
+            raise serializers.ValidationError(
+                {'organizations': ['Too many operators.']}, code='max_length'
+            )
+        attrs['agency_ids'] = agency_ids
+        return attrs
+
+
 class AlertParams(serializers.Serializer):
     routes = id_list(help_text='About these lines (or their trips).')
     stops = id_list(help_text='About these stops.')
@@ -556,3 +590,59 @@ class RentalListView(LookupListView):
         return rentals.matching(
             rentals.rentals(data), set(params.get('networks') or []), params.get('form_factors')
         )
+
+
+@extend_schema(parameters=[CoverageParams], summary='Position coverage of operators')
+class VehicleCoverageView(LookupListView):
+    """How many of the chosen operators' trips under way now report a vehicle position.
+
+    Trips counted as under way are refreshed once a minute; vehicles as in vehicles/.
+    """
+
+    params_class = CoverageParams
+    serializer_class = CoverageSerializer
+    limit_group = 'realtime'
+    uses_otp = True
+
+    def get_queryset(self):
+        agency_ids = self.params()['agency_ids']
+        graph = GraphBuild.objects.filter(is_active=True).values('id', 'feed_results').first()
+        if graph is None:
+            return []
+        # Feeds OTP polls vehicle positions for: the others report none by design
+        # (no GTFS-RT positions, realtime off, or served from a stale snapshot).
+        with_positions = {
+            result['feed_id']
+            for result in graph['feed_results']
+            if 'vehicle-positions' in (result.get('realtime_polled') or [])
+        }
+
+        def query(document, variables):
+            return self.otp_query(document, variables, timeout=SCHEDULE_TIMEOUT_SECONDS)
+
+        try:
+            reporting = {row['trip_id'] for row in vehicles.snapshot(query)}
+        except otp_runtime.OtpBusy:
+            raise PlannerError(
+                'planner.busy', 503, retry_after=OTP_BUSY_RETRY_AFTER_SECONDS
+            ) from None
+        rows = []
+        for agency_id in agency_ids:
+            running = vehicles.running_trips(agency_id, graph['id'], query)
+            if running is None:
+                continue  # not an operator of the served graph
+            positions = agency_id.split(':', 1)[0] in with_positions
+            under_way = len(running['trips'])
+            with_position = len(reporting.intersection(running['trips']))
+            rows.append(
+                {
+                    'agency': running['agency'],
+                    'vehicle_positions': positions,
+                    'trips_under_way': under_way,
+                    'trips_with_position': with_position,
+                    'coverage': (
+                        round(with_position / under_way, 4) if positions and under_way else None
+                    ),
+                }
+            )
+        return rows

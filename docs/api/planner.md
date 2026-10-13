@@ -278,7 +278,7 @@ Best matches first: name similarity, then names starting with `q`, places with m
 }
 ```
 
-`routes` are sorted by mode, then number. `stops[].code` is the code shown to passengers when the feed has one; `station_id` is the GTFS parent station (mostly railway).
+`routes` are sorted by mode, then number. `stops[].code` is the code shown to passengers when the feed has one; `station_id` is the GTFS parent station (mostly railway). `stops[].heading` is the direction vehicles leave the pole, in degrees clockwise from north (for an arrow on the map); `null` when its lines leave in different directions (a pole served both ways) or none is known. It is the direction of the lines' path where the pole stands, so it follows the street, not a straight line to the next stop.
 
 ### `GET /api/planner/v1/stops/nearby/`
 
@@ -513,6 +513,27 @@ Paged like `stops/`. Each result:
 ```
 
 `kind` is `station` or `vehicle`. Stations have `vehicles_available`, `spaces_available` (`null` when unknown or unlimited), `vehicle_types` with counts and `dropoff_now`; free vehicles have `battery_percent` and `range_m` when the operator reports them. Names are the operator's.
+
+### `GET /api/planner/v1/vehicles/coverage/`
+
+How many of the chosen operators' trips under way now report a vehicle position: for a note such as "97% of trips show their position".
+
+| Parameter | Meaning |
+| --- | --- |
+| `agencies`, `organizations` | Required (one of them): operator IDs or ODT organization IDs, at most 20 operators in all. Counting trips is heavy, so only for operators asked about. |
+
+```json
+{ "count": 1, "next": null, "previous": null,
+  "results": [ { "agency": { "id": "krk:302", "name": "Kraków" }, "vehicle_positions": true,
+                 "trips_under_way": 591, "trips_with_position": 575, "coverage": 0.9729 } ] }
+```
+
+- `trips_under_way`: trips that have started and not yet finished now, by predicted times where the operator gives them (a delayed trip still counts), including trips after midnight from the previous service day; trips cancelled in realtime do not count.
+- `trips_with_position`: of those, how many a vehicle reports its position for (as in `vehicles/`). A vehicle waiting for a later trip does not count.
+- `vehicle_positions`: whether the planner receives the operator's vehicle positions at all. `false` when the operator publishes none, or its feed is currently served from an older version (which gets no realtime data); `coverage` is then `null`, not 0.
+- `coverage`: their ratio, `null` when nothing runs (at night) or `vehicle_positions` is `false`.
+
+Trips under way are recounted at most once a minute per operator (while one request recounts, others get the previous count); vehicles every 10 seconds. Operators not in the planner are left out.
 
 ### `GET /api/planner/v1/alerts/`
 

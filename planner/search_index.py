@@ -43,11 +43,25 @@ INDEX_DOCUMENT = """
 BLOCK_TRIPS_DOCUMENT = """
 query BlockTrips($feeds: [String]) { trips(feeds: $feeds) { gtfsId blockId } }
 """
+# Per feed: every line variant's stops and path, for the poles' headings.
+PATTERNS_DOCUMENT = """
+query Patterns($feeds: [String]) {
+  routes(feeds: $feeds) { patterns { stops { gtfsId lat lon } patternGeometry { points } } }
+}
+"""
 # All of Poland is ~93k stops (~20 MB of JSON); Małopolska answered in 0.15 s.
 INDEX_TIMEOUT_SECONDS = 120
+# A pole's heading is the direction of the path segment it stands on (the
+# street), not a line to the next stop: that was off by more than 45 degrees at
+# 13% of Kraków's poles. Segments shorter than this are joined with the next.
+HEADING_MIN_SEGMENT_M = 10
+# Poles whose lines leave in directions this inconsistent (circular mean
+# resultant length, 0..1) get no heading: e.g. served both ways.
+HEADING_MIN_AGREEMENT = 0.5
 # Poles with the same name this close to each other are one place in search.
 GROUP_RADIUS_M = 400
 EARTH_RADIUS_M = 6_371_000
+METERS_PER_DEGREE = math.pi * EARTH_RADIUS_M / 180
 BATCH_SIZE = 5000
 
 
@@ -69,17 +83,17 @@ def refresh_active() -> bool:
     if build is None:
         return False
     data = otp_runtime.query(INDEX_DOCUMENT, timeout=INDEX_TIMEOUT_SECONDS)
+    feed_ids = [feed['feedId'] for feed in data.get('feeds') or []]
+    headings = stop_headings(feed_ids)
     with transaction.atomic():
-        counts = _replace(data)
-        counts['block_trips'] = _replace_block_trips(
-            [feed['feedId'] for feed in data.get('feeds') or []]
-        )
+        counts = _replace(data, headings)
+        counts['block_trips'] = _replace_block_trips(feed_ids)
         GraphBuild.objects.filter(pk=build.pk).update(indexed_at=timezone.now())
     logger.info('Planner search index refreshed for build %s: %s', build.id, counts)
     return True
 
 
-def _replace(data: dict) -> dict:
+def _replace(data: dict, headings: dict[str, int]) -> dict:
     # Children first, so the cascades find nothing left to delete.
     IndexedStop.objects.all().delete()
     IndexedStopGroup.objects.all().delete()
@@ -168,6 +182,7 @@ def _replace(data: dict) -> dict:
                 mode=(stop.get('vehicleMode') or '').lower(),
                 station_id=(stop.get('parentStation') or {}).get('gtfsId') or '',
                 route_ids=sorted(r['gtfsId'] for r in stop.get('routes') or []),
+                heading=headings.get(stop['gtfsId']),
             )
             for group, cluster in zip(groups, members, strict=True)
             for stop in cluster
@@ -199,6 +214,127 @@ def _replace_block_trips(feed_ids: list[str]) -> int:
             IndexedBlockTrip.objects.bulk_create(batch)
             count += len(batch)
     return count
+
+
+def stop_headings(feed_ids: list[str]) -> dict[str, int]:
+    """Stop ID -> the direction vehicles leave it, from every line variant calling there.
+
+    A pole where no variant departs (only terminating) takes the arriving
+    direction instead.
+    """
+    departing, arriving = defaultdict(list), defaultdict(list)
+    for feed_id in feed_ids:
+        try:
+            data = otp_runtime.query(
+                PATTERNS_DOCUMENT, {'feeds': [feed_id]}, timeout=INDEX_TIMEOUT_SECONDS
+            )
+        except otp_runtime.OtpUnavailable:
+            # Headings are only arrows on a map: the index goes on without them.
+            logger.warning('No stop headings for feed %s', feed_id, exc_info=True)
+            continue
+        for route in data.get('routes') or []:
+            for pattern in route.get('patterns') or []:
+                _pattern_headings(pattern, departing, arriving)
+    headings = {}
+    for stop_id in departing.keys() | arriving.keys():
+        heading = _mean_direction(departing.get(stop_id) or arriving[stop_id])
+        if heading is not None:
+            headings[stop_id] = heading
+    return headings
+
+
+def _pattern_headings(pattern: dict, departing: dict, arriving: dict) -> None:
+    """The direction of the path where each stop of a line variant stands.
+
+    The last stop's counts as arriving: used only where no variant departs.
+    """
+    stops = pattern.get('stops') or []
+    points = (pattern.get('patternGeometry') or {}).get('points')
+    path = decode_polyline(points) if points else [(s['lat'], s['lon']) for s in stops]
+    if len(path) < 2:
+        return
+    segment = 0
+    for number, stop in enumerate(stops):
+        segment = _nearest_segment(path, (stop['lat'], stop['lon']), segment)
+        end = next(
+            (
+                index
+                for index in range(segment + 1, len(path))
+                if _distance(path[segment], path[index]) >= HEADING_MIN_SEGMENT_M
+            ),
+            None,
+        )
+        if end is None:
+            continue  # the path ends within a few metres
+        side = arriving if number == len(stops) - 1 else departing
+        side[stop['gtfsId']].append(_bearing(path[segment], path[end]))
+
+
+def _nearest_segment(path, position, start: int) -> int:
+    """Index of the path segment (path[i] -> path[i + 1]) nearest to a stop.
+
+    Stops come in path order, so the search goes on from the previous stop's
+    segment and stops once the path has run well past a close match.
+    """
+    best, best_distance = start, math.inf
+    for index in range(start, len(path) - 1):
+        distance = _distance_to_segment(position, path[index], path[index + 1])
+        if distance < best_distance:
+            best, best_distance = index, distance
+        elif best_distance < 100 and distance > best_distance + 1500:
+            break
+    return best
+
+
+def _distance_to_segment(point, a, b) -> float:
+    """Metres from a point to the segment a-b, on a local flat approximation."""
+    x_scale = math.cos(math.radians(point[0]))
+    ax, ay = (a[1] - point[1]) * x_scale, a[0] - point[0]
+    bx, by = (b[1] - point[1]) * x_scale, b[0] - point[0]
+    dx, dy = bx - ax, by - ay
+    length = dx * dx + dy * dy
+    t = min(1.0, max(0.0, -(ax * dx + ay * dy) / length)) if length else 0.0
+    return math.hypot(ax + t * dx, ay + t * dy) * METERS_PER_DEGREE
+
+
+def _bearing(a: tuple[float, float], b: tuple[float, float]) -> float:
+    lat1, lon1, lat2, lon2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    x = math.sin(lon2 - lon1) * math.cos(lat2)
+    y = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(lon2 - lon1)
+    return math.degrees(math.atan2(x, y)) % 360
+
+
+def _mean_direction(angles: list[float]) -> int | None:
+    x = sum(math.sin(math.radians(angle)) for angle in angles)
+    y = sum(math.cos(math.radians(angle)) for angle in angles)
+    if math.hypot(x, y) / len(angles) < HEADING_MIN_AGREEMENT:
+        return None
+    return round(math.degrees(math.atan2(x, y))) % 360
+
+
+def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return distance_m(a[0], a[1], b[0], b[1])
+
+
+def decode_polyline(points: str) -> list[tuple[float, float]]:
+    """Google's encoded polyline (precision 5), as OTP writes paths, to (lat, lon) pairs."""
+    coordinates, index, lat, lon = [], 0, 0, 0
+    while index < len(points):
+        deltas = []
+        for _ in range(2):
+            shift = result = 0
+            while True:
+                byte = ord(points[index]) - 63
+                index += 1
+                result |= (byte & 0x1F) << shift
+                shift += 5
+                if byte < 0x20:
+                    break
+            deltas.append(~(result >> 1) if result & 1 else result >> 1)
+        lat += deltas[0]
+        lon += deltas[1]
+        coordinates.append((lat / 1e5, lon / 1e5))
+    return coordinates
 
 
 def _route_centres(stops: list[dict]) -> dict[str, tuple[float, float]]:

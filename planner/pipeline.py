@@ -65,6 +65,8 @@ class Candidate:
     error_code: str = ''
     log_excerpt: str = ''
     realtime_skipped: list = field(default_factory=list)
+    # OTP updater types polled for the feed, e.g. 'vehicle-positions'.
+    realtime_polled: list = field(default_factory=list)
 
     def result(self) -> dict:
         return {
@@ -77,6 +79,7 @@ class Candidate:
             'error_code': self.error_code,
             'log_excerpt': self.log_excerpt,
             'realtime_skipped': self.realtime_skipped,
+            'realtime_polled': self.realtime_polled,
         }
 
 
@@ -277,7 +280,9 @@ def _build_and_activate(build: GraphBuild, workdir: str) -> None:
         [c.feed for c in fresh if c.feed.include_realtime]
     )
     for candidate in fresh:
-        candidate.realtime_skipped = [s for s in skipped if s['feed_id'] == candidate.feed.feed_id]
+        feed_id = candidate.feed.feed_id
+        candidate.realtime_skipped = [s for s in skipped if s['feed_id'] == feed_id]
+        candidate.realtime_polled = sorted({u['type'] for u in updaters if u['feedId'] == feed_id})
     _record_results(build, candidates)
     rental, build.rental_results = otp_config.rental_updaters(
         PlannerRentalSource.objects.filter(is_enabled=True).prefetch_related(

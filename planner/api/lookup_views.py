@@ -78,6 +78,10 @@ class StopSerializer(serializers.Serializer):
     lon = serializers.FloatField()
     mode = OptionalText()
     station_id = OptionalText(help_text='GTFS parent station, if any.')
+    heading = serializers.IntegerField(
+        allow_null=True,
+        help_text='Which way vehicles leave the pole: degrees clockwise from north.',
+    )
 
 
 # Lines by ID from the serializer context, loaded once per page (see routes_by_id).
