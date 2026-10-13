@@ -47,6 +47,7 @@ One concept, one name. Code uses the **English term**; the Polish UI uses the **
 | API key (`ApiKey`) | Klucz API | Issued by an admin to a developer; raises the rate limits. Only its hash is stored. |
 | Rate limit | Limit zapytań | Requests per minute per client, per key and for all clients, in the groups `plan`, `realtime`, `lookup`. |
 | IP ban (`IpBan`) | Blokada IP | A blocked address or network, optionally until a date. |
+| Rental source (`PlannerRentalSource`) | System rowerów/hulajnóg na minuty *confirm* | A published GBFS feed (bike or scooter sharing) the planner routes with, under a fixed `network` name. |
 | Search index (`Indexed*`) | Indeks wyszukiwarki *confirm* | Operators, lines, stops and block membership of the served graph, copied from OTP into Postgres after each build. |
 | Place (`IndexedStopGroup`) | Zespół przystankowy *confirm* | Poles (stops) with the same name close together, e.g. all of "Rondo Mogilskie"; what stop search returns. |
 | Pole / stop (`IndexedStop`) | Przystanek (słupek) *confirm* | One GTFS stop: a platform or one direction's pole. |

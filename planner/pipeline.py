@@ -25,7 +25,7 @@ from django.utils import timezone
 from data_manager.models import completed_submission_ids
 from data_manager.net_security import OutboundURLBlocked, safe_download
 from planner import osm, otp_config, otp_runtime, search_index
-from planner.models import GraphBuild, PlannerFeed
+from planner.models import GraphBuild, PlannerFeed, PlannerRentalSource
 
 logger = logging.getLogger(__name__)
 
@@ -201,12 +201,20 @@ def _build_and_activate(build: GraphBuild, workdir: str) -> None:
     for candidate in fresh:
         candidate.realtime_skipped = [s for s in skipped if s['feed_id'] == candidate.feed.feed_id]
     _record_results(build, candidates)
+    rental, build.rental_results = otp_config.rental_updaters(
+        PlannerRentalSource.objects.filter(is_enabled=True).prefetch_related(
+            'submission__endpoints'
+        )
+    )
+    build.save(update_fields=['rental_results'])
 
     target = graph_dir(build)
     os.makedirs(target, exist_ok=True)
     os.replace(os.path.join(workdir, 'graph.obj'), os.path.join(target, 'graph.obj'))
     _write_json(os.path.join(target, 'otp-config.json'), otp_config.otp_config())
-    _write_json(os.path.join(target, 'router-config.json'), otp_config.router_config(updaters))
+    _write_json(
+        os.path.join(target, 'router-config.json'), otp_config.router_config(updaters + rental)
+    )
     _activate(build, [c.feed.feed_id for c in included], fresh=fresh)
 
 

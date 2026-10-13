@@ -210,11 +210,14 @@ def test_answer_is_mapped_to_utc_instants_ids_and_cursors(otp):
         'lon': 19.9373,
         'stop_id': None,
         'platform': None,
+        'rental_station_id': None,
+        'rental_vehicle_id': None,
     }
     assert walk['to']['stop_id'] == 'krk:2047470'
-    assert (walk['mode'], walk['route'], walk['realtime'], walk['stops']) == (
+    assert (walk['mode'], walk['route'], walk['realtime'], walk['rented'], walk['stops']) == (
         'walk',
         None,
+        False,
         False,
         [],
     )

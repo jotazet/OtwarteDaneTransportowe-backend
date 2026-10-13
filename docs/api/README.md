@@ -292,6 +292,9 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 |--------|----------|-------------|------|
 | `GET` | `/api/planner/admin/feed-candidates/` | `Admin` | Published GTFS feeds that can be added to the planner |
 | `GET/POST` | `/api/planner/admin/feeds/` | `Admin` | Feeds included in the planner graph |
+| `GET` | `/api/planner/admin/rental-candidates/` | `Admin` | Published GBFS feeds that can be added to the planner |
+| `GET/POST` | `/api/planner/admin/rental-sources/` | `Admin` | Bike and scooter sharing feeds the planner routes with |
+| `GET/PATCH/DELETE` | `/api/planner/admin/rental-sources/{id}/` | `Admin` | One rental source (`network` cannot change) |
 | `GET/PATCH/DELETE` | `/api/planner/admin/feeds/{id}/` | `Admin` | One planner feed (`feed_id` cannot change) |
 | `GET/POST` | `/api/planner/admin/builds/` | `Admin` | Graph builds; `POST` builds now (`202`, `409` while one runs) |
 | `GET` | `/api/planner/admin/builds/{id}/` | `Admin` | Build with per-feed outcomes and log excerpt |
@@ -326,6 +329,7 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 | `GET` | `/api/planner/v1/trip/block/` | public | Every trip of a trip's block (brigade) on a day |
 | `GET` | `/api/planner/v1/vehicles/` | public | Vehicles reporting their position now |
 | `GET` | `/api/planner/v1/alerts/` | public | Operators' service alerts, by line, stop or operator |
+| `GET` | `/api/planner/v1/rentals/` | public | Bike and scooter sharing stations and vehicles in an area |
 | `GET` | `/api/planner/v1/schema/` | public | OpenAPI document of the public planner API |
 | `GET` | `/api/planner/v1/docs/` | public | ReDoc for the public planner API |
 

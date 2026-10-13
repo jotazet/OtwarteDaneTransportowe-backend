@@ -44,6 +44,7 @@ def request_rollback(target: GraphBuild, user=None) -> GraphBuild:
         rollback_of=target.rollback_of or target,
         otp_image=target.otp_image,
         feed_results=target.feed_results,
+        rental_results=target.rental_results,
     )
 
 

@@ -13,6 +13,7 @@ from planner.api.schedule_views import (
     AlertListView,
     BlockView,
     DeparturesView,
+    RentalListView,
     RouteView,
     StopTimetableView,
     TripView,
@@ -34,5 +35,6 @@ urlpatterns = [
     path('trip/block/', BlockView.as_view(), name='planner-v1-block'),
     path('vehicles/', VehicleListView.as_view(), name='planner-v1-vehicles'),
     path('alerts/', AlertListView.as_view(), name='planner-v1-alerts'),
+    path('rentals/', RentalListView.as_view(), name='planner-v1-rentals'),
     path('agencies/', AgencyListView.as_view(), name='planner-v1-agencies'),
 ]

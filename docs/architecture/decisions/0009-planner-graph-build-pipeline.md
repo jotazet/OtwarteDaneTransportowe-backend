@@ -27,6 +27,7 @@ The planner graph (OTP) is built from the published GTFS feeds an admin selects,
     - OTP's network does not reach Postgres, Redis or the Docker proxy;
     - sources with credentials are always proxied, so OTP never holds secrets.
   - Remaining risks: DNS rebinding after the check, and no response size cap beyond OTP's memory limit.
+  - **Bike and scooter sharing (GBFS)** works the same way with one more gap: OTP reads `gbfs.json` from the catalogue's link and then follows the provider's own links inside it, which are not checked. Sources that need credentials (an `auth_type`, or user and password in the URL) are skipped (`planner.rental_source_requires_auth`), since the linked files would need them too.
   - Feeds served from a `stale` snapshot get no realtime updaters, because live data refers to the newest schedule.
 
 ## Consequences

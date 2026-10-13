@@ -2,12 +2,19 @@ import ipaddress
 
 from rest_framework import serializers
 
-from data_manager.models import FeedSubmission, completed_submission_ids
+from data_manager.models import (
+    FeedSubmission,
+    RealtimeSubmission,
+    completed_realtime_submission_ids,
+    completed_submission_ids,
+)
+from planner import otp_config
 from planner.models import (
     ApiKey,
     GraphBuild,
     IpBan,
     PlannerFeed,
+    PlannerRentalSource,
     PlannerRequestLog,
     PlannerSettings,
 )
@@ -75,6 +82,78 @@ class PlannerFeedSerializer(serializers.ModelSerializer):
         return submission
 
 
+class PlannerRentalSourceSerializer(serializers.ModelSerializer):
+    submission_name = serializers.CharField(source='submission.name', read_only=True)
+    organization = serializers.SerializerMethodField()
+    active_result = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PlannerRentalSource
+        fields = [
+            'id',
+            'submission',
+            'submission_name',
+            'organization',
+            'network',
+            'is_enabled',
+            'active_result',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+
+    def get_organization(self, obj):
+        return _organization(obj.submission)
+
+    def get_active_result(self, obj):
+        """This source's outcome in the build being served (included or skipped)."""
+        return self.context.get('active_results', {}).get(obj.id)
+
+    def validate_network(self, value):
+        if self.instance is not None and value != self.instance.network:
+            # Every station and vehicle ID served by the planner starts with it.
+            raise serializers.ValidationError(
+                'network cannot change.', code='planner.network_immutable'
+            )
+        return value
+
+    def validate_submission(self, submission):
+        if submission.protocol != RealtimeSubmission.PROTOCOL_GBFS:
+            raise serializers.ValidationError('Only GBFS feeds.', code='planner.feed_not_gbfs')
+        if submission.id not in completed_realtime_submission_ids():
+            raise serializers.ValidationError(
+                'The feed is not published.', code='planner.feed_not_published'
+            )
+        endpoint = submission.endpoints.filter(endpoint_type='gbfs').first()
+        if endpoint is None:
+            raise serializers.ValidationError(
+                'No gbfs.json endpoint.', code='planner.rental_source_without_gbfs'
+            )
+        if otp_config.gbfs_needs_credentials(endpoint):
+            raise serializers.ValidationError(
+                'Needs credentials.', code='planner.rental_source_requires_auth'
+            )
+        return submission
+
+
+class RentalCandidateSerializer(serializers.ModelSerializer):
+    """A published GBFS submission, with its rental source if it is already included."""
+
+    organization = serializers.SerializerMethodField()
+    rental_source = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RealtimeSubmission
+        fields = ['id', 'name', 'organization', 'rental_source']
+
+    def get_organization(self, obj):
+        return _organization(obj)
+
+    def get_rental_source(self, obj):
+        source = getattr(obj, 'planner_rental_source', None)
+        return source.id if source else None
+
+
 class FeedCandidateSerializer(serializers.ModelSerializer):
     """A published GTFS submission, with its planner feed if it is already included."""
 
@@ -118,7 +197,12 @@ class GraphBuildSerializer(serializers.ModelSerializer):
 
 class GraphBuildDetailSerializer(GraphBuildSerializer):
     class Meta(GraphBuildSerializer.Meta):
-        fields = [*GraphBuildSerializer.Meta.fields, 'feed_results', 'log_excerpt']
+        fields = [
+            *GraphBuildSerializer.Meta.fields,
+            'feed_results',
+            'rental_results',
+            'log_excerpt',
+        ]
         read_only_fields = fields
 
 

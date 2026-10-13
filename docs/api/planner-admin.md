@@ -68,6 +68,43 @@ Field error codes: `planner.feed_not_gtfs`, `planner.feed_not_published`, `plann
 
 Changes take effect at the next build.
 
+## Bike and scooter sharing (rental sources)
+
+Published GBFS feeds the planner routes with: OTP polls them at the endpoint's ODT interval, and `plan/` can use their bikes and scooters.
+
+```http
+GET    /api/planner/admin/rental-candidates/
+GET    /api/planner/admin/rental-sources/
+POST   /api/planner/admin/rental-sources/
+GET    /api/planner/admin/rental-sources/{id}/
+PATCH  /api/planner/admin/rental-sources/{id}/
+DELETE /api/planner/admin/rental-sources/{id}/
+```
+
+`rental-candidates/` lists published GBFS submissions (`id`, `name`, `organization`, `rental_source`: the source's ID if already added). A source:
+
+```json
+{
+  "id": 1,
+  "submission": 41,
+  "submission_name": "Dott Oświęcim",
+  "organization": { "id": 9, "name": "Dott", "region": "Oświęcim" },
+  "network": "dott-oswiecim",
+  "is_enabled": true,
+  "active_result": { "rental_source": 1, "network": "dott-oswiecim", "submission": 41, "outcome": "included", "error_code": "" },
+  "created_at": "2026-10-13T10:00:00Z",
+  "updated_at": "2026-10-13T10:00:00Z"
+}
+```
+
+| Field | Notes |
+| --- | --- |
+| `submission` | A published `RealtimeSubmission` with protocol `gbfs` and a `gbfs` (main file) endpoint. |
+| `network` | OTP's rental network, the prefix of every station and vehicle ID (`dott-oswiecim:…`). Same format as `feed_id`. **Cannot change** after creation. |
+| `active_result` | This source's entry in the build being served: `outcome` `included` or `skipped` with `error_code` `planner.rental_source_not_published`, `planner.rental_source_without_gbfs`, `planner.rental_source_requires_auth` or `planner.rt_url_blocked`. |
+
+Field error codes: `planner.feed_not_gbfs`, `planner.feed_not_published`, `planner.rental_source_without_gbfs`, `planner.rental_source_requires_auth` (on `submission`); `planner.invalid_network`, `planner.network_immutable`, `unique` (on `network`). Changes take effect at the next build. Sources that need credentials cannot be used: OTP follows the provider's links inside `gbfs.json` itself.
+
 ## Graph builds
 
 ```http
@@ -96,6 +133,7 @@ POST /api/planner/admin/builds/{id}/activate/
   "is_active": true,
   "indexed_at": "2026-10-14T01:56:25Z",
   "error_code": "",
+  "rental_results": [],
   "feed_results": [
     { "planner_feed": 3, "feed_id": "kml", "submission": 38, "outcome": "stale", "sha256": "…",
       "version_at": "2026-10-13T02:00:00Z", "error_code": "planner.feed_invalid",

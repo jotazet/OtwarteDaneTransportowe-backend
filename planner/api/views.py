@@ -8,7 +8,12 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from data_manager.models import FeedSubmission, completed_submission_ids
+from data_manager.models import (
+    FeedSubmission,
+    RealtimeSubmission,
+    completed_realtime_submission_ids,
+    completed_submission_ids,
+)
 from OtwarteDaneTransportowe.auth_roles import RequiresAdminGroup
 from planner import access, otp_runtime, request_logs, services
 from planner.api.serializers import (
@@ -20,8 +25,10 @@ from planner.api.serializers import (
     GraphBuildSerializer,
     IpBanSerializer,
     PlannerFeedSerializer,
+    PlannerRentalSourceSerializer,
     PlannerRequestLogSerializer,
     PlannerSettingsSerializer,
+    RentalCandidateSerializer,
     RequestLogFilterSerializer,
     TopClientsFilterSerializer,
 )
@@ -30,6 +37,7 @@ from planner.models import (
     GraphBuild,
     IpBan,
     PlannerFeed,
+    PlannerRentalSource,
     PlannerRequestLog,
     PlannerSettings,
 )
@@ -78,6 +86,43 @@ class FeedCandidateListView(generics.ListAPIView):
         return (
             FeedSubmission.objects.filter(data_type='gtfs', id__in=completed_submission_ids())
             .select_related('transport_organization', 'planner_feed')
+            .order_by(
+                'transport_organization__region',
+                'transport_organization__transport_organization',
+                'id',
+            )
+        )
+
+
+class PlannerRentalSourceViewSet(viewsets.ModelViewSet):
+    """Bike and scooter sharing (GBFS) feeds the planner routes with."""
+
+    permission_classes = [RequiresAdminGroup]
+    serializer_class = PlannerRentalSourceSerializer
+    queryset = PlannerRentalSource.objects.select_related('submission__transport_organization')
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        active = GraphBuild.objects.filter(is_active=True).only('rental_results').first()
+        context['active_results'] = {
+            result['rental_source']: result for result in (active.rental_results if active else [])
+        }
+        return context
+
+
+class RentalCandidateListView(generics.ListAPIView):
+    """Published GBFS feeds the admin can add to the planner."""
+
+    permission_classes = [RequiresAdminGroup]
+    serializer_class = RentalCandidateSerializer
+
+    def get_queryset(self):
+        return (
+            RealtimeSubmission.objects.filter(
+                protocol=RealtimeSubmission.PROTOCOL_GBFS,
+                id__in=completed_realtime_submission_ids(),
+            )
+            .select_related('transport_organization', 'planner_rental_source')
             .order_by(
                 'transport_organization__region',
                 'transport_organization__transport_organization',

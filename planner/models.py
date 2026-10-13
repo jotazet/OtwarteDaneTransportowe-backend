@@ -11,6 +11,10 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
+# Feed IDs and rental networks: lowercase letters, digits and hyphens. They
+# prefix every ID the API exposes.
+SCOPE_ID_PATTERN = r'^[a-z0-9][a-z0-9-]{1,31}$'
+
 
 class PlannerFeed(models.Model):
     """A published static GTFS feed that the admin included in the planner graph."""
@@ -32,7 +36,7 @@ class PlannerFeed(models.Model):
     feed_id = models.CharField(
         max_length=32,
         unique=True,
-        validators=[RegexValidator(r'^[a-z0-9][a-z0-9-]{1,31}$', code='planner.invalid_feed_id')],
+        validators=[RegexValidator(SCOPE_ID_PATTERN, code='planner.invalid_feed_id')],
     )
     is_enabled = models.BooleanField(default=True)
     include_realtime = models.BooleanField(default=True)
@@ -51,6 +55,37 @@ class PlannerFeed(models.Model):
 
     def __str__(self):
         return f'PlannerFeed({self.feed_id}, submission={self.submission_id})'
+
+
+class PlannerRentalSource(models.Model):
+    """A published GBFS feed (bike or scooter sharing) the planner may route with.
+
+    GBFS stands alone (no static feed); OTP polls it through a vehicle-rental
+    updater generated at every build.
+    """
+
+    submission = models.OneToOneField(
+        'data_manager.RealtimeSubmission',
+        on_delete=models.CASCADE,
+        related_name='planner_rental_source',
+    )
+    # OTP's rental network: the prefix of every station and vehicle ID the API
+    # exposes, so it never changes once created.
+    network = models.CharField(
+        max_length=32,
+        unique=True,
+        validators=[RegexValidator(SCOPE_ID_PATTERN, code='planner.invalid_network')],
+    )
+    is_enabled = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['network']
+
+    def __str__(self):
+        return f'PlannerRentalSource({self.network}, submission={self.submission_id})'
 
 
 class GraphBuild(models.Model):
@@ -104,6 +139,9 @@ class GraphBuild(models.Model):
     # One entry per planner feed: planner_feed, feed_id, submission, outcome,
     # sha256, version_at, error_code, log_excerpt, realtime_skipped.
     feed_results = models.JSONField(default=list, blank=True)
+    # One entry per enabled rental source: rental_source, network, submission,
+    # outcome (included or skipped), error_code.
+    rental_results = models.JSONField(default=list, blank=True)
     error_code = models.CharField(max_length=64, blank=True, default='')
     log_excerpt = models.TextField(blank=True, default='')
 

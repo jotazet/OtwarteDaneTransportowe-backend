@@ -6,12 +6,13 @@ unavailable while OTP is stopped for a graph build.
 
 from datetime import timedelta
 
+from django.core.validators import RegexValidator
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 
-from planner import alerts, otp_runtime, schedules, vehicles
+from planner import alerts, otp_runtime, rentals, schedules, vehicles
 from planner.access import OTP_BUSY_RETRY_AFTER_SECONDS, PlannerError, PlannerPublicView
 from planner.api.lookup_views import LookupListView, MapPagination
 from planner.api.params import (
@@ -26,12 +27,23 @@ from planner.api.params import (
     organization_list,
 )
 from planner.api.public_views import AgencySummarySerializer
-from planner.models import IndexedBlockTrip, IndexedRoute
+from planner.models import SCOPE_ID_PATTERN, IndexedBlockTrip, IndexedRoute
 
 SCHEDULE_TIMEOUT_SECONDS = 10
 STATUSES = ['scheduled', 'updated', 'canceled', 'added', 'modified']
 # Vehicles are filtered in memory, so a larger area than for stops costs nothing.
 VEHICLE_MAX_BBOX_DEGREES = 1.0
+# OTP's FormFactor values (GBFS form_factor), lowercase.
+FORM_FACTORS = [
+    'bicycle',
+    'cargo_bicycle',
+    'car',
+    'moped',
+    'scooter',
+    'scooter_standing',
+    'scooter_seated',
+    'other',
+]
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +262,47 @@ class VehicleParams(OperatorFilter):
         help_text='`min_lon,min_lat,max_lon,max_lat`, at most 1° a side.',
     )
     routes = id_list(help_text='Only these lines.')
+
+
+class RentalVehicleTypeSerializer(serializers.Serializer):
+    form_factor = serializers.CharField(allow_null=True)
+    propulsion = serializers.CharField(allow_null=True)
+    count = serializers.IntegerField(allow_null=True)
+
+
+class RentalPlaceSerializer(serializers.Serializer):
+    kind = serializers.ChoiceField(choices=['station', 'vehicle'])
+    id = serializers.CharField(help_text='`<network>:<id>`.')
+    network = serializers.CharField(allow_null=True)
+    name = serializers.CharField(allow_null=True)
+    lat = serializers.FloatField()
+    lon = serializers.FloatField()
+    vehicles_available = serializers.IntegerField(allow_null=True, help_text='Stations only.')
+    spaces_available = serializers.IntegerField(allow_null=True, help_text='Stations only.')
+    vehicle_types = RentalVehicleTypeSerializer(many=True)
+    pickup_now = serializers.BooleanField(allow_null=True)
+    dropoff_now = serializers.BooleanField(allow_null=True, help_text='Stations only.')
+    battery_percent = serializers.IntegerField(allow_null=True, help_text='Vehicles only.')
+    range_m = serializers.IntegerField(allow_null=True, help_text='Vehicles only.')
+
+
+class RentalParams(serializers.Serializer):
+    bbox = BboxField(
+        VEHICLE_MAX_BBOX_DEGREES, help_text='`min_lon,min_lat,max_lon,max_lat`, at most 1° a side.'
+    )
+    networks = serializers.ListField(
+        child=serializers.CharField(
+            validators=[RegexValidator(SCOPE_ID_PATTERN, code='planner.invalid_network')]
+        ),
+        max_length=MAX_IDS,
+        required=False,
+        help_text='Only these sharing systems.',
+    )
+    form_factors = serializers.ListField(
+        child=serializers.ChoiceField(choices=FORM_FACTORS),
+        required=False,
+        help_text='Only these vehicle kinds; repeat.',
+    )
 
 
 class AlertParams(serializers.Serializer):
@@ -481,3 +534,25 @@ class AlertListView(LookupListView):
             alerts.ALERTS_DOCUMENT, {'feeds': feeds}, timeout=SCHEDULE_TIMEOUT_SECONDS
         )
         return alerts.matching(alerts.alerts(data, timezone.now()), route_ids, stop_ids, agency_ids)
+
+
+@extend_schema(parameters=[RentalParams], summary='Bike and scooter sharing')
+class RentalListView(LookupListView):
+    """Sharing stations and free vehicles in an area, with what can be rented there now."""
+
+    params_class = RentalParams
+    serializer_class = RentalPlaceSerializer
+    pagination_class = MapPagination
+    limit_group = 'realtime'
+    uses_otp = True
+
+    def get_queryset(self):
+        params = self.params()
+        data = self.otp_query(
+            rentals.RENTALS_DOCUMENT,
+            rentals.bbox_variables(params['bbox']),
+            timeout=SCHEDULE_TIMEOUT_SECONDS,
+        )
+        return rentals.matching(
+            rentals.rentals(data), set(params.get('networks') or []), params.get('form_factors')
+        )

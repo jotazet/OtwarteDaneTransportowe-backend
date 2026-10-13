@@ -42,6 +42,13 @@ Error codes stored per feed: `planner.feed_not_published`, `planner.feed_source_
 - **No walking directions.** OTP's step-by-step instructions name unnamed paths in English ("path", "sidewalk"), which would be backend prose; legs carry only the geometry. OTP's labels "Origin" and "Destination" for requested points are dropped for the same reason.
 - **Routing errors** are OTP's `RoutingErrorCode` values, lowercased and prefixed (`planner.location_not_found`). See [the API reference](../api/planner.md#routing-errors).
 
+## Bike and scooter sharing (GBFS)
+
+- **Sources.** An admin includes a published GBFS submission (`PlannerRentalSource`) under a `network` name, which prefixes every station and vehicle ID (`dott-oswiecim:…`) and never changes. GBFS stands alone, without a static feed. On 2026-10-12 the catalogue had no GBFS feed; development used Dott's public feed for Oświęcim (94 scooters, 18 parking hubs).
+- **Configuration.** Each build gives OTP a `vehicle-rental` updater per source, polling `gbfs.json` at the endpoint's ODT interval. OTP then reads the files `gbfs.json` links to from the provider directly, so sources that need credentials are skipped.
+- **Routing.** `plan/?rental=` lets OTP add renting to walking for access, egress and direct trips; it is allowed, never forced. Geofencing (no-parking zones) is off, OTP's default, because it is experimental and slows OTP's start ([OTP: GBFS](https://docs.opentripplanner.org/en/v2.10.0/GBFS-Config/)); a trip may end a scooter ride where the operator does not allow parking.
+- **Docks.** OTP reports a station without a dock limit as 2147483647 free spaces; the API returns `null`.
+
 ## Search
 
 - **Source.** After a graph goes live, the planner worker copies its operators, lines and stops from OTP into Postgres (`planner/search_index.py`), replacing the previous copy in one transaction. Search therefore shows exactly what the planner routes on and keeps working while OTP is stopped for a build. If OTP does not answer, the previous copy stays and the watchdog retries every 5 minutes. On the Małopolska test graph (7,773 stops) the copy took 1 s.

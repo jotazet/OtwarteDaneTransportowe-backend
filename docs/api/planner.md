@@ -4,7 +4,7 @@ The public API of ODT's journey planner, for ODT's website and for anyone buildi
 
 The planner routes over the feeds ODT publishes with [OpenTripPlanner](https://www.opentripplanner.org/); how it works and its limits are described in [journey planner](../domain/journey-planner.md). Admin routes: [planner-admin](planner-admin.md).
 
-> Status: being built. Available now: `status/`, `plan/`, stop, line and operator search, departures, stop timetables, lines, trips, blocks, vehicles and alerts. Bike sharing follows.
+> Status: being built. Available now: `status/`, `plan/` (with bike and scooter sharing), stop, line and operator search, departures, stop timetables, lines, trips, blocks, vehicles, alerts and sharing stations and vehicles.
 
 ## Access
 
@@ -19,7 +19,7 @@ Requests per minute, counted separately for three groups of endpoints:
 | Group | Endpoints |
 | --- | --- |
 | `plan` | trip planning |
-| `realtime` | answers computed by the routing engine: departures, timetables, lines, trips, blocks, vehicles, alerts |
+| `realtime` | answers computed by the routing engine: departures, timetables, lines, trips, blocks, vehicles, alerts, sharing |
 | `lookup` | stop, line and operator search, status |
 
 Each group has a limit per client (an IP address, an IPv6 `/64`, or an API key) and a limit for all clients together. The numbers are set by ODT and may change; a client over a limit gets:
@@ -79,6 +79,9 @@ Whether the planner answers now, which graph it serves and from which feeds. It 
       "version_at": "2026-10-13T03:00:12Z"
     }
   ],
+  "rental_networks": [
+    { "network": "dott-oswiecim", "organization": { "id": 9, "name": "Dott", "region": "Oświęcim" }, "license": "" }
+  ],
   "attribution": [
     { "source": "openstreetmap", "license": "ODbL-1.0", "url": "https://www.openstreetmap.org/copyright" }
   ]
@@ -91,6 +94,7 @@ Whether the planner answers now, which graph it serves and from which feeds. It 
 | `reason` | `disabled`, `maintenance`, `no_graph` or `null`. |
 | `feeds[].outcome` | `fresh`: the newest published version. `stale`: an older version, because the newest could not be used; realtime data is not applied to it. |
 | `feeds[].version_at` | When that version of the feed was obtained. |
+| `rental_networks` | Bike and scooter sharing systems the planner uses (`network` prefixes their station and vehicle IDs), with publisher and licence. |
 
 ## `GET /api/planner/v1/plan/`
 
@@ -120,6 +124,7 @@ GET /api/planner/v1/plan/?from=50.0617,19.9373&to=krk:2047513&time=2026-10-14T08
 | `realtime` | `true` | `false`: plan on the timetable only, ignoring delays and cancellations. |
 | `num_itineraries` | `5` | 1–10 itineraries per page. |
 | `cursor` | — | `next_cursor` or `previous_cursor` of an earlier answer, with the same other parameters: later or earlier departures. |
+| `rental` | — | Shared vehicles the trip may use to reach or leave transit, or instead of it: `bicycle`, `scooter` (repeat). Renting is allowed, not required. Only systems ODT includes in the planner (see `rentals/`). |
 | `stops` | `false` | `true`: list the stops of every transit leg. |
 | `geometry` | `false` | `true`: return every leg's path in `geometry`; otherwise it is `null`. Paths are most of the answer's size. |
 
@@ -201,6 +206,7 @@ An unknown `from` or `to` stop is not a parameter error: the answer is `200` wit
 | `start`, `end`, `*.scheduled`, `*.estimated` | UTC instants; convert to local time for display. |
 | `legs[].mode` | `walk` or a transit mode from `modes`. |
 | `legs[].from.name`, `legs[].to.name` | Stop name; `null` for the coordinates you sent. |
+| `legs[].rented`, `from.rental_vehicle_id`, `from.rental_station_id`, `to.rental_station_id` | A leg on a shared bike or scooter (`mode` `bicycle` or `scooter`), where it was picked up (a free vehicle or a station) and where it is left. |
 | `legs[].start.estimated`, `delay_s` | The realtime prediction and its difference from the timetable in seconds (negative: early); `null` without realtime data. `realtime` is `true` when the leg has a prediction. |
 | `legs[].route.color`, `text_color` | Hex colour without `#`, as in the feed; often `null`. |
 | `legs[].trip_id`, `service_date` | Identify the vehicle's trip on that day (`service_date` is the timetable day, which for trips after midnight can be the day before). |
@@ -475,6 +481,38 @@ Paged like `stops/` (default 500, at most 2000 a page). Each result:
 ```
 
 `label` is the number painted on the vehicle; `heading` degrees clockwise from north; `stop_status` (`incoming_at`, `stopped_at`, `in_transit_to`) refers to `stop`. Some operators report a vehicle waiting for its first trip of the day under that trip, at the depot with speed 0. Follow `trip_id` to `trip/` and `trip/block/`.
+
+### `GET /api/planner/v1/rentals/`
+
+Bike and scooter sharing in an area: stations and free-floating vehicles, with what can be rented now.
+
+| Parameter | Meaning |
+| --- | --- |
+| `bbox` | Required: `min_lon,min_lat,max_lon,max_lat`, at most 1° a side. |
+| `networks` | Only these sharing systems (the prefix of IDs, e.g. `dott-oswiecim`). |
+| `form_factors` | Only these vehicle kinds: `bicycle`, `cargo_bicycle`, `car`, `moped`, `scooter`, `scooter_standing`, `scooter_seated`, `other` (GBFS values). `scooter` includes standing and seated ones. |
+
+Paged like `stops/`. Each result:
+
+```json
+{
+  "kind": "vehicle",
+  "id": "dott-oswiecim:00891b1c-04ba-4d3d-ab5b-c9c7f85ea10f",
+  "network": "dott-oswiecim",
+  "name": "Default vehicle type",
+  "lat": 50.055518,
+  "lon": 19.22716,
+  "vehicles_available": null,
+  "spaces_available": null,
+  "vehicle_types": [{ "form_factor": "scooter", "propulsion": "electric", "count": 1 }],
+  "pickup_now": true,
+  "dropoff_now": null,
+  "battery_percent": 52,
+  "range_m": 9240
+}
+```
+
+`kind` is `station` or `vehicle`. Stations have `vehicles_available`, `spaces_available` (`null` when unknown or unlimited), `vehicle_types` with counts and `dropoff_now`; free vehicles have `battery_percent` and `range_m` when the operator reports them. Names are the operator's.
 
 ### `GET /api/planner/v1/alerts/`
 

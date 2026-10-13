@@ -54,8 +54,15 @@ query Plan(
           serviceDate
           start { scheduledTime estimated { time delay } }
           end { scheduledTime estimated { time delay } }
-          from { name lat lon stop { gtfsId platformCode } }
-          to { name lat lon stop { gtfsId platformCode } }
+          rentedBike
+          from {
+            name lat lon stop { gtfsId platformCode }
+            vehicleRentalStation { stationId } rentalVehicle { vehicleId }
+          }
+          to {
+            name lat lon stop { gtfsId platformCode }
+            vehicleRentalStation { stationId } rentalVehicle { vehicleId }
+          }
           route { gtfsId shortName longName color textColor }
           agency { gtfsId name }
           trip { gtfsId }
@@ -92,6 +99,8 @@ TRANSIT_MODES = {
     'gondola': 'GONDOLA',
     'monorail': 'MONORAIL',
 }
+# Shared vehicles (GBFS) the trip may use to reach, leave or replace transit.
+RENTAL_MODES = {'bicycle': 'BICYCLE_RENTAL', 'scooter': 'SCOOTER_RENTAL'}
 # m/s. Presets rather than any number: OTP caches transfers per set of walking
 # preferences, so a few fixed values keep that cache (and memory) bounded.
 WALK_SPEEDS = {'slow': 1.0, 'normal': 1.33, 'fast': 1.7}
@@ -142,10 +151,16 @@ def plan_variables(params: dict) -> dict:
     if params.get('time'):
         key = 'latestArrival' if params['arrive_by'] else 'earliestDeparture'
         variables['dateTime'] = {key: params['time'].isoformat()}
+    modes = {}
     if params.get('modes'):
-        variables['modes'] = {
-            'transit': {'transit': [{'mode': TRANSIT_MODES[m]} for m in params['modes']]}
-        }
+        modes['transit'] = {'transit': [{'mode': TRANSIT_MODES[m]} for m in params['modes']]}
+    if params.get('rental'):
+        # With WALK, renting is allowed, not required (OTP's PlanModesInput).
+        street = ['WALK', *(RENTAL_MODES[kind] for kind in params['rental'])]
+        modes['direct'] = street
+        modes.setdefault('transit', {}).update(access=street, egress=street)
+    if modes:  # never null: OTP 2.10 fails on an explicit null
+        variables['modes'] = modes
     if params.get('via'):
         variables['via'] = [{'visit': {'stopLocationIds': [stop]}} for stop in params['via']]
 
@@ -245,6 +260,7 @@ def _leg(leg: dict) -> dict:
         'service_date': leg.get('serviceDate'),
         'headsign': leg.get('headsign'),
         'realtime': leg['start'].get('estimated') is not None,
+        'rented': bool(leg.get('rentedBike')),
         'geometry': (leg.get('legGeometry') or {}).get('points'),
         'alerts': [_alert(alert) for alert in leg.get('alerts') or []],
         'stops': (
@@ -263,6 +279,8 @@ def _place(place: dict) -> dict:
         'lon': place['lon'],
         'stop_id': stop.get('gtfsId'),
         'platform': stop.get('platformCode'),
+        'rental_station_id': (place.get('vehicleRentalStation') or {}).get('stationId'),
+        'rental_vehicle_id': (place.get('rentalVehicle') or {}).get('vehicleId'),
     }
 
 

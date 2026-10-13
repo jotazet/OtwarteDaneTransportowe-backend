@@ -13,7 +13,7 @@ from planner.api.params import (
     id_list,
     organization_list,
 )
-from planner.models import GraphBuild, PlannerFeed
+from planner.models import GraphBuild, PlannerFeed, PlannerRentalSource
 
 # Routing results are computed on OpenStreetMap data, which must be credited.
 OSM_ATTRIBUTION = {
@@ -31,6 +31,12 @@ class StatusFeedSerializer(serializers.Serializer):
     version_at = serializers.DateTimeField(allow_null=True)
 
 
+class StatusRentalSerializer(serializers.Serializer):
+    network = serializers.CharField()
+    organization = serializers.DictField()
+    license = serializers.CharField(allow_blank=True)
+
+
 class StatusSerializer(serializers.Serializer):
     available = serializers.BooleanField()
     reason = serializers.ChoiceField(
@@ -38,6 +44,7 @@ class StatusSerializer(serializers.Serializer):
     )
     graph = serializers.DictField(allow_null=True)
     feeds = StatusFeedSerializer(many=True)
+    rental_networks = StatusRentalSerializer(many=True)
     attribution = serializers.ListField(child=serializers.DictField())
 
 
@@ -66,6 +73,7 @@ class StatusView(PlannerPublicView):
                 'reason': reason,
                 'graph': _graph(active),
                 'feeds': _feeds(active),
+                'rental_networks': _rental_networks(active),
                 'attribution': [OSM_ATTRIBUTION],
             }
         )
@@ -92,17 +100,35 @@ def _feeds(build) -> list[dict]:
         rows.append(
             {
                 'feed_id': feed.feed_id,
-                'organization': {
-                    'id': org.id,
-                    'name': org.transport_organization,
-                    'region': org.region,
-                },
+                'organization': _organization(org),
                 'license': (entry.license if entry else '') or '',
                 'outcome': results[feed.id]['outcome'],
                 'version_at': results[feed.id]['version_at'],
             }
         )
     return sorted(rows, key=lambda row: row['feed_id'])
+
+
+def _rental_networks(build) -> list[dict]:
+    """Sharing systems OTP polls in the served graph, with their publisher and licence."""
+    if build is None:
+        return []
+    included = [r['rental_source'] for r in build.rental_results if r['outcome'] == 'included']
+    sources = PlannerRentalSource.objects.filter(id__in=included).select_related(
+        'submission__transport_organization'
+    )
+    return [
+        {
+            'network': source.network,
+            'organization': _organization(source.submission.transport_organization),
+            'license': source.submission.license or '',
+        }
+        for source in sorted(sources, key=lambda source: source.network)
+    ]
+
+
+def _organization(org) -> dict:
+    return {'id': org.id, 'name': org.transport_organization, 'region': org.region}
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +174,11 @@ class PlanQuerySerializer(FromFieldMixin, serializers.Serializer):
     cursor = serializers.CharField(
         max_length=1024, required=False, help_text='`next_cursor` or `previous_cursor` of a result.'
     )
+    rental = serializers.ListField(
+        child=serializers.ChoiceField(choices=list(planning.RENTAL_MODES)),
+        required=False,
+        help_text='Shared vehicles the trip may use (bike and scooter sharing); repeat.',
+    )
     stops = QueryBoolean(default=False, help_text='List the stops of every transit leg.')
     geometry = QueryBoolean(default=False, help_text="Return every leg's path.")
 
@@ -189,6 +220,8 @@ class PlaceSerializer(serializers.Serializer):
     lon = serializers.FloatField()
     stop_id = serializers.CharField(allow_null=True)
     platform = serializers.CharField(allow_null=True)
+    rental_station_id = serializers.CharField(allow_null=True)
+    rental_vehicle_id = serializers.CharField(allow_null=True)
 
 
 class LegTimeSerializer(serializers.Serializer):
@@ -240,6 +273,7 @@ class LegSerializer(FromFieldMixin, serializers.Serializer):
     service_date = serializers.DateField(allow_null=True)
     headsign = serializers.CharField(allow_null=True)
     realtime = serializers.BooleanField()
+    rented = serializers.BooleanField(help_text='Ridden on a shared bike or scooter.')
     geometry = serializers.CharField(allow_null=True, help_text='Encoded polyline (precision 5).')
     alerts = AlertSerializer(many=True)
     stops = StopCallSerializer(many=True, allow_null=True)
