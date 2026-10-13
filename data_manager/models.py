@@ -1,7 +1,6 @@
 import os
 from datetime import timedelta
 
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.files.storage import FileSystemStorage
@@ -116,10 +115,15 @@ class FetchControlMixin:
 
 
 class OverwriteStorage(FileSystemStorage):
-    def get_available_name(self, name, max_length=None):
-        if self.exists(name):
-            os.remove(os.path.join(settings.MEDIA_ROOT, name))
-        return name
+    """Saves a new version of a file under the same name, rewriting it in place.
+
+    Django's own overwrite (truncate on open) instead of deleting the old file
+    first: two saves of one file at once (e.g. overlapping validations writing
+    report.json) made the second delete fail or remove the first's new file.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(allow_overwrite=True, **kwargs)
 
 
 def feed_file_path(instance, filename):
