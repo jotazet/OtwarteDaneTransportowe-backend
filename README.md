@@ -33,6 +33,14 @@ Then open:
 - App: `http://localhost:8000/`
 - Django admin: `http://localhost:8000/admin/`
 
+The journey planner (OpenTripPlanner, ~7 GB of RAM) is opt-in:
+
+```bash
+COMPOSE_PROFILES=planner docker compose up --build
+```
+
+It needs an OSM extract in `planner_data/osm/region.osm.pbf` (a region such as Małopolska is enough locally); see [Journey planner](docs/deployment.md#19-journey-planner-opentripplanner).
+
 ## Common tasks
 
 ### Create an admin user

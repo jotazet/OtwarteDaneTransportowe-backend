@@ -26,6 +26,7 @@ from drf_spectacular.views import (
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
+from rest_framework.permissions import AllowAny
 
 from data_manager.api.views import PublicFeedDownloadView, RealtimePublicFeedDownloadView
 from OtwarteDaneTransportowe.auth_roles import AdminGroupOrDebug
@@ -58,6 +59,23 @@ urlpatterns = [
     path('api/blog/', include('blog.api.urls')),
     path('api/data_manager/', include('data_manager.api.urls')),
     path('api/users/', include('accounts.api.urls')),
+    path('api/planner/admin/', include('planner.api.urls')),
+    # Public journey planner API with its own OpenAPI document (public, unlike /api/schema/).
+    path(
+        'api/planner/v1/schema/',
+        SpectacularAPIView.as_view(
+            urlconf='planner.api.schema_urls',
+            custom_settings={'TITLE': 'ODT journey planner API', 'VERSION': '1'},
+            permission_classes=[AllowAny],
+        ),
+        name='planner-schema',
+    ),
+    path(
+        'api/planner/v1/docs/',
+        SpectacularRedocView.as_view(url_name='planner-schema', permission_classes=[AllowAny]),
+        name='planner-docs',
+    ),
+    path('api/planner/v1/', include('planner.api.public_urls')),
     path('api/auth/token/', RolesInTokenObtainPairView.as_view(), name='token-obtain-pair'),
     path('api/auth/token/refresh/', ThrottledTokenRefreshView.as_view(), name='token-refresh'),
 ]

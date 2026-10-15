@@ -438,3 +438,47 @@ def test_failed_validation_leaves_no_workdirs(settings, tmp_path, monkeypatch, o
 
     leftovers = list(tmp_path.rglob('validation_report_*'))
     assert leftovers == [], f'leaked validator workdirs: {leftovers}'
+
+
+# ---------------------------------------------------------------------------
+# OverwriteStorage
+# ---------------------------------------------------------------------------
+
+
+def test_overwrite_storage_replaces_a_file_under_the_same_name(settings, tmp_path):
+    from data_manager.models import OverwriteStorage
+
+    settings.MEDIA_ROOT = str(tmp_path)
+    storage = OverwriteStorage()
+
+    first = storage.save('7/validation/report.json', ContentFile(b'{"run": 1}'))
+    second = storage.save('7/validation/report.json', ContentFile(b'{"run": 2}'))
+
+    assert first == second == '7/validation/report.json'
+    assert (tmp_path / '7/validation/report.json').read_bytes() == b'{"run": 2}'
+
+
+def test_overwrite_storage_survives_a_concurrent_save_of_the_same_file(settings, tmp_path):
+    """Two validations of one feed save its report.json at once (upload, proxy
+    refresh, manual retry). One must not crash because the other replaced the
+    file between its existence check and its write (seen as a flaky CI failure
+    of test_overlapping_gtfs_validations_record_the_stage_change_once)."""
+    from unittest.mock import patch
+
+    from data_manager.models import OverwriteStorage
+
+    settings.MEDIA_ROOT = str(tmp_path)
+    storage = OverwriteStorage()
+    storage.save('7/validation/report.json', ContentFile(b'old'))
+
+    real_exists = storage.exists
+
+    def exists_then_other_run_replaces_it(name):
+        found = real_exists(name)
+        (tmp_path / name).unlink(missing_ok=True)  # the other run, in between
+        return found
+
+    with patch.object(storage, 'exists', side_effect=exists_then_other_run_replaces_it):
+        storage.save('7/validation/report.json', ContentFile(b'new'))
+
+    assert (tmp_path / '7/validation/report.json').read_bytes() == b'new'
