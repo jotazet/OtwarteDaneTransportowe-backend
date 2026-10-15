@@ -422,6 +422,12 @@ def test_one_stop_with_its_lines_and_the_other_poles(indexed):
     assert [s['id'] for s in body['group']['stops']] == ['krk:1', 'krk:2']
 
 
+def test_lines_of_one_stop_come_by_mode_then_number(indexed):
+    body = get('stop/', {'id': 'krk:5'}).json()
+
+    assert [r['short_name'] for r in body['routes']] == ['152', '70']  # bus before tram
+
+
 def test_unknown_stop_is_404(indexed):
     response = get('stop/', {'id': 'krk:nope'})
 
@@ -471,6 +477,15 @@ def test_lines_of_a_place_are_those_calling_at_its_poles(indexed):
     kleparz = {'stops': ['krk:6', 'kml:12']}
 
     assert line_names(get('routes/', rondo)) == ['70', '152']
+    assert get('routes/', rondo).json()['results'][0] == {
+        'id': 'krk:70',
+        'short_name': '70',
+        'long_name': None,
+        'mode': 'tram',
+        'color': None,
+        'text_color': None,
+        'agency': {'id': 'krk:302', 'name': 'MPK Kraków'},
+    }
     assert line_names(get('routes/', kleparz)) == ['70', 'A1']
     assert line_names(get('routes/', {**kleparz, 'agencies': 'kml:1'})) == ['A1']
     assert line_names(get('routes/', {**kleparz, 'q': '70'})) == ['70']
