@@ -2,6 +2,27 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10-13: journey planner (administration, public API access, trip planning, search, departures and vehicles)
+
+Not breaking: new routes only. Admin routes require the `Admin` group.
+
+- `/api/planner/admin/` adds what the team needs to run the journey planner: choosing published GTFS feeds for the OpenTripPlanner graph, building it on a schedule or on demand, per-feed build outcomes (`fresh`, `stale`, `excluded` with error codes), rollback to the previous graph and a status endpoint. See [Journey planner: admin API](planner-admin.md).
+- A public journey planner API starts under `/api/planner/v1/` (switched off until an admin enables it): `status/`, an OpenAPI document (`schema/`) and ReDoc (`docs/`). It is open to any origin (CORS), works without a key, limits requests per minute and returns errors as `{code, details}`. See [Journey planner API](planner.md).
+- `GET /api/planner/v1/plan/` plans trips between coordinates or stop IDs, with modes, wheelchair access, walking speed, transfers, via stops, operator and line filters, realtime on or off and cursor paging. Times are UTC instants; a `time` parameter without a UTC offset is rejected. Parameter errors carry codes such as `planner.invalid_location` and `planner.stop_not_found`; routing errors (`planner.no_transit_connection`, …) come in a `200` answer. New error code `planner.busy` (`503`). Operators can be filtered by ODT organization (`organizations`, `exclude_organizations`), and leg paths come only with `geometry=true`. See [Journey planner API](planner.md#get-apiplannerv1plan).
+- Stop, line and operator search under `/api/planner/v1/`: `stops/search/`, `stops/nearby/`, `stops/` (map area), `stop/`, `routes/` and `agencies/`. Search folds Polish letters and returns places (poles with the same name close together). These keep answering while timetables are rebuilt. See [Stops, lines and operators](planner.md#stops-lines-and-operators).
+- Departures and timetables from the routing engine: `stop/departures/` (realtime predictions and cancellations), `stop/timetable/` (one day by line), `route/` (variants, paths on request) and `trip/` (stops with realtime, block ID). New codes `planner.route_not_found`, `planner.trip_not_found`, `planner.trip_not_on_date` and `planner.date_outside_service_period` (`404`, with the first and last covered date).
+- `trip/block/` (a vehicle's whole day, the trip under way marked; new code `planner.block_not_available`) and `vehicles/` (live positions matched to trips, filtered by area, line, mode, operator or organization). See [Journey planner API](planner.md#get-apiplannerv1vehicles).
+- Bike and scooter sharing (GBFS): `plan/?rental=bicycle|scooter` may use shared vehicles (legs with `rented`, places with `rental_station_id` / `rental_vehicle_id`); `rentals/` shows stations and free vehicles in an area. Admin routes `rental-sources/` and `rental-candidates/`; builds carry `rental_results`; `status/` lists `rental_networks` with their licences.
+- Stops carry `heading` (the direction vehicles leave the pole, from the lines' paths) for direction arrows on maps; `vehicles/coverage/` gives, for chosen operators, how many trips under way report a vehicle position (`null`, not 0, for operators whose positions the planner does not receive). Build results list the realtime updaters polled per feed (`realtime_polled`).
+- `alerts/`: operators' GTFS-RT service alerts with what they affect and whether they are in force, filtered by line, stop, operator or organization. See [Departures, timetables, lines and trips](planner.md#departures-timetables-lines-and-trips).
+- Admin routes for its access: `settings/` (kill switch, limits), `api-keys/`, `ip-bans/`, `requests/` (30-day log without query strings), `stats/daily/` and `stats/top-clients/`. See [planner-admin](planner-admin.md).
+- Admin dashboard statistics: `stats/summary/`, `stats/timeseries/` (minute, hour or day; by status class or endpoint), `stats/endpoints/` and `stats/user-agents/`. `stats/top-clients/` takes `since`/`until` and `by=ip|api_key` instead of `days`, and adds shares, status classes, first and last seen, the usual user agent and ban status. All can be narrowed to one endpoint, key or IP.
+- `/api/planner/admin/osm/` replaces the OSM extract from a URL (downloaded and checked by the planner worker); default lookup limits are 150 a minute without a key and 500 with one.
+- Builds in `/api/planner/admin/builds/` carry `indexed_at`: when search was refreshed from that graph.
+- `GET /feed/rt/{realtime_submission_id}/{endpoint_type}/` is not throttled for requests carrying the planner's internal token (`X-ODT-Internal-Token`), which OTP sends when it polls proxied realtime files over the internal network. Nothing changes for other clients.
+
+---
+
 ## 2026-10-12: catalogue refresh times, fetch error links and contract corrections
 
 Not breaking for API clients: fields are only added, the schema access change (3) affects only operator accounts, and the corrected docs (4) describe behaviour that was already there.

@@ -15,6 +15,7 @@ docker-compose.override.yml
 
 # User-uploaded data, generated static files
 /uploaded_data/
+/planner_data/
 /staticfiles/
 
 # Python

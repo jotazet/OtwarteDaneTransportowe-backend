@@ -26,6 +26,7 @@ services:
       gunicorn OtwarteDaneTransportowe.wsgi:application
       --bind 0.0.0.0:8000
       --workers ${GUNICORN_WORKERS:-3}
+      --threads ${GUNICORN_THREADS:-4}
       --timeout 120
       --no-control-socket
     environment:
@@ -47,6 +48,13 @@ services:
       DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
 
   celery_validator_worker:
+    build:
+      args:
+        INSTALL_DEV: "false"
+    environment:
+      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
+
+  celery_planner_worker:
     build:
       args:
         INSTALL_DEV: "false"

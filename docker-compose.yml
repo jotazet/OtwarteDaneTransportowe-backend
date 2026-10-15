@@ -97,6 +97,8 @@ services:
     <<: *app-service
     container_name: odt-web
     command: python manage.py runserver 0.0.0.0:8000
+    # 'planner' lets the journey planner's OTP poll realtime files from here.
+    networks: [default, planner]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -195,6 +197,66 @@ services:
   # (validators._validate_gtfs_rt_protobuf) instead of being checked for a '<'.
   # If semantic validation is wanted later, bring the service back WITH a
   # mem_limit and a JAVA_TOOL_OPTIONS heap cap, and implement the result polling.
+
+  # ── Journey planner (opt in with COMPOSE_PROFILES=planner) ─────────────────
+  # Builds the OpenTripPlanner graph on the 'planner' queue and stops/starts the
+  # `otp` container through docker-socket-proxy. Concurrency 2: one slot for a
+  # build (minutes to hours), one for planner.ensure_serving.
+  celery_planner_worker:
+    <<: *app-service
+    container_name: odt-celery-planner-worker
+    profiles: [planner]
+    command: >
+      celery -A OtwarteDaneTransportowe worker
+      --loglevel=info
+      --queues=planner
+      --concurrency=2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      docker-socket-proxy:
+        condition: service_started
+    environment:
+      <<: *app-env
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      UID: "${UID:-1000}"
+      GID: "${GID:-1000}"
+      HOST_PROJECT_PATH: "${HOST_PROJECT_PATH:-${PWD}}"
+      HOST_PLANNER_DATA_DIR: "${HOST_PLANNER_DATA_DIR:-${PWD}/planner_data}"
+    networks: [default, planner]
+
+  # The serving OpenTripPlanner. Private: no published port, only on the
+  # 'planner' network with web and the planner worker (not with postgres, redis
+  # or docker-socket-proxy). It reaches the internet only for realtime URLs of
+  # feeds that ODT does not proxy (ADR 0009). `serving` is a symlink to the
+  # active graph; the planner worker repoints it and restarts this container.
+  otp:
+    image: ${PLANNER_OTP_IMAGE:-opentripplanner/opentripplanner:2.10.0}
+    container_name: odt-otp
+    profiles: [planner]
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Wait for the first graph instead of crash-looping until the first build.
+    entrypoint:
+      - sh
+      - -c
+      - until [ -f /var/opentripplanner/graph.obj ]; do sleep 30; done; exec /docker-entrypoint.sh --load
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx${PLANNER_OTP_SERVE_HEAP:-6g} -XX:+ExitOnOutOfMemoryError"
+      # Sent with polls of proxied realtime files (router-config.json uses ${PLANNER_INTERNAL_TOKEN}).
+      PLANNER_INTERNAL_TOKEN: "${PLANNER_INTERNAL_TOKEN:-}"
+    mem_limit: ${PLANNER_OTP_SERVE_MEM_LIMIT:-7g}
+    volumes:
+      - ${HOST_PLANNER_DATA_DIR:-./planner_data}/serving:/var/opentripplanner:ro
+    networks: [planner]
+
+networks:
+  planner:
+    name: odt-planner
 
 volumes:
   odt_pgdata:

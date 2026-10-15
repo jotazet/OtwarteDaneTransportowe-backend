@@ -32,6 +32,7 @@ external reverse proxy (nginx/Caddy). The application listens locally on
 16. [Backups and restore](#16-backups-and-restore)
 17. [Security checklist](#17-security-checklist)
 18. [Troubleshooting](#18-troubleshooting)
+19. [Journey planner (OpenTripPlanner)](#19-journey-planner-opentripplanner)
 
 ---
 
@@ -49,6 +50,8 @@ define the following services:
 | `celery_validator_worker` | `feeds` queue + GTFS validator (via socket-proxy) | — |
 | `docker-socket-proxy` | Least-privilege access to the host's Docker API | — |
 | `celery_beat` | Scheduler (django-celery-beat) | — |
+| `celery_planner_worker` | `planner` queue: journey planner graph builds (profile `planner`) | — |
+| `otp` | OpenTripPlanner serving the planner graph (profile `planner`) | none (internal only) |
 | `migrate` / `init_uploads` | Startup jobs (one-off) | — |
 
 ```mermaid
@@ -190,6 +193,9 @@ HOST_MEDIA_ROOT=/opt/odt/uploaded_data
 
 # ───────────────────────── Performance / Celery / gunicorn ─────────────────────────
 GUNICORN_WORKERS=3
+# Threads per worker (gthread). Journey planner requests wait on OpenTripPlanner,
+# so threads keep the other endpoints answering meanwhile.
+GUNICORN_THREADS=4
 CELERY_DEFAULT_CONCURRENCY=2
 # The feeds queue only handles static downloads and GTFS validations — a few tasks per
 # feed per day. Each additional process is ~90 MB of RAM when idle.
@@ -230,7 +236,7 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `CSRF_TRUSTED_ORIGINS` | Required for POST behind a TLS proxy. |
 | `FEED_AUTH_ENCRYPTION_KEY` | At-rest encryption of feed credentials. |
 | `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). |
-| `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one), one shared daily limit, and one shared anonymous throttling bucket. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
+| `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks, and the client IP is its rightmost address that is not inside them (entries to the left are whatever the client sent). List **every** proxy hop, including a CDN in front of nginx, or its address becomes the client IP of everyone behind it; keep the networks as narrow as possible, because any address inside them is treated as a proxy. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit. DRF's anonymous throttling does not use this setting. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
 | `ALLOW_UNTRUSTED_PROXY_IPS` | Default `False`. Set to `True` only when the app is served directly to clients without a reverse proxy: it disables the startup check for an empty `TRUSTED_PROXY_CIDRS`, and the client IP is then taken from the socket address (`REMOTE_ADDR`). |
 | `PUBLIC_BASE_URL` | Currently unused (defined in settings, not read by any code). |
 | `UID` / `GID` | User the application containers run as, and the user of the GTFS validator container, so it can write its report into `uploaded_data/`. Default `1000`. |
@@ -468,7 +474,9 @@ The application listens on `127.0.0.1:8000`. Put a reverse proxy with TLS in fro
 api.example.org {
     reverse_proxy 127.0.0.1:8000 {
         header_up X-Forwarded-Proto {scheme}
-        header_up X-Forwarded-For {remote_host}
+        # One value: the client IP as Caddy resolved it; without trusted_proxies, the
+        # connecting address (see "Client IP" below).
+        header_up X-Forwarded-For {client_ip}
     }
 }
 ```
@@ -511,6 +519,56 @@ in compose (`WEB_HOST_BIND` / `WEB_HOST_PORT`) so that it is reachable by the pr
 > The proxy must forward **all** traffic to the application, including the `/static/` path
 > (the `location /` above ensures this). If you use only rules such as
 > `location /api/`, static files (admin/Swagger CSS) will not reach Django.
+
+### Client IP: CDN and the frontend
+
+Anonymous clients are told apart by IP: DRF throttling (`THROTTLE_ANON`), the blog reaction
+limits and the journey planner's limits, bans and request log (section 19). Two hops can hide it ([ADR 0011](architecture/decisions/0011-client-ip-behind-cloudflare-and-ssr.md)):
+
+- **A CDN in front of Caddy (Cloudflare).** Caddy ignores an incoming `X-Forwarded-For`
+  unless the request comes from `trusted_proxies`, so without them the backend sees the
+  CDN edge server's address: everyone routed through it shares one throttle bucket and one
+  reaction per post. Add a global block at the top of the Caddyfile; the site blocks keep
+  `header_up X-Forwarded-For {client_ip}`, as in Option A above and in the frontend's
+  `docs/deployment.md`:
+
+  ```caddy
+  {
+      servers {
+          # Cloudflare's current ranges (https://www.cloudflare.com/ips/) and the Docker
+          # networks the frontend's server-side rendering connects from.
+          trusted_proxies static <ranges> 172.16.0.0/12
+          # Cloudflare sends CF-Connecting-IP; the frontend sends X-Forwarded-For.
+          client_ip_headers CF-Connecting-IP X-Forwarded-For
+      }
+  }
+  ```
+
+  The `trusted_proxies` line with the current list:
+
+  ```bash
+  echo "trusted_proxies static $( (curl -s https://www.cloudflare.com/ips-v4; echo; curl -s https://www.cloudflare.com/ips-v6) | xargs)"
+  ```
+
+  Update it when Cloudflare changes its ranges. `TRUSTED_PROXY_CIDRS` does not list the CDN:
+  Caddy resolves the client IP and sends a single value.
+- **The frontend on the same host.** The frontend renders public pages on the server and calls
+  the API for them. Through the CDN, all those calls would carry this machine's address and
+  share one `anon` bucket, so public pages fail for everyone above `THROTTLE_ANON`. With
+  `API_HOSTNAME` in the frontend's `.env` (see its `docs/deployment.md`), its container
+  resolves the API host to this machine and reaches Caddy directly, with the visitor's IP in
+  `X-Forwarded-For`, which Caddy accepts from `172.16.0.0/12` (above). Host and TLS stay the
+  public ones, so URLs the API builds, such as feed download links, stay correct.
+
+Order: deploy the frontend, then reload Caddy right after it. Until both are done, all
+server-side rendering shares one bucket.
+
+Verification: add a reaction to a blog post you have not reacted to yet; the newest stored
+address must be your own IP, not a Cloudflare one:
+
+```bash
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT ip_address FROM blog_reaction ORDER BY date DESC LIMIT 1"'
+```
 
 ---
 
@@ -594,6 +652,7 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 - [ ] `CSRF_TRUSTED_ORIGINS` + `CORS_ALLOWED_ORIGINS` narrowed to the frontend
 - [ ] Reverse proxy forwards `X-Forwarded-Proto: https`
 - [ ] `TRUSTED_PROXY_CIDRS` set to the reverse proxy's addresses (production refuses to start without it)
+- [ ] Behind a CDN: Caddy trusts its ranges and sends `X-Forwarded-For {client_ip}` ([section 13](#client-ip-cdn-and-the-frontend))
 - [ ] `postgres`/`redis`/`web` ports not exposed publicly (`127.0.0.1` only)
 - [ ] `docker-socket-proxy` running; rootless Docker / a separate validator microservice considered
 - [ ] `.env` with `600` permissions, outside the git repository
@@ -661,6 +720,13 @@ to the proxy network (e.g. `172.16.0.0/12,127.0.0.1/32`) and make sure nginx/Cad
 forwards `X-Forwarded-For`. Verification: `docker compose exec web python
 manage.py check` must not report `blog.W001`.
 
+**Blog reactions are stored with Cloudflare addresses**
+→ Caddy does not trust the CDN, so it sends the edge server's address. Configure
+`trusted_proxies` and `header_up X-Forwarded-For {client_ip}` ([section 13](#client-ip-cdn-and-the-frontend)).
+
+**Public pages of the frontend show a load error or HTTP 500 under traffic; the API logs `Too Many Requests`**
+→ Server-side rendering shares one `anon` bucket: see [section 13](#client-ip-cdn-and-the-frontend).
+
 **Large uploads fail with error 413**
 → Increase `client_max_body_size` in nginx and, if needed, `MAX_FEED_FILE_SIZE_BYTES`.
 
@@ -693,3 +759,96 @@ needed; only the proxy mounts the socket (read-only).
 This applies to GTFS feeds only (NeTEx/other are not validated automatically and stay at stage 2
 until a Helper/Admin sets the stage). After successful validation the stage moves to **3**; after GTFS
 errors — rejection (`is_rejected`, stage 1).
+
+---
+
+## 19. Journey planner (OpenTripPlanner)
+
+The journey planner ([ADR 0008](architecture/decisions/0008-journey-planner-on-private-opentripplanner.md), [ADR 0009](architecture/decisions/0009-planner-graph-build-pipeline.md)) adds two services in the compose profile `planner`:
+
+- `otp`: OpenTripPlanner serving the active graph. It has no published port and sits on the `planner` network with `web` and the planner worker only (not with Postgres, Redis or the Docker proxy). It needs outbound internet for the realtime URLs of feeds that ODT does not proxy.
+- `celery_planner_worker`: the `planner` queue. It builds graphs in short-lived OTP containers through `docker-socket-proxy` (no network, the app's UID:GID, memory limits) and stops/starts `odt-otp`.
+
+Without the profile, nothing of the planner runs and the rest of ODT is unchanged.
+
+### Sizing (measured 2026-10-12, OTP 2.10.0, all of Poland)
+
+| Step | Memory | Time (swap in RAM) |
+| --- | --- | --- |
+| Serving, 36 feeds, OSM cropped to stops (`-Xmx6g`) | ~7 GB container (5 GB heap ran out under load) | starts in ~45 s |
+| Graph build (`--loadStreet`) | ~15 GB (8 GB RAM + 7 GB swap) | ~13 min |
+| Street graph (only when OSM, OTP image or feed area change) | ~13 GB (8 GB RAM + 5 GB swap) | ~8 min |
+| Single-feed test (largest: Warsaw) | ~6 GB | ≤ 30 s |
+
+- **Builds and the planner never use memory at the same time.** A build stops the serving OTP first (maintenance window; the OTP-backed endpoints answer `503`), so the server needs RAM for the app stack plus ~7 GB, and swap for the rest of a build.
+- **Production VPS.** It has 11 GB RAM, so it needs **at least 10 GB of swap**. Builds measured there are below.
+- **Disk.** Two graphs (~2 GB each), the street graph (~1.3 GB), the OSM extract (~2 GB for Poland) and snapshots of every feed's last good version (~0.5 GB).
+
+### Production VPS (measured 2026-10-14)
+
+11 GB RAM, 16 GB swap file on disk, 6 vCPU; FeedsODT's nightly routing engines were running on the same host. Build containers had `PLANNER_OTP_BUILD_MEMSWAP_LIMIT=18g` (8 GB RAM + at most 10 GB swap).
+
+| Build | Feed tests | Street graph | Graph build | OTP down in total | Peak swap | Lowest available RAM |
+| --- | --- | --- | --- | --- | --- | --- |
+| 7 feeds (POLREGIO and six with realtime) | 2 min | 11 min | 11 min | 28 min | 8.5 GB | 0.5 GB |
+| 35 feeds (all of Poland, one per service) | 5 min (28 changed feeds) | 12 min | 31 min | 52 min | 9.0 GB | 0.4 GB |
+
+- **Serving all of Poland** with `-Xmx6g`: the `otp` container holds ~6.4 GB, graph 1.8 GB on disk, search index copied in 2 minutes. With 6 parallel plans the first answers took up to 5 s, later 1.3–2.5 s; a seventh parallel request gets `503 planner.busy` after 1 s, as designed.
+- **The host stayed usable during builds:** the API answered in 0.1–0.2 s, the frontend in up to 1 s and SSH in under 1 s, while swap moved up to 380 MB/s.
+- **Night window.** FeedsODT starts its routing engines (up to 3.4 GB) at 00:45–07:30 Europe/Warsaw, and the default build time (01:40 UTC) falls inside it. Both builds above ran with the engines up; the kernel swapped out their idle memory.
+
+### Host memory guard
+
+Builds deliberately fill RAM and spill into swap, so the VPS has a last-resort guard against a memory runaway freezing the whole machine (set up 2026-10-14, outside Docker):
+
+- **earlyoom** (EPEL package `earlyoom`), `/etc/default/earlyoom`:
+
+  ```sh
+  EARLYOOM_ARGS="-r 3600 -m 5,3 -s 20,10 --prefer ^java$ --avoid ^(sshd|sshd-session|systemd|systemd-.*|dbus-broker|dockerd|containerd|containerd-shim|postgres|caddy|firewalld|dnf|earlyoom)$"
+  ```
+
+  It acts only when **both** available RAM is at most 5% **and** free swap at most 20% (SIGKILL at 3% and 10%), preferring JVMs (OTP, the FeedsODT engines: all restartable). Planned builds stay above it: available RAM dropped below 5% during the builds above, but swap stayed more than half free, and each build container is capped by its own limits.
+- **SSH stays reachable:** `systemctl set-property` with `MemoryMin=128M` on `system.slice`, `64M` on `sshd.service` and `256M` on `user.slice` (the kernel does not reclaim that memory; `system.slice` needs it too because cgroups are mounted with `memory_recursiveprot`). `sshd` itself runs with `oom_score_adj=-1000`.
+- **Kernel reserve,** `/etc/sysctl.d/90-odt-memory.conf`: `vm.min_free_kbytes = 131072` and `vm.watermark_scale_factor = 100` (defaults here 67584 and 10), so reclaim starts earlier and allocations stall less under pressure.
+- **Not used:** systemd-oomd needs pressure stall information, which Rocky Linux's kernel ships switched off (`psi=1` on the kernel command line and a reboot would enable it).
+
+### First run
+
+```bash
+# 1. Secrets and settings in .env (see .env.example, "Journey planner")
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # -> PLANNER_INTERNAL_TOKEN
+# COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/opt/odt/planner_data
+
+# 2. Start the services
+./scripts/deploy.sh up -d --build
+```
+
+Then, in the admin panel (or the admin API under `/api/planner/admin/`):
+
+1. Download the OSM extract the street graph is built from: `POST /api/planner/admin/osm/` with `{"url": "https://download.geofabrik.de/europe/poland-latest.osm.pbf"}` (~2 GB, a minute or two), and wait until `GET /api/planner/admin/osm/` shows it `succeeded`.
+2. Add the feeds: one feed per service, because duplicates double the trips.
+3. Set the schedule.
+4. Build now.
+
+The first build also builds the street graph. Until then `otp` waits for a graph instead of restarting.
+
+### Public API
+
+- **Off by default.** The public API (`/api/planner/v1/`) ships switched off. Turn it on with `PATCH /api/planner/admin/settings/ {"public_api_enabled": true}` once a graph is served; limits are edited there too.
+- **CORS.** Any origin may call `/api/planner/v1/` (configured in code, not through `CORS_ALLOWED_ORIGINS`).
+- **Concurrency.** Each gunicorn worker sends at most 2 queries to OTP at once (`MAX_CONCURRENT_QUERIES` in `planner/otp_runtime.py`); a request that finds no free slot within a second gets `503 planner.busy`. With `GUNICORN_WORKERS=3` that is 6 parallel OTP queries, what the serving sizing above was measured with. More workers mean more parallel OTP queries and more OTP memory.
+- **Client IPs.** Rate limits, bans, the request log and the dashboard rely on correct client IPs: `TRUSTED_PROXY_CIDRS` lists the reverse proxy in front of the app (section 5), and behind a CDN the proxy resolves the client IP first (section 13, "Client IP: CDN and the frontend").
+- **Request log retention.** The request log keeps raw rows, which include IP addresses, for `PLANNER_REQUEST_LOG_RETENTION_DAYS` (default 30). The beat task `planner.maintain_request_logs` (00:30 UTC) summarises each finished day without IPs and then deletes expired rows.
+
+### Operations
+
+- **Status and logs.** Build status, per-feed outcomes and OTP's log excerpts are in `GET /api/planner/admin/builds/{id}/`; worker logs are in `./scripts/deploy.sh logs celery_planner_worker`.
+- **Failed builds.** A failed build leaves the previous graph serving. `POST /api/planner/admin/builds/{id}/activate/` serves an earlier graph again (only the served one and the newest other one are kept).
+- **Deploys.** Do not deploy during the build window: `up -d` would start `otp` next to the build. If a worker dies mid-build anyway, the watchdog marks the build `build_interrupted` within ~15 minutes and restarts the active graph.
+- **New OSM.** `POST /api/planner/admin/osm/ {"url": …}` (Geofabrik publishes Poland daily). The planner worker downloads it next to the current file (at most `PLANNER_OSM_MAX_BYTES`, default 4 GiB), checks it is a PBF extract with osmium, and only then swaps it in; the next build rebuilds the street graph. A failed download keeps the current file. Builds and downloads exclude each other (`409` while the other runs; a scheduled build during a download retries every 10 minutes for up to an hour). Replacing the file by hand still works: write it under a temporary name, then `mv`.
+- **New OTP version.**
+  1. Change `PLANNER_OTP_IMAGE` in `.env`.
+  2. Run `up -d` so the serving container uses the new image too.
+  3. Build now: the next build re-tests every feed and rebuilds the street graph, and graphs built with the old image can no longer be activated.
+- **Search index.** After each build the planner worker copies operators, lines, stops and which trips share a block from OTP into Postgres (~3 s for Małopolska with 85k block trips; all of Poland has ~93k stops and ~1.3M trips). If that fails, search keeps the previous data and the watchdog queues `planner.refresh_index` every 5 minutes until it succeeds; `GraphBuild.indexed_at` shows when it last did. The migration creates the `pg_trgm` extension, which needs `CREATE` on the database (the default `postgres` user has it).
+- **Backups.** Back up `planner_data/snapshots/` (the last good version of each feed cannot be recreated). Graphs, the street graph and the OSM extract can be rebuilt or downloaded again.

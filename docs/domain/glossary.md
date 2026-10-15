@@ -26,6 +26,33 @@ One concept, one name. Code uses the **English term**; the Polish UI uses the **
 | Pause | Wstrzymanie / Auto-pauza | Fetching stopped by a person (`manual_paused`) or after repeated failures (`auto_paused`). |
 | Feed catalogue | Katalog feedów | The public list of published feeds by organization. |
 
+## Journey planner
+
+| English (code) | Polish (UI) | Meaning |
+| --- | --- | --- |
+| Journey planner | Planer podróży | ODT's trip planning service over the published feeds, run on OpenTripPlanner. See [journey planner](journey-planner.md). |
+| OTP (OpenTripPlanner) | OTP | The open-source routing engine the planner runs privately. |
+| Planner feed (`PlannerFeed`) | Feed w planerze *confirm* | A published GTFS feed the admin included in the planner graph. |
+| Feed ID (`feed_id`) | Identyfikator feedu w planerze *confirm* | OTP's prefix for every ID of a feed (`krk:2047691`); never changes. |
+| Graph | Graf | OTP's routing data: streets plus timetables, built from OSM and the planner feeds. |
+| Street graph | Graf ulic *confirm* | The street part of the graph, built from the cropped OSM extract and reused until the map, OTP version or feed area changes. |
+| Graph build (`GraphBuild`) | Budowanie grafu | One run of the build pipeline, scheduled or manual; also a rollback. |
+| Maintenance window | Przerwa techniczna planera *confirm* | While a build has the serving OTP stopped; OTP-backed endpoints answer `503`. |
+| Failure policy (`failure_policy`) | Postępowanie przy błędzie feedu *confirm* | `keep_last_good` or `exclude`: what a build does with a feed whose newest version fails. |
+| Last good version | Ostatnia działająca wersja | The file of a feed that last went into a served graph (snapshot). |
+| Fresh / stale / excluded | Aktualny / nieaktualny / wykluczony *confirm* | A feed's outcome in a build: newest version, last good version instead, or left out. |
+| Block (`block_id`) | Brygada | The sequence of trips one vehicle runs in a day (GTFS `block_id`). |
+| Rollback | Przywrócenie poprzedniego grafu *confirm* | Serving an earlier build's graph again. |
+| Kill switch (`public_api_enabled`) | Wyłącznik publicznego API *confirm* | Turns the public planner API off without a deploy. |
+| API key (`ApiKey`) | Klucz API | Issued by an admin to a developer; raises the rate limits. Only its hash is stored. |
+| Rate limit | Limit zapytań | Requests per minute per client, per key and for all clients, in the groups `plan`, `realtime`, `lookup`. |
+| IP ban (`IpBan`) | Blokada IP | A blocked address or network, optionally until a date. |
+| Rental source (`PlannerRentalSource`) | System rowerów/hulajnóg na minuty *confirm* | A published GBFS feed (bike or scooter sharing) the planner routes with, under a fixed `network` name. |
+| Search index (`Indexed*`) | Indeks wyszukiwarki *confirm* | Operators, lines, stops and block membership of the served graph, copied from OTP into Postgres after each build. |
+| Place (`IndexedStopGroup`) | Zespół przystankowy *confirm* | Poles (stops) with the same name close together, e.g. all of "Rondo Mogilskie"; what stop search returns. |
+| Pole / stop (`IndexedStop`) | Przystanek (słupek) *confirm* | One GTFS stop: a platform or one direction's pole. |
+| Request log (`PlannerRequestLog`) | Log zapytań | One row per public planner request, without parameters, kept 30 days. |
+
 ## Organizations and cases
 
 | English (code) | Polish (UI) | Meaning |

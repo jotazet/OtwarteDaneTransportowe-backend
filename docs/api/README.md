@@ -12,6 +12,8 @@ This documentation describes the REST API of the OtwarteDaneTransportowe (Open T
 - [Blog API](blog.md)
 - [Organizations and cases API](cases.md)
 - [Feeds API and public file downloads](feeds.md)
+- [Journey planner API (public)](planner.md)
+- [Journey planner: admin API](planner-admin.md)
 - [Models and enums](models.md)
 - [Changelog for client developers](changelog.md)
 - [Feed workflow](../domain/feed-workflow.md)
@@ -81,6 +83,8 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 | Realtime submissions | No | `DataProvider` creates; `Helper`/`Admin` confirms |
 | Published feeds catalog | Yes | No writes through the public API |
 | Public feed files | Yes, published only | No writes |
+| Journey planner API (`/api/planner/v1/`) | Yes, any origin (CORS), optional API key | No writes |
+| Journey planner administration | No | `Admin` only |
 
 ---
 
@@ -281,6 +285,63 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `GET` | `/api/data_manager/feeds/{id}/` | public | Details of an organization and its published feeds |
 
 In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the feed type.
+
+### Journey planner (admin)
+
+| Method | Endpoint | Permissions | Description |
+|--------|----------|-------------|------|
+| `GET` | `/api/planner/admin/feed-candidates/` | `Admin` | Published GTFS feeds that can be added to the planner |
+| `GET/POST` | `/api/planner/admin/feeds/` | `Admin` | Feeds included in the planner graph |
+| `GET` | `/api/planner/admin/rental-candidates/` | `Admin` | Published GBFS feeds that can be added to the planner |
+| `GET/POST` | `/api/planner/admin/rental-sources/` | `Admin` | Bike and scooter sharing feeds the planner routes with |
+| `GET/PATCH/DELETE` | `/api/planner/admin/rental-sources/{id}/` | `Admin` | One rental source (`network` cannot change) |
+| `GET/PATCH/DELETE` | `/api/planner/admin/feeds/{id}/` | `Admin` | One planner feed (`feed_id` cannot change) |
+| `GET/POST` | `/api/planner/admin/osm/` | `Admin` | OSM extract downloads; `POST` replaces the map from a URL (`202`, `409` while one runs) |
+| `GET/POST` | `/api/planner/admin/builds/` | `Admin` | Graph builds; `POST` builds now (`202`, `409` while one runs) |
+| `GET` | `/api/planner/admin/builds/{id}/` | `Admin` | Build with per-feed outcomes and log excerpt |
+| `POST` | `/api/planner/admin/builds/{id}/activate/` | `Admin` | Serve an earlier build's graph again (rollback) |
+| `GET/PUT` | `/api/planner/admin/schedule/` | `Admin` | Build schedule: weekdays and time in UTC |
+| `GET` | `/api/planner/admin/status/` | `Admin` | Served build, running build, maintenance window, OTP health |
+| `GET/PATCH` | `/api/planner/admin/settings/` | `Admin` | Kill switch and rate limits of the public planner API |
+| `GET/POST` | `/api/planner/admin/api-keys/` | `Admin` | API keys; `POST` returns the plain key once |
+| `GET/PATCH` | `/api/planner/admin/api-keys/{id}/` | `Admin` | One key (revoke with `is_active: false`) |
+| `GET/POST` | `/api/planner/admin/ip-bans/` | `Admin` | Banned addresses and networks |
+| `PATCH/DELETE` | `/api/planner/admin/ip-bans/{id}/` | `Admin` | One ban |
+| `GET` | `/api/planner/admin/requests/` | `Admin` | Request log of the public planner API (30 days, no query strings) |
+| `GET` | `/api/planner/admin/stats/daily/` | `Admin` | Requests per day by status class |
+| `GET` | `/api/planner/admin/stats/summary/` | `Admin` | Dashboard totals: requests, unique IPs and keys, errors, latency |
+| `GET` | `/api/planner/admin/stats/timeseries/` | `Admin` | Chart points per minute, hour or day, by status class or endpoint |
+| `GET` | `/api/planner/admin/stats/endpoints/` | `Admin` | Requests, errors and latency per endpoint |
+| `GET` | `/api/planner/admin/stats/top-clients/` | `Admin` | Busiest IPs or API keys, with user agent and ban status |
+| `GET` | `/api/planner/admin/stats/user-agents/` | `Admin` | User-Agents by requests |
+
+### Journey planner (public)
+
+| Method | Endpoint | Permissions | Description |
+|--------|----------|-------------|------|
+| `GET` | `/api/planner/v1/status/` | public | Availability, served graph, feeds with licences, attribution |
+| `GET` | `/api/planner/v1/plan/` | public | Trip planning with realtime delays |
+| `GET` | `/api/planner/v1/stops/search/` | public | Stop search by name (places with their poles) |
+| `GET` | `/api/planner/v1/stops/nearby/` | public | Places with stops near a point |
+| `GET` | `/api/planner/v1/stops/` | public | Every stop in a map area (`bbox`) |
+| `GET` | `/api/planner/v1/stop/` | public | One stop with its lines (`?id=`) |
+| `GET` | `/api/planner/v1/routes/` | public | Line search and lists |
+| `GET` | `/api/planner/v1/agencies/` | public | Operators with their ODT organization |
+| `GET` | `/api/planner/v1/stop/departures/` | public | Next departures with realtime predictions |
+| `GET` | `/api/planner/v1/stop/timetable/` | public | A stop's timetable for one day |
+| `GET` | `/api/planner/v1/route/` | public | A line with its variants (`?id=`) |
+| `GET` | `/api/planner/v1/trip/` | public | A trip on its service date with realtime (`?id=&date=`) |
+| `GET` | `/api/planner/v1/trip/block/` | public | Every trip of a trip's block (brigade) on a day |
+| `GET` | `/api/planner/v1/vehicles/` | public | Vehicles reporting their position now |
+| `GET` | `/api/planner/v1/vehicles/coverage/` | public | Share of chosen operators' trips under way that report a position |
+| `GET` | `/api/planner/v1/alerts/` | public | Operators' service alerts, by line, stop or operator |
+| `GET` | `/api/planner/v1/rentals/` | public | Bike and scooter sharing stations and vehicles in an area |
+| `GET` | `/api/planner/v1/schema/` | public | OpenAPI document of the public planner API |
+| `GET` | `/api/planner/v1/docs/` | public | ReDoc for the public planner API |
+
+Details: [Journey planner API](planner.md).
+
+Details: [Journey planner: admin API](planner-admin.md).
 
 ### Public feed files
 

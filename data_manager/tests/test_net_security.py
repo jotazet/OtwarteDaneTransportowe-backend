@@ -465,6 +465,26 @@ def test_safe_download_streams_without_materialising_the_body(monkeypatch):
         assert body.read(4) == b'xxxx'  # rewindable, i.e. a real stream
 
 
+def test_safe_download_can_write_straight_into_a_file(monkeypatch, tmp_path):
+    from data_manager.net_security import safe_download
+
+    _patch_dns(monkeypatch, '93.184.216.34')
+    monkeypatch.setattr(
+        'data_manager.net_security.requests.get',
+        lambda *a, **kw: _FakeResponse(chunks=[b'ab', b'cd']),
+    )
+    target = tmp_path / 'region.osm.pbf.tmp'
+
+    with target.open('w+b') as file:
+        with safe_download(
+            'https://download.example.org/poland.osm.pbf', timeout=5, max_bytes=1 << 20, into=file
+        ) as (_response, body):
+            assert body is file
+        assert not file.closed  # the caller owns it
+
+    assert target.read_bytes() == b'abcd'
+
+
 def test_aia_intermediate_fetch_is_size_capped(monkeypatch, tmp_path):
     """The issuer URL comes from an UNTRUSTED server certificate.
 

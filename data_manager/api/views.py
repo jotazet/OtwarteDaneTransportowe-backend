@@ -61,6 +61,7 @@ from OtwarteDaneTransportowe.auth_roles import (
     is_helper_reviewer,
     patch_request_includes_submission_content,
 )
+from OtwarteDaneTransportowe.internal_requests import has_internal_token
 
 
 def _page_url(request, page_number: int) -> str | None:
@@ -397,6 +398,12 @@ class RealtimePublicFeedDownloadView(APIView):
 
     permission_classes = [AllowAny]
     throttle_scope = 'feed_download'
+
+    def get_throttles(self):
+        # The journey planner's OTP polls these files every few seconds.
+        if has_internal_token(self.request):
+            return []
+        return super().get_throttles()
 
     def get(self, request, pk=None, endpoint_type=None, filename=None):
         if pk is None:

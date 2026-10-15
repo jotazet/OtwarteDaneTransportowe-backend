@@ -14,11 +14,13 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# Runtime libraries used by psycopg/Pillow without keeping build tooling in the image.
+# Runtime libraries used by psycopg/Pillow without keeping build tooling in the image;
+# osmium cuts the journey planner's OSM extract down (planner/osm.py).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     libjpeg62-turbo \
     libpq5 \
+    osmium-tool \
     zlib1g \
  && rm -rf /var/lib/apt/lists/*
 
