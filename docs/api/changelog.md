@@ -2,6 +2,18 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10-15: planner stop search without lines, lines of a place
+
+**Breaking** for clients of `/api/planner/v1/stops/search/` and `stops/nearby/`.
+
+- Places no longer carry `routes`. Most of the answer was lines (66 of 74 KB for `q=dworzec`), and feeds that publish every line variant as a separate route listed one line many times. Ask `routes/?stops=` for the lines of the place the user picks.
+- `routes/` takes `stops` (stop IDs, repeat, up to 50): only lines calling at any of them, e.g. every pole of a place. They come in the order of `routes/` (by number), not by mode first as `routes` in places did.
+- `modes`, `agencies` and `organizations` now apply per pole in places: a place is returned when one of its poles matches, and its `stops` and `modes` list only the poles that match (before, a place with one matching pole came with every pole, including other operators'). A place whose poles each match only part of the filters is no longer returned.
+
+See [Stops, lines and operators](planner.md#stops-lines-and-operators).
+
+---
+
 ## 2026-10-13: anonymous rate limits count per client IP
 
 Not breaking. The `anon`, `login` and `feed_download` throttles (and `user` for anonymous requests) used to identify an anonymous client by the raw `X-Forwarded-For` header, so a client could send a new value with every request and never get `429`. They now use the same client IP as the blog reaction limit: the rightmost `X-Forwarded-For` address that is not one of ODT's proxies. Clients behind one shared proxy or NAT now share its limit. Rates are unchanged.

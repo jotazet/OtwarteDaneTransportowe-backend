@@ -325,7 +325,7 @@ In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the
 | `GET` | `/api/planner/v1/stops/nearby/` | public | Places with stops near a point |
 | `GET` | `/api/planner/v1/stops/` | public | Every stop in a map area (`bbox`) |
 | `GET` | `/api/planner/v1/stop/` | public | One stop with its lines (`?id=`) |
-| `GET` | `/api/planner/v1/routes/` | public | Line search and lists |
+| `GET` | `/api/planner/v1/routes/` | public | Line search and lists, also the lines of given stops |
 | `GET` | `/api/planner/v1/agencies/` | public | Operators with their ODT organization |
 | `GET` | `/api/planner/v1/stop/departures/` | public | Next departures with realtime predictions |
 | `GET` | `/api/planner/v1/stop/timetable/` | public | A stop's timetable for one day |

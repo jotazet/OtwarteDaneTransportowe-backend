@@ -58,7 +58,7 @@ Error codes stored per feed: `planner.feed_not_published`, `planner.feed_source_
 - **Names.** Compared after lowercasing, removing diacritics (`ł` by hand, as Unicode does not decompose it) and punctuation, with PostgreSQL trigram word similarity (`pg_trgm`).
 - **Places.** Feeds list every pole separately: in the 2026-10-12 audit only 13 of 44 feeds use GTFS `parent_station`, mostly railways. Search groups poles with the same name within 400 m of each other into one place (single linkage, so a place can be longer than 400 m). Places with the same name farther apart (`Kościół` in many villages) stay separate; `near` ranks the closest first.
 - **Unserved stops** (no line calls there in the graph) are not indexed.
-- **Search has no town.** GTFS stops have no locality field, so two places with the same name are told apart only by position (`lat`, `lon`, `distance_m`) and their lines.
+- **Search has no town.** GTFS stops have no locality field, so two places with the same name are told apart only by position (`lat`, `lon`, `distance_m`). Their lines would not help (a line `12` runs in many towns), so search results carry none; `routes/?stops=` gives them for the place the user picks.
 - **Organizations.** Operators (GTFS agencies) are linked to the ODT organization that publishes their feed. OTP can filter trips only by agency or route, so a plan filter on an organization becomes a filter on all its operators.
 - **Lines.** Many feeds leave `route_long_name` empty (Kraków), so such lines are found by number only.
 
