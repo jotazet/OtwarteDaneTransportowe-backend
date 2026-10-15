@@ -407,7 +407,6 @@ class IndexedStopGroup(models.Model):
     lon = models.FloatField()
     modes = ArrayField(models.TextField(), default=list)
     agency_ids = ArrayField(models.TextField(), default=list)
-    route_ids = ArrayField(models.TextField(), default=list)
     route_count = models.PositiveIntegerField(default=0)
 
     class Meta:

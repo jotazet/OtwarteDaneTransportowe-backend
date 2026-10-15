@@ -19,6 +19,7 @@ from planner.api.params import (
     PositionField,
     SearchTextField,
     agency_filter,
+    id_list,
     organization_list,
 )
 from planner.models import IndexedRoute, IndexedStop
@@ -28,10 +29,13 @@ from planner.models import IndexedRoute, IndexedStop
 MAX_BBOX_DEGREES = 0.5
 NEARBY_DEFAULT_RADIUS_M = 500
 NEARBY_MAX_RADIUS_M = 2000
+# Lines of a place: answered from Postgres, so it takes more poles than
+# departures (which asks OTP).
+ROUTE_STOPS_MAX = 50
 
 
 class SearchPagination(DefaultPageNumberPagination):
-    # Each result carries its stops and lines; autocomplete shows a handful.
+    # Each result carries its poles; autocomplete shows a handful.
     page_size = 10
     max_page_size = 50
 
@@ -84,34 +88,22 @@ class StopSerializer(serializers.Serializer):
     )
 
 
-# Lines by ID from the serializer context, loaded once per page (see routes_by_id).
-# A comment, not a docstring: drf-spectacular would publish it as the schema description.
-class RoutesFromContext:
-    def routes_of(self, route_ids) -> list:
-        routes = self.context['routes']
-        found = [routes[route_id] for route_id in route_ids if route_id in routes]
-        found.sort(key=lambda route: (route.mode, route.sort_key))
-        return RouteSerializer(found, many=True).data
-
-
-class StopGroupSerializer(RoutesFromContext, serializers.Serializer):
-    """A place: every pole with the same name close together."""
+class StopGroupSerializer(serializers.Serializer):
+    """A place: every pole with the same name close together that matches the filters."""
 
     name = serializers.CharField()
     lat = serializers.FloatField()
     lon = serializers.FloatField()
-    modes = serializers.ListField(child=serializers.CharField())
+    modes = serializers.SerializerMethodField(help_text='Modes of the poles in `stops`.')
     distance_m = serializers.SerializerMethodField(help_text='From `near`, if given.')
-    routes = serializers.SerializerMethodField()
     stops = StopSerializer(many=True)
+
+    def get_modes(self, group) -> list[str]:
+        return sorted({stop.mode for stop in group.stops.all() if stop.mode})
 
     def get_distance_m(self, group) -> int | None:
         distance = getattr(group, 'distance', None)
         return round(distance) if distance is not None else None
-
-    @extend_schema_field(RouteSerializer(many=True))
-    def get_routes(self, group):
-        return self.routes_of(group.route_ids)
 
 
 class StopGroupRefSerializer(serializers.Serializer):
@@ -121,7 +113,7 @@ class StopGroupRefSerializer(serializers.Serializer):
     stops = StopSerializer(many=True)
 
 
-class StopDetailSerializer(RoutesFromContext, StopSerializer):
+class StopDetailSerializer(StopSerializer):
     """A stop with its lines and the other poles of the same place."""
 
     routes = serializers.SerializerMethodField()
@@ -129,7 +121,7 @@ class StopDetailSerializer(RoutesFromContext, StopSerializer):
 
     @extend_schema_field(RouteSerializer(many=True))
     def get_routes(self, stop):
-        return self.routes_of(stop.route_ids)
+        return RouteSerializer(self.context['routes'], many=True).data
 
 
 class OrganizationSerializer(serializers.Serializer):
@@ -145,15 +137,6 @@ class AgencySerializer(serializers.Serializer):
     feed_id = serializers.CharField()
     organization = OrganizationSerializer(allow_null=True, help_text='ODT organization.')
     route_count = serializers.IntegerField()
-
-
-def routes_by_id(route_ids) -> dict:
-    return {
-        route.route_id: route
-        for route in IndexedRoute.objects.filter(route_id__in=set(route_ids)).select_related(
-            'agency'
-        )
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +167,10 @@ class BboxParams(OperatorFilter):
 class RouteSearchParams(OperatorFilter):
     q = SearchTextField(1, required=False, help_text='Line number or name, e.g. `70`.')
     near = PositionField(required=False, help_text='`lat,lon`: lines near it first.')
+    stops = id_list(
+        ROUTE_STOPS_MAX,
+        help_text=f'Stop IDs (repeat, up to {ROUTE_STOPS_MAX}): lines calling at any of them.',
+    )
 
 
 class AgencyParams(serializers.Serializer):
@@ -219,19 +206,14 @@ class GroupListView(LookupListView):
     serializer_class = StopGroupSerializer
     pagination_class = SearchPagination
 
-    def get_serializer(self, *args, **kwargs):
-        if args:  # a page of groups; the schema generator calls this without one
-            route_ids = [route_id for group in args[0] for route_id in group.route_ids]
-            kwargs['context'] = {**self.get_serializer_context(), 'routes': routes_by_id(route_ids)}
-        return super().get_serializer(*args, **kwargs)
-
 
 @extend_schema(parameters=[StopSearchParams], summary='Search stops by name')
 class StopSearchView(GroupListView):
     """Stops whose name matches `q`, best first, one result per place.
 
     Poles with the same name close together are one result with all of them in
-    `stops`. Polish letters are optional: `lodz` finds `Łódź`.
+    `stops`; with filters, only the poles that match. Polish letters are
+    optional: `lodz` finds `Łódź`. Lines of a place: `routes/?stops=`.
     """
 
     params_class = StopSearchParams
@@ -240,7 +222,7 @@ class StopSearchView(GroupListView):
         params = self.params()
         return search.search_stop_groups(
             params['q'], params.get('near'), params.get('modes'), params['agency_ids']
-        ).prefetch_related('stops')
+        )
 
 
 @extend_schema(parameters=[NearbyParams], summary='Stops near a point')
@@ -253,7 +235,7 @@ class StopsNearbyView(GroupListView):
         params = self.params()
         return search.nearby_stop_groups(
             params['near'], params['radius'], params.get('modes'), params['agency_ids']
-        ).prefetch_related('stops')
+        )
 
 
 @extend_schema(parameters=[BboxParams], summary='Stops in a map area')
@@ -271,7 +253,10 @@ class StopsInAreaView(LookupListView):
 
 @extend_schema(parameters=[RouteSearchParams], summary='Search lines')
 class RouteSearchView(LookupListView):
-    """Lines by number or name; without `q`, every line matching the filters."""
+    """Lines by number or name; without `q`, every line matching the filters.
+
+    With `stops`, only lines calling at any of those stops.
+    """
 
     params_class = RouteSearchParams
     serializer_class = RouteSerializer
@@ -279,7 +264,11 @@ class RouteSearchView(LookupListView):
     def get_queryset(self):
         params = self.params()
         return search.search_routes(
-            params.get('q'), params.get('near'), params.get('modes'), params['agency_ids']
+            params.get('q'),
+            params.get('near'),
+            params.get('modes'),
+            params['agency_ids'],
+            params.get('stops'),
         )
 
 
@@ -307,5 +296,9 @@ class StopView(PlannerPublicView):
         )
         if stop is None:
             raise PlannerError('planner.stop_not_found', 404)
-        context = {'routes': routes_by_id(stop.route_ids)}
-        return Response(StopDetailSerializer(stop, context=context).data)
+        routes = (
+            IndexedRoute.objects.filter(route_id__in=stop.route_ids)
+            .select_related('agency')
+            .order_by('mode', 'sort_key', 'route_id')
+        )
+        return Response(StopDetailSerializer(stop, context={'routes': routes}).data)

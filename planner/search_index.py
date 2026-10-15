@@ -151,7 +151,7 @@ def _replace(data: dict, headings: dict[str, int]) -> dict:
 
     groups, members = [], []
     for cluster in _clusters(stops):
-        route_ids = sorted({r['gtfsId'] for stop in cluster for r in stop.get('routes') or []})
+        route_ids = {r['gtfsId'] for stop in cluster for r in stop.get('routes') or []}
         name = Counter(stop['name'] for stop in cluster).most_common(1)[0][0]
         groups.append(
             IndexedStopGroup(
@@ -163,7 +163,6 @@ def _replace(data: dict, headings: dict[str, int]) -> dict:
                     {stop['vehicleMode'].lower() for stop in cluster if stop.get('vehicleMode')}
                 ),
                 agency_ids=sorted({route_agency[r] for r in route_ids if r in route_agency}),
-                route_ids=route_ids,
                 route_count=len(route_ids),
             )
         )
