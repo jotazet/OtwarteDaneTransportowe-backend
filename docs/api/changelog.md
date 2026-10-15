@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10-13: anonymous rate limits count per client IP
+
+Not breaking. The `anon`, `login` and `feed_download` throttles (and `user` for anonymous requests) used to identify an anonymous client by the raw `X-Forwarded-For` header, so a client could send a new value with every request and never get `429`. They now use the same client IP as the blog reaction limit: the rightmost `X-Forwarded-For` address that is not one of ODT's proxies. Clients behind one shared proxy or NAT now share its limit. Rates are unchanged.
+
+---
+
 ## 2026-10-13: journey planner (administration, public API access, trip planning, search, departures and vehicles)
 
 Not breaking: new routes only. Admin routes require the `Admin` group.

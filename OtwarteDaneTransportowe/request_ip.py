@@ -4,8 +4,8 @@
 from a reverse proxy we operate. The header is therefore only trusted when
 ``REMOTE_ADDR`` falls inside one of the ``TRUSTED_PROXY_CIDRS`` networks;
 otherwise the socket peer address is used. Every consumer of a client IP
-(blog reaction limits, ``your_reaction`` lookups) must go through this helper
-so reads and writes agree on the same identity.
+(blog reaction limits, ``your_reaction`` lookups, DRF throttles) must go
+through this helper so they all agree on the same identity.
 
 Proxies append the address they received the request from, so only the right
 end of the header is trustworthy: the client is the rightmost entry that is not
