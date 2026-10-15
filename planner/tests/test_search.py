@@ -324,26 +324,22 @@ def test_stop_search_filters_by_mode_operator_and_organization(indexed):
     'place', [('stops/search/', {'q': 'nowy kleparz'}), ('stops/nearby/', {'near': '50.09,19.92'})]
 )
 @pytest.mark.parametrize(
-    ('filters', 'poles', 'modes'),
+    ('filters', 'places'),
     [
-        ({}, ['kml:12', 'krk:6'], ['bus', 'tram']),
-        ({'agencies': 'kml:1'}, ['kml:12'], ['bus']),
-        ({'agencies': 'krk:302'}, ['krk:6'], ['tram']),
-        ({'modes': 'tram'}, ['krk:6'], ['tram']),
+        ({}, [(['kml:12', 'krk:6'], ['bus', 'tram'])]),
+        ({'agencies': 'kml:1'}, [(['kml:12'], ['bus'])]),
+        ({'agencies': 'krk:302'}, [(['krk:6'], ['tram'])]),
+        ({'modes': 'tram'}, [(['krk:6'], ['tram'])]),
         # Each filter matches a pole, but no pole matches both: no place.
-        ({'modes': 'tram', 'agencies': 'kml:1'}, None, None),
+        ({'modes': 'tram', 'agencies': 'kml:1'}, []),
     ],
 )
-def test_place_filters_keep_only_the_poles_that_match(indexed, place, filters, poles, modes):
+def test_place_filters_keep_only_the_poles_that_match(indexed, place, filters, places):
     path, params = place
 
     results = get(path, {**params, **filters}).json()['results']
 
-    if poles is None:
-        assert results == []
-    else:
-        assert [s['id'] for s in results[0]['stops']] == poles
-        assert results[0]['modes'] == modes
+    assert [([s['id'] for s in row['stops']], row['modes']) for row in results] == places
 
 
 @pytest.mark.parametrize(

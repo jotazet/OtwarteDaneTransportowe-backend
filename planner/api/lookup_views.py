@@ -121,10 +121,7 @@ class StopDetailSerializer(StopSerializer):
 
     @extend_schema_field(RouteSerializer(many=True))
     def get_routes(self, stop):
-        routes = self.context['routes']
-        found = [routes[route_id] for route_id in stop.route_ids if route_id in routes]
-        found.sort(key=lambda route: (route.mode, route.sort_key))
-        return RouteSerializer(found, many=True).data
+        return RouteSerializer(self.context['routes'], many=True).data
 
 
 class OrganizationSerializer(serializers.Serializer):
@@ -140,15 +137,6 @@ class AgencySerializer(serializers.Serializer):
     feed_id = serializers.CharField()
     organization = OrganizationSerializer(allow_null=True, help_text='ODT organization.')
     route_count = serializers.IntegerField()
-
-
-def routes_by_id(route_ids) -> dict:
-    return {
-        route.route_id: route
-        for route in IndexedRoute.objects.filter(route_id__in=set(route_ids)).select_related(
-            'agency'
-        )
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -308,5 +296,9 @@ class StopView(PlannerPublicView):
         )
         if stop is None:
             raise PlannerError('planner.stop_not_found', 404)
-        context = {'routes': routes_by_id(stop.route_ids)}
-        return Response(StopDetailSerializer(stop, context=context).data)
+        routes = (
+            IndexedRoute.objects.filter(route_id__in=stop.route_ids)
+            .select_related('agency')
+            .order_by('mode', 'sort_key', 'route_id')
+        )
+        return Response(StopDetailSerializer(stop, context={'routes': routes}).data)

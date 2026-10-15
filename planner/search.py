@@ -134,19 +134,24 @@ def _filter_stops(stops, modes, agency_ids):
         stops = stops.filter(mode__in=modes)
     if agency_ids is not None:
         # Per pole, not per place: a place can mix operators.
-        agency_routes = IndexedRoute.objects.filter(agency__agency_id__in=agency_ids)
+        agency_routes = IndexedRoute.objects.filter(agency__agency_id__in=agency_ids).order_by()
         stops = stops.filter(route_ids__overlap=ArraySubquery(agency_routes.values('route_id')))
     return stops
 
 
 def _filter_groups(groups, modes, agency_ids):
     """Places with a pole that matches the filters, each with only those poles."""
-    if not modes and agency_ids is None:
-        return groups.prefetch_related('stops')
+    # The place's own arrays (GIN-indexed) answer each filter alone; comparing
+    # every pole's lines with an operator's is far slower on a broad search.
+    if modes:
+        groups = groups.filter(modes__overlap=list(modes))
+    if agency_ids is not None:
+        groups = groups.filter(agency_ids__overlap=agency_ids)
     stops = _filter_stops(IndexedStop.objects.all(), modes, agency_ids)
-    return groups.filter(Exists(stops.filter(group=OuterRef('pk')))).prefetch_related(
-        Prefetch('stops', queryset=stops)
-    )
+    if modes and agency_ids is not None:
+        # Both must hold for the same pole.
+        groups = groups.filter(Exists(stops.filter(group=OuterRef('pk'))))
+    return groups.prefetch_related(Prefetch('stops', queryset=stops))
 
 
 def _around(queryset, lat, lon, radius_m):

@@ -243,7 +243,7 @@ These answer from ODT's own index of the served data, so they keep working while
 
 **Places.** Most feeds publish every pole (each direction, each platform) as a separate stop. Stop search and `stops/nearby/` therefore return **places**: poles with the same name less than 400 m apart, with every pole in `stops`. They carry no lines: for a place the user picks, ask `routes/?stops=` for its lines and `stop/departures/` for its departures, both with the IDs in its `stops`. To plan a trip from a place, use its `lat,lon` or one of its stop IDs.
 
-**Filters** (all list endpoints except `agencies/`): `modes` (repeat; values as in `plan/`), `agencies` (operator IDs) and `organizations` (ODT organization IDs); operators and organizations add up. They apply per pole: a place is returned when one of its poles has such a mode and a line of such an operator, and its `stops` and `modes` list only those poles, so their IDs can go straight to `routes/?stops=` and `stop/departures/`.
+**Filters** (all list endpoints except `agencies/`): `modes` (repeat; values as in `plan/`), `agencies` (operator IDs) and `organizations` (ODT organization IDs); operators and organizations add up. They apply per pole: a place is returned when one of its poles has such a mode and a line of such an operator, and its `stops` and `modes` list only those poles, so their IDs can go straight to `routes/?stops=` and `stop/departures/`. A place's `lat`, `lon` and its rank by number of lines still count all its poles.
 
 ### `GET /api/planner/v1/stops/search/`
 
