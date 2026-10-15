@@ -282,7 +282,7 @@ def test_stop_search_ignores_polish_letters(indexed):
     assert names(get('stops/search/', {'q': 'lodz'})) == ['Łódź Kaliska']
 
 
-def test_stop_search_returns_places_with_their_poles_and_lines(indexed):
+def test_stop_search_returns_places_with_their_poles_and_no_lines(indexed):
     body = get('stops/search/', {'q': 'rondo mog'}).json()
 
     # Fuzzy matching also finds other roundabouts, after the close matches.
@@ -292,19 +292,13 @@ def test_stop_search_returns_places_with_their_poles_and_lines(indexed):
         'Rondo Grunwaldzkie',
     ]
     first = body['results'][0]
-    assert first['name'] == 'Rondo Mogilskie'
+    assert list(first) == ['name', 'lat', 'lon', 'modes', 'distance_m', 'stops']
+    assert (first['name'], first['modes'], first['distance_m']) == (
+        'Rondo Mogilskie',
+        ['bus', 'tram'],
+        None,
+    )
     assert [s['id'] for s in first['stops']] == ['krk:1', 'krk:2']
-    assert [r['short_name'] for r in first['routes']] == ['152', '70']  # bus before tram
-    assert first['routes'][1] == {
-        'id': 'krk:70',
-        'short_name': '70',
-        'long_name': None,
-        'mode': 'tram',
-        'color': None,
-        'text_color': None,
-        'agency': {'id': 'krk:302', 'name': 'MPK Kraków'},
-    }
-    assert first['distance_m'] is None
 
 
 def test_stop_search_ranks_the_place_near_the_user_first(indexed):
@@ -323,6 +317,33 @@ def test_stop_search_filters_by_mode_operator_and_organization(indexed):
         'Wieliczka Rynek'
     ]
     assert names(get('stops/search/', {'q': 'wieliczka', 'organizations': indexed.id})) == []
+
+
+# Nowy Kleparz has a tram pole of MPK (krk:6) and a bus pole of KML (kml:12).
+@pytest.mark.parametrize(
+    'place', [('stops/search/', {'q': 'nowy kleparz'}), ('stops/nearby/', {'near': '50.09,19.92'})]
+)
+@pytest.mark.parametrize(
+    ('filters', 'poles', 'modes'),
+    [
+        ({}, ['kml:12', 'krk:6'], ['bus', 'tram']),
+        ({'agencies': 'kml:1'}, ['kml:12'], ['bus']),
+        ({'agencies': 'krk:302'}, ['krk:6'], ['tram']),
+        ({'modes': 'tram'}, ['krk:6'], ['tram']),
+        # Each filter matches a pole, but no pole matches both: no place.
+        ({'modes': 'tram', 'agencies': 'kml:1'}, None, None),
+    ],
+)
+def test_place_filters_keep_only_the_poles_that_match(indexed, place, filters, poles, modes):
+    path, params = place
+
+    results = get(path, {**params, **filters}).json()['results']
+
+    if poles is None:
+        assert results == []
+    else:
+        assert [s['id'] for s in results[0]['stops']] == poles
+        assert results[0]['modes'] == modes
 
 
 @pytest.mark.parametrize(
@@ -414,11 +435,16 @@ def test_unknown_stop_is_404(indexed):
     )
 
 
-def test_stop_search_uses_a_fixed_number_of_queries(indexed, django_assert_max_num_queries):
+@pytest.mark.parametrize(
+    ('filters', 'count'), [({}, 3), ({'agencies': 'krk:302', 'modes': 'tram'}, 2)]
+)
+def test_stop_search_uses_a_fixed_number_of_queries(
+    indexed, django_assert_max_num_queries, filters, count
+):
     # Settings and bans are cached after the first request.
-    get('stops/search/', {'q': 'rondo'})
+    get('stops/search/', {'q': 'rondo', **filters})
     with django_assert_max_num_queries(6):
-        assert get('stops/search/', {'q': 'rondo'}).json()['count'] == 3
+        assert get('stops/search/', {'q': 'rondo', **filters}).json()['count'] == count
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +468,31 @@ def test_line_search_by_name_and_filters(indexed):
 
 def test_line_search_needs_a_letter_or_digit(indexed):
     assert get('routes/', {'q': '--'}).json()['details']['fields'] == {'q': ['min_length']}
+
+
+def test_lines_of_a_place_are_those_calling_at_its_poles(indexed):
+    rondo = {'stops': ['krk:1', 'krk:2']}
+    kleparz = {'stops': ['krk:6', 'kml:12']}
+
+    assert line_names(get('routes/', rondo)) == ['70', '152']
+    assert line_names(get('routes/', kleparz)) == ['70', 'A1']
+    assert line_names(get('routes/', {**kleparz, 'agencies': 'kml:1'})) == ['A1']
+    assert line_names(get('routes/', {**kleparz, 'q': '70'})) == ['70']
+    assert line_names(get('routes/', {'stops': 'krk:nope'})) == []
+
+
+@pytest.mark.parametrize(
+    ('stops', 'fields'),
+    [
+        (['nope'], {'stops': {'0': ['planner.invalid_id']}}),
+        ([f'krk:{n}' for n in range(51)], {'stops': ['max_length']}),
+    ],
+)
+def test_lines_of_stops_parameter_errors(indexed, stops, fields):
+    response = get('routes/', {'stops': stops})
+
+    assert response.status_code == 400
+    assert response.json()['details']['fields'] == fields
 
 
 def test_lines_near_a_point_come_first(indexed):

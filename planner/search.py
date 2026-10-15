@@ -8,7 +8,21 @@ import math
 
 from django.contrib.postgres.expressions import ArraySubquery
 from django.contrib.postgres.search import TrigramWordSimilarity
-from django.db.models import Case, ExpressionWrapper, F, FloatField, Q, QuerySet, Value, When
+from django.db.models import (
+    Case,
+    Exists,
+    ExpressionWrapper,
+    F,
+    FloatField,
+    Func,
+    OuterRef,
+    Prefetch,
+    Q,
+    QuerySet,
+    TextField,
+    Value,
+    When,
+)
 from django.db.models.functions import Least, Power, Sqrt
 
 from planner.models import IndexedAgency, IndexedRoute, IndexedStop, IndexedStopGroup
@@ -70,17 +84,16 @@ def stops_in_bbox(bbox, modes=(), agency_ids=None) -> QuerySet:
     stops = IndexedStop.objects.filter(
         lat__gte=min_lat, lat__lte=max_lat, lon__gte=min_lon, lon__lte=max_lon
     )
-    if modes:
-        stops = stops.filter(mode__in=modes)
-    if agency_ids is not None:
-        # Per pole, not per place: a place can mix operators.
-        agency_routes = IndexedRoute.objects.filter(agency__agency_id__in=agency_ids)
-        stops = stops.filter(route_ids__overlap=ArraySubquery(agency_routes.values('route_id')))
-    return stops.order_by('stop_id')
+    return _filter_stops(stops, modes, agency_ids).order_by('stop_id')
 
 
-def search_routes(text=None, near=None, modes=(), agency_ids=None) -> QuerySet:
+def search_routes(text=None, near=None, modes=(), agency_ids=None, stop_ids=None) -> QuerySet:
     routes = IndexedRoute.objects.select_related('agency')
+    if stop_ids:
+        calling = IndexedStop.objects.filter(stop_id__in=stop_ids).annotate(
+            calling_route_id=Func('route_ids', function='unnest', output_field=TextField())
+        )
+        routes = routes.filter(route_id__in=calling.values('calling_route_id'))
     if modes:
         routes = routes.filter(mode__in=modes)
     if agency_ids is not None:
@@ -116,12 +129,24 @@ def agencies(agency_ids=None) -> QuerySet:
     return rows.order_by('name', 'agency_id')
 
 
-def _filter_groups(groups, modes, agency_ids):
+def _filter_stops(stops, modes, agency_ids):
     if modes:
-        groups = groups.filter(modes__overlap=list(modes))
+        stops = stops.filter(mode__in=modes)
     if agency_ids is not None:
-        groups = groups.filter(agency_ids__overlap=agency_ids)
-    return groups
+        # Per pole, not per place: a place can mix operators.
+        agency_routes = IndexedRoute.objects.filter(agency__agency_id__in=agency_ids)
+        stops = stops.filter(route_ids__overlap=ArraySubquery(agency_routes.values('route_id')))
+    return stops
+
+
+def _filter_groups(groups, modes, agency_ids):
+    """Places with a pole that matches the filters, each with only those poles."""
+    if not modes and agency_ids is None:
+        return groups.prefetch_related('stops')
+    stops = _filter_stops(IndexedStop.objects.all(), modes, agency_ids)
+    return groups.filter(Exists(stops.filter(group=OuterRef('pk')))).prefetch_related(
+        Prefetch('stops', queryset=stops)
+    )
 
 
 def _around(queryset, lat, lon, radius_m):

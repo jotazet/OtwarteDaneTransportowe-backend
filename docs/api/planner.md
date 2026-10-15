@@ -241,9 +241,9 @@ These answer from ODT's own index of the served data, so they keep working while
 
 **Stops** here are those at least one line calls at; others cannot start or end a trip and are left out.
 
-**Places.** Most feeds publish every pole (each direction, each platform) as a separate stop. Stop search and `stops/nearby/` therefore return **places**: poles with the same name less than 400 m apart, with every pole in `stops`. To plan a trip from a place, use its `lat,lon` or one of its stop IDs.
+**Places.** Most feeds publish every pole (each direction, each platform) as a separate stop. Stop search and `stops/nearby/` therefore return **places**: poles with the same name less than 400 m apart, with every pole in `stops`. They carry no lines: for a place the user picks, ask `routes/?stops=` for its lines and `stop/departures/` for its departures, both with the IDs in its `stops`. To plan a trip from a place, use its `lat,lon` or one of its stop IDs.
 
-**Filters** (all list endpoints except `agencies/`): `modes` (repeat; values as in `plan/`), `agencies` (operator IDs) and `organizations` (ODT organization IDs); operators and organizations add up.
+**Filters** (all list endpoints except `agencies/`): `modes` (repeat; values as in `plan/`), `agencies` (operator IDs) and `organizations` (ODT organization IDs); operators and organizations add up. They apply per pole: a place is returned when one of its poles has such a mode and a line of such an operator, and its `stops` and `modes` list only those poles, so their IDs can go straight to `routes/?stops=` and `stop/departures/`.
 
 ### `GET /api/planner/v1/stops/search/`
 
@@ -253,7 +253,7 @@ These answer from ODT's own index of the served data, so they keep working while
 | `near` | `lat,lon`: places near it rank higher (and get `distance_m`). |
 | filters | See above. |
 
-Best matches first: name similarity, then names starting with `q`, places with more lines and, with `near`, nearer places. Default page size 10, at most 50 (each result carries its poles and lines).
+Best matches first: name similarity, then names starting with `q`, places with more lines and, with `near`, nearer places. Default page size 10, at most 50.
 
 ```json
 {
@@ -267,18 +267,15 @@ Best matches first: name similarity, then names starting with `q`, places with m
       "lon": 19.9585,
       "modes": ["bus", "tram"],
       "distance_m": null,
-      "routes": [
-        { "id": "krk:352529", "short_name": "70", "long_name": null, "mode": "tram", "color": null, "text_color": null, "agency": { "id": "krk:302", "name": "Kraków" } }
-      ],
       "stops": [
-        { "id": "krk:2047520", "name": "Rondo Mogilskie", "code": "121-01", "platform": null, "lat": 50.065, "lon": 19.958, "mode": "tram", "station_id": null }
+        { "id": "krk:2047520", "name": "Rondo Mogilskie", "code": "121-01", "platform": null, "lat": 50.065, "lon": 19.958, "mode": "tram", "station_id": null, "heading": 90 }
       ]
     }
   ]
 }
 ```
 
-`routes` are sorted by mode, then number. `stops[].code` is the code shown to passengers when the feed has one; `station_id` is the GTFS parent station (mostly railway). `stops[].heading` is the direction vehicles leave the pole, in degrees clockwise from north (for an arrow on the map); `null` when its lines leave in different directions (a pole served both ways) or none is known. It is the direction of the lines' path where the pole stands, so it follows the street, not a straight line to the next stop.
+`modes` are those of the poles in `stops`. `stops[].code` is the code shown to passengers when the feed has one; `station_id` is the GTFS parent station (mostly railway). `stops[].heading` is the direction vehicles leave the pole, in degrees clockwise from north (for an arrow on the map); `null` when its lines leave in different directions (a pole served both ways) or none is known. It is the direction of the lines' path where the pole stands, so it follows the street, not a straight line to the next stop.
 
 ### `GET /api/planner/v1/stops/nearby/`
 
@@ -297,7 +294,7 @@ Results are `stops[]` objects as above, by ID. Operator filters apply per pole: 
 
 ### `GET /api/planner/v1/stop/?id=krk:2047470`
 
-One stop: the fields above plus `routes` (lines calling there) and `group` (`name`, `lat`, `lon` and every pole of the same place). An unknown ID returns `404 planner.stop_not_found`.
+One stop: the fields above plus `routes` (lines calling there, as in `routes/`, by mode, then number) and `group` (`name`, `lat`, `lon` and every pole of the same place). An unknown ID returns `404 planner.stop_not_found`.
 
 ### `GET /api/planner/v1/routes/`
 
@@ -307,6 +304,7 @@ Lines (GTFS routes) by number or name.
 | --- | --- |
 | `q` | Optional, at least one letter or digit. An exact number comes first (`70`), then numbers starting with it (`704`), then names. Without `q`, every line matching the filters. |
 | `near` | `lat,lon`: lines whose stops are centred nearer come first (useful when many towns have a line `1`). |
+| `stops` | Stop IDs (repeat, up to 50): only lines calling at any of them, e.g. every pole in a place's `stops` for the lines of that place. Unknown IDs match nothing. |
 | filters | See above. |
 
 Results: `id`, `short_name`, `long_name`, `mode`, `color`, `text_color`, `agency` `{id, name}`. Lines without `q` are in timetable order: numbers numerically (`2`, `10`, `52`), then letters. Many feeds leave `long_name` empty; then a line is found by its number only.
