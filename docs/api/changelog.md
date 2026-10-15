@@ -14,6 +14,12 @@ See [Stops, lines and operators](planner.md#stops-lines-and-operators).
 
 ---
 
+## 2026-10-13: anonymous rate limits count per client IP
+
+Not breaking. The `anon`, `login` and `feed_download` throttles (and `user` for anonymous requests) used to identify an anonymous client by the raw `X-Forwarded-For` header, so a client could send a new value with every request and never get `429`. They now use the same client IP as the blog reaction limit: the rightmost `X-Forwarded-For` address that is not one of ODT's proxies. Clients behind one shared proxy or NAT now share its limit. Rates are unchanged.
+
+---
+
 ## 2026-10-13: journey planner (administration, public API access, trip planning, search, departures and vehicles)
 
 Not breaking: new routes only. Admin routes require the `Admin` group.

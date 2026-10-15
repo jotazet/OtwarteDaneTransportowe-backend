@@ -46,6 +46,7 @@ OtwarteDaneTransportowe/
 │   ├── pagination.py          # default list pagination (50 / max 200)
 │   ├── jwt_views.py           # JWT views (role claims, login throttling)
 │   ├── request_ip.py          # client IP resolution (TRUSTED_PROXY_CIDRS)
+│   ├── throttling.py          # DRF throttles keyed by that client IP
 │   ├── cleanup_files.py       # deletes replaced/removed files from storage
 │   └── celery.py              # Celery app
 ├── accounts/

@@ -63,7 +63,7 @@ CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS', default=[])
 #   * collapses all visitors into ONE blog-reaction identity (the "10 per day
 #     per IP" limit becomes 10 per day for the entire internet, and the
 #     unique-per-(post, IP) constraint keeps one row for everybody), and
-#   * puts all anonymous traffic in a single AnonRateThrottle bucket.
+#   * puts all anonymous traffic in a single bucket of every DRF throttle.
 # blog.checks.check_trusted_proxy_cidrs already reports this as a Django system
 # check (blog.W001), but a Warning does not stop a deploy and is easy to lose in
 # container logs. This makes it fatal for the settings module that explicitly

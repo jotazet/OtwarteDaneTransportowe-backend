@@ -181,9 +181,10 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'OtwarteDaneTransportowe.pagination.DefaultPageNumberPagination',
     'PAGE_SIZE': 50,
     'DEFAULT_THROTTLE_CLASSES': [
-        'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
-        'rest_framework.throttling.ScopedRateThrottle',
+        # DRF's throttles keyed by get_client_ip(), which honours TRUSTED_PROXY_CIDRS.
+        'OtwarteDaneTransportowe.throttling.AnonRateThrottle',
+        'OtwarteDaneTransportowe.throttling.UserRateThrottle',
+        'OtwarteDaneTransportowe.throttling.ScopedRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': os.getenv('THROTTLE_ANON', '60/min'),
@@ -351,7 +352,7 @@ FEED_AUTH_ENCRYPTION_KEY = os.getenv('FEED_AUTH_ENCRYPTION_KEY')
 # feeds (link-checks still run).
 PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', '').rstrip('/')
 
-# Proxy settings (used by blog reactions IP limiting)
+# Proxy settings (client IP for blog reaction limits and DRF throttling)
 TRUSTED_PROXY_CIDRS = _env_list('TRUSTED_PROXY_CIDRS', default=[])
 
 CORS_ALLOWED_ORIGINS = _env_list('CORS_ALLOWED_ORIGINS', default=[])
