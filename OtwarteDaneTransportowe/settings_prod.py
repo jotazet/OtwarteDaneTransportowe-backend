@@ -63,7 +63,8 @@ CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS', default=[])
 #   * collapses all visitors into ONE blog-reaction identity (the "10 per day
 #     per IP" limit becomes 10 per day for the entire internet, and the
 #     unique-per-(post, IP) constraint keeps one row for everybody), and
-#   * puts all anonymous traffic in a single bucket of every DRF throttle.
+#   * puts all visitors in a single bucket of the login, feed download and
+#     planner limits.
 # blog.checks.check_trusted_proxy_cidrs already reports this as a Django system
 # check (blog.W001), but a Warning does not stop a deploy and is easy to lose in
 # container logs. This makes it fatal for the settings module that explicitly
@@ -76,7 +77,7 @@ if not TRUSTED_PROXY_CIDRS and not _env_bool('ALLOW_UNTRUSTED_PROXY_IPS', False)
     raise ImproperlyConfigured(
         'TRUSTED_PROXY_CIDRS is empty while the app is configured to run behind '
         'a reverse proxy. Client IPs would all resolve to the proxy, breaking '
-        'per-IP reaction limits and anonymous throttling. Set TRUSTED_PROXY_CIDRS '
+        'per-IP reaction, login, feed download and planner limits. Set TRUSTED_PROXY_CIDRS '
         'to your proxy network(s), or set ALLOW_UNTRUSTED_PROXY_IPS=True if the '
         'app is served directly to clients.'
     )

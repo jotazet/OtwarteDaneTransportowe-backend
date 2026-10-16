@@ -205,10 +205,9 @@ CELERY_FEEDS_CONCURRENCY=1
 # MAX_IMAGE_FILE_SIZE_BYTES=10485760       # 10 MB
 # DATA_UPLOAD_MAX_MEMORY_SIZE=10485760
 # FILE_UPLOAD_MAX_MEMORY_SIZE=5242880
-# THROTTLE_ANON=60/min
-# THROTTLE_USER=240/min
 # THROTTLE_LOGIN=10/min
 # THROTTLE_FEED_DOWNLOAD=120/min
+# THROTTLE_REACTION=30/min
 # JWT_ACCESS_MINUTES=15
 # JWT_REFRESH_DAYS=1
 
@@ -236,7 +235,7 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `CSRF_TRUSTED_ORIGINS` | Required for POST behind a TLS proxy. |
 | `FEED_AUTH_ENCRYPTION_KEY` | At-rest encryption of feed credentials. |
 | `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). |
-| `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks, and the client IP is its rightmost address that is not inside them (entries to the left are whatever the client sent). List **every** proxy hop, including a CDN in front of nginx, or its address becomes the client IP of everyone behind it; keep the networks as narrow as possible, because any address inside them is treated as a proxy. DRF throttling (`THROTTLE_*`) counts anonymous requests per this client IP too. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit, and all anonymous visitors share one bucket of each throttle (`429` for everyone once `THROTTLE_ANON` is reached). The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
+| `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks, and the client IP is its rightmost address that is not inside them (entries to the left are whatever the client sent). List **every** proxy hop, including a CDN in front of nginx, or its address becomes the client IP of everyone behind it; keep the networks as narrow as possible, because any address inside them is treated as a proxy. DRF throttling (`THROTTLE_*`) counts requests per this client IP too. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit, and all visitors share one login, feed download and planner limit. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
 | `ALLOW_UNTRUSTED_PROXY_IPS` | Default `False`. Set to `True` only when the app is served directly to clients without a reverse proxy: it disables the startup check for an empty `TRUSTED_PROXY_CIDRS`, and the client IP is then taken from the socket address (`REMOTE_ADDR`). |
 | `PUBLIC_BASE_URL` | Currently unused (defined in settings, not read by any code). |
 | `UID` / `GID` | User the application containers run as, and the user of the GTFS validator container, so it can write its report into `uploaded_data/`. Default `1000`. |
@@ -522,7 +521,7 @@ in compose (`WEB_HOST_BIND` / `WEB_HOST_PORT`) so that it is reachable by the pr
 
 ### Client IP: CDN and the frontend
 
-Anonymous clients are told apart by IP: DRF throttling (`THROTTLE_ANON`), the blog reaction
+Anonymous clients are told apart by IP: DRF throttling of login and feed downloads, the blog reaction
 limits and the journey planner's limits, bans and request log (section 19). Two hops can hide it ([ADR 0011](architecture/decisions/0011-client-ip-behind-cloudflare-and-ssr.md)):
 
 - **A CDN in front of Caddy (Cloudflare).** Caddy ignores an incoming `X-Forwarded-For`
@@ -553,15 +552,15 @@ limits and the journey planner's limits, bans and request log (section 19). Two 
   Update it when Cloudflare changes its ranges. `TRUSTED_PROXY_CIDRS` does not list the CDN:
   Caddy resolves the client IP and sends a single value.
 - **The frontend on the same host.** The frontend renders public pages on the server and calls
-  the API for them. Through the CDN, all those calls would carry this machine's address and
-  share one `anon` bucket, so public pages fail for everyone above `THROTTLE_ANON`. With
+  the API for them. Through the CDN, all those calls would carry this machine's address, so
+  blog reactions and the planner limits would see one client for all visitors. With
   `API_HOSTNAME` in the frontend's `.env` (see its `docs/deployment.md`), its container
   resolves the API host to this machine and reaches Caddy directly, with the visitor's IP in
   `X-Forwarded-For`, which Caddy accepts from `172.16.0.0/12` (above). Host and TLS stay the
   public ones, so URLs the API builds, such as feed download links, stay correct.
 
 Order: deploy the frontend, then reload Caddy right after it. Until both are done, all
-server-side rendering shares one bucket.
+server-side rendering is seen as one client.
 
 Verification: add a reaction to a blog post you have not reacted to yet; the newest stored
 address must be your own IP, not a Cloudflare one:
@@ -723,9 +722,6 @@ manage.py check` must not report `blog.W001`.
 **Blog reactions are stored with Cloudflare addresses**
 → Caddy does not trust the CDN, so it sends the edge server's address. Configure
 `trusted_proxies` and `header_up X-Forwarded-For {client_ip}` ([section 13](#client-ip-cdn-and-the-frontend)).
-
-**Public pages of the frontend show a load error or HTTP 500 under traffic; the API logs `Too Many Requests`**
-→ Server-side rendering shares one `anon` bucket: see [section 13](#client-ip-cdn-and-the-frontend).
 
 **Large uploads fail with error 413**
 → Increase `client_max_body_size` in nginx and, if needed, `MAX_FEED_FILE_SIZE_BYTES`.

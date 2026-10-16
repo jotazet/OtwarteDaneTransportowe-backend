@@ -180,18 +180,19 @@ REST_FRAMEWORK = {
     # envelope so responses stay bounded as the data grows.
     'DEFAULT_PAGINATION_CLASS': 'OtwarteDaneTransportowe.pagination.DefaultPageNumberPagination',
     'PAGE_SIZE': 50,
+    # Only views with a throttle_scope are limited (login, feed downloads, blog
+    # reactions); the
+    # public planner API has its own limits (planner/access.py). No global
+    # per-IP limit: server-side rendering of the website calls the API for
+    # its visitors (ADR 0012).
     'DEFAULT_THROTTLE_CLASSES': [
-        # DRF's throttles keyed by get_client_ip(), which honours TRUSTED_PROXY_CIDRS.
-        'OtwarteDaneTransportowe.throttling.AnonRateThrottle',
-        'OtwarteDaneTransportowe.throttling.UserRateThrottle',
+        # DRF's throttle keyed by get_client_ip(), which honours TRUSTED_PROXY_CIDRS.
         'OtwarteDaneTransportowe.throttling.ScopedRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': os.getenv('THROTTLE_ANON', '60/min'),
-        'user': os.getenv('THROTTLE_USER', '240/min'),
-        # Scoped buckets (applied via throttle_scope on specific views).
         'login': os.getenv('THROTTLE_LOGIN', '10/min'),
         'feed_download': os.getenv('THROTTLE_FEED_DOWNLOAD', '120/min'),
+        'reaction': os.getenv('THROTTLE_REACTION', '30/min'),
     },
 }
 

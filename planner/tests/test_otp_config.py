@@ -5,7 +5,6 @@ import json
 import pytest
 from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
-from rest_framework.throttling import AnonRateThrottle
 
 from data_manager.api.views import RealtimePublicFeedDownloadView
 from data_manager.models import (
@@ -13,6 +12,7 @@ from data_manager.models import (
     RealtimeSubmission,
     RealtimeSubmissionHistory,
 )
+from OtwarteDaneTransportowe.throttling import ScopedRateThrottle
 from planner import otp_config
 
 pytestmark = pytest.mark.django_db
@@ -123,7 +123,7 @@ def test_serving_config_turns_off_debug_and_transmodel():
 def _throttles(token_sent):
     headers = {otp_config.INTERNAL_TOKEN_HEADER: token_sent} if token_sent is not None else {}
     view = RealtimePublicFeedDownloadView()
-    view.throttle_classes = [AnonRateThrottle]
+    view.throttle_classes = [ScopedRateThrottle]
     view.request = Request(APIRequestFactory().get('/feed/rt/1/trip_update/', headers=headers))
     return view.get_throttles()
 

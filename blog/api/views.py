@@ -116,6 +116,8 @@ class ReactionViewSet(viewsets.ModelViewSet):
     serializer_class = ReactionSerializer
     # Reactions can be created/updated without authentication; IP is used to limit duplicates.
     permission_classes = [AllowAny]
+    # The daily limit counts only new reactions; this also limits changes.
+    throttle_scope = 'reaction'
     http_method_names = ['post', 'options']
 
     def get_client_ip(self, request):

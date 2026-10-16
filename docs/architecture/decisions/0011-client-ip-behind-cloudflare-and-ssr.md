@@ -1,6 +1,6 @@
 # 0011. Resolve the client IP at the reverse proxy and forward it from server-side rendering
 
-- **Status:** Accepted
+- **Status:** Accepted (the `anon` throttle it protected was removed in [0012](0012-rate-limit-only-scoped-views-and-the-planner.md); the client-IP chain still applies)
 - **Date:** 2026-10-13
 
 ## Context
