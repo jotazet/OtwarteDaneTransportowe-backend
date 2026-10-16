@@ -77,7 +77,7 @@ if not TRUSTED_PROXY_CIDRS and not _env_bool('ALLOW_UNTRUSTED_PROXY_IPS', False)
     raise ImproperlyConfigured(
         'TRUSTED_PROXY_CIDRS is empty while the app is configured to run behind '
         'a reverse proxy. Client IPs would all resolve to the proxy, breaking '
-        'per-IP reaction limits and anonymous throttling. Set TRUSTED_PROXY_CIDRS '
+        'per-IP reaction, login, feed download and planner limits. Set TRUSTED_PROXY_CIDRS '
         'to your proxy network(s), or set ALLOW_UNTRUSTED_PROXY_IPS=True if the '
         'app is served directly to clients.'
     )

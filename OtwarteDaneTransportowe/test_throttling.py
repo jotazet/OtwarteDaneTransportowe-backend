@@ -37,7 +37,7 @@ def _via_proxy(client_ip, spoofed):
     return {'REMOTE_ADDR': PROXY, 'HTTP_X_FORWARDED_FOR': f'{spoofed}, {client_ip}'}
 
 
-def _anon_list(client, **headers):
+def _list_posts(client, **headers):
     return client.get('/api/blog/posts/', **headers)
 
 
@@ -64,7 +64,7 @@ def test_public_endpoints_without_a_scope_are_not_limited(rates):
     client = APIClient()
 
     statuses = {
-        _anon_list(client, **_via_proxy('198.51.100.1', '6.6.6.6')).status_code for _ in range(5)
+        _list_posts(client, **_via_proxy('198.51.100.1', '6.6.6.6')).status_code for _ in range(5)
     }
 
     assert statuses == {200}
