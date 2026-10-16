@@ -389,7 +389,7 @@ Most common responses:
 | `401` | Missing or invalid token |
 | `403` | Valid token, but the required role/permission is missing |
 | `404` | Object does not exist or is not publicly available |
-| `429` | Rate limit: DRF throttling of login and feed downloads (`login`, `feed_download`; rates set by the `THROTTLE_*` settings; counted per client IP), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
+| `429` | Rate limit: DRF throttling of login, feed downloads and blog reaction changes (`login`, `feed_download`, `reaction`; rates set by the `THROTTLE_*` settings; counted per client IP), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
 
 ### Multipart nested fields
 

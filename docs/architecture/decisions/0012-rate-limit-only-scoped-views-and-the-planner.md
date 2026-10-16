@@ -7,13 +7,13 @@
 
 Every API view had DRF's `anon` (60/min per client IP) and `user` (240/min) throttles. The website renders public pages (blog, data catalogue, cases) on the server and calls the API for its visitors, so these calls only get separate per-visitor buckets when the whole client-IP chain of [ADR 0011](0011-client-ip-behind-cloudflare-and-ssr.md) is in place: Caddy trusting Cloudflare, and the frontend forwarding the visitor's IP. If any part of that chain is missing, all visitors share one bucket, and public pages show a load error once the whole site passes 60 API calls a minute.
 
-On 2026-10-16, after `main` (with per-client-IP throttles, PR #18) was deployed, public pages showed "Nie udało się wczytać tej strony" while the planner API worked. That API has its own limits ([ADR 0010](0010-public-planner-api-access.md)). Which part of the chain was missing was not checked on the server.
+On 2026-10-16, after `main` (with per-client-IP throttles, PR #18) was deployed, public pages showed the frontend's page load error while the planner API worked. That API has its own limits ([ADR 0010](0010-public-planner-api-access.md)). Which part of the chain was missing was not checked on the server.
 
-The blog, catalogue and cases endpoints are cheap, paginated reads. The limits that protect something are the ones on login (password guessing), feed downloads (bandwidth) and the planner (OpenTripPlanner capacity).
+The blog, catalogue and cases endpoints are cheap, paginated reads. The limits that protect something are the ones on login (password guessing), feed downloads (bandwidth), blog reactions (anonymous writes) and the planner (OpenTripPlanner capacity).
 
 ## Decision
 
-Remove the global `anon` and `user` throttles. Only views with a `throttle_scope` are limited (`login`, `feed_download`), still per client IP, and the public planner API keeps its own per-key, per-IP and global limits.
+Remove the global `anon` and `user` throttles. Only views with a `throttle_scope` are limited (`login`, `feed_download`, and the new `reaction` on blog reaction changes, which the daily reaction limit does not count), still per client IP, and the public planner API keeps its own per-key, per-IP and global limits.
 
 ## Consequences
 

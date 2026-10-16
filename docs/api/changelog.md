@@ -4,7 +4,7 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ## 2026-10-16: no rate limit on blog, catalogue and cases
 
-Not breaking. The global `anon` (60/min per client IP) and `user` (240/min) limits are gone, so endpoints without their own limit no longer answer `429`. Login (`login`), feed downloads (`feed_download`) and the planner API keep their limits. See [ADR 0012](../architecture/decisions/0012-rate-limit-only-scoped-views-and-the-planner.md).
+Not breaking. The global `anon` (60/min per client IP) and `user` (240/min) limits are gone, so endpoints without their own limit no longer answer `429`. Login (`login`), feed downloads (`feed_download`) and the planner API keep their limits. `POST /api/blog/reactions/{post_id}/` gets its own limit (`reaction`, 30/min per client IP), because the daily limit of 10 counts only new reactions, not changes to an existing one. See [ADR 0012](../architecture/decisions/0012-rate-limit-only-scoped-views-and-the-planner.md).
 
 ---
 

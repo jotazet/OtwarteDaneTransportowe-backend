@@ -1,9 +1,11 @@
 """Scoped DRF throttles identify clients by the trusted-proxy client IP."""
 
 import pytest
+from django.contrib.auth import get_user_model
 from django.utils.module_loading import import_string
 from rest_framework.test import APIClient
 
+from blog.models import Post
 from OtwarteDaneTransportowe import settings_base
 
 pytestmark = pytest.mark.django_db
@@ -68,3 +70,21 @@ def test_public_endpoints_without_a_scope_are_not_limited(rates):
     }
 
     assert statuses == {200}
+
+
+def test_reaction_changes_are_limited_per_client_ip(rates):
+    # The daily reaction limit counts only new reactions, not changes.
+    author = get_user_model().objects.create_user('author', 'author@example.com', 'password')
+    post = Post.objects.create(title='Post', author=author, content='body')
+    url = f'/api/blog/reactions/{post.id}/'
+    rates['reaction'] = '2/min'
+    client = APIClient()
+
+    def react(client_ip, reaction):
+        return client.post(url, {'reaction': reaction}, **_via_proxy(client_ip, '6.6.6.6'))
+
+    statuses = [react('198.51.100.1', r).status_code for r in ('like', '', 'like')]
+
+    assert 429 not in statuses[:2]
+    assert statuses[2] == 429
+    assert react('198.51.100.2', 'like').status_code != 429

@@ -180,7 +180,8 @@ REST_FRAMEWORK = {
     # envelope so responses stay bounded as the data grows.
     'DEFAULT_PAGINATION_CLASS': 'OtwarteDaneTransportowe.pagination.DefaultPageNumberPagination',
     'PAGE_SIZE': 50,
-    # Only views with a throttle_scope are limited (login, feed downloads); the
+    # Only views with a throttle_scope are limited (login, feed downloads, blog
+    # reactions); the
     # public planner API has its own limits (planner/access.py). No global
     # per-IP limit: server-side rendering of the website calls the API for
     # its visitors (ADR 0012).
@@ -191,6 +192,7 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'login': os.getenv('THROTTLE_LOGIN', '10/min'),
         'feed_download': os.getenv('THROTTLE_FEED_DOWNLOAD', '120/min'),
+        'reaction': os.getenv('THROTTLE_REACTION', '30/min'),
     },
 }
 
