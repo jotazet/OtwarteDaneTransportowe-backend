@@ -5,6 +5,7 @@ unavailable while OTP is stopped for a graph build.
 """
 
 from datetime import timedelta
+from functools import partial
 
 from django.core.validators import RegexValidator
 from django.utils import timezone
@@ -617,15 +618,10 @@ class VehicleCoverageView(LookupListView):
             if 'vehicle-positions' in (result.get('realtime_polled') or [])
         }
 
-        def query(document, variables):
-            return self.otp_query(document, variables, timeout=SCHEDULE_TIMEOUT_SECONDS)
-
+        query = partial(self.otp_query, timeout=SCHEDULE_TIMEOUT_SECONDS)
         # OTP fails on the start or end of a few trips of some operators (Warsaw on
-        # 2026-10-16: 4 of 1,927 patterns came back null); the other trips still count.
-        def running_query(document, variables):
-            return self.otp_query(
-                document, variables, timeout=SCHEDULE_TIMEOUT_SECONDS, partial=True
-            )
+        # 2026-10-16: 4 of 1,927 patterns came back null); the other patterns still count.
+        running_query = partial(query, partial=True)
 
         try:
             reporting = {row['trip_id'] for row in vehicles.snapshot(query)}

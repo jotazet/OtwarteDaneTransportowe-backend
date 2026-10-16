@@ -4,7 +4,7 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ## 2026-10-16: vehicle coverage despite engine errors on some trips
 
-Not breaking. `GET /api/planner/v1/vehicles/coverage/` answered `503 planner.unavailable` for a whole request when OpenTripPlanner failed on the start or end of a few trips of one operator: on 2026-10-16 every request that included Warsaw (`warszawa:0`). Those trips are now left out of `trips_under_way` and `trips_with_position`, and the other trips and operators are counted. See [vehicles/coverage/](planner.md#get-apiplannerv1vehiclescoverage).
+Not breaking. `GET /api/planner/v1/vehicles/coverage/` answered `503 planner.unavailable` for a whole request when OpenTripPlanner failed on the start or end of a few trips of one operator: on 2026-10-16 every request that included Warsaw (`warszawa:0`). The trips of the line variants with such a trip are now left out of `trips_under_way` and `trips_with_position`, and the other trips and operators are counted. See [vehicles/coverage/](planner.md#get-apiplannerv1vehiclescoverage).
 
 ---
 
