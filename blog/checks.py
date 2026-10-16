@@ -27,7 +27,7 @@ def check_trusted_proxy_cidrs(app_configs, **kwargs):
                 'If this deployment sits behind a reverse proxy, every visitor '
                 'is seen with the proxy address: blog reactions collapse to one '
                 'shared reaction per post and one shared daily limit, and all '
-                'anonymous requests share one throttle bucket. Set '
+                'visitors share one login, feed download and planner limit. Set '
                 'TRUSTED_PROXY_CIDRS to the proxy network(s) (e.g. '
                 '172.16.0.0/12,127.0.0.1/32 for nginx in front of Docker) and '
                 'make the proxy forward X-Forwarded-For. Ignore this only when '
