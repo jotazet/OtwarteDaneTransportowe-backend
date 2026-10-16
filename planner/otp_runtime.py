@@ -42,11 +42,15 @@ class OtpBusy(OtpUnavailable):
 
 
 class OtpQueryError(OtpUnavailable):
-    """OTP answered, with GraphQL errors (possibly caused by the query's input)."""
+    """OTP answered, with GraphQL errors (possibly caused by the query's input).
 
-    def __init__(self, messages: list[str]):
+    ``data`` is what OTP resolved anyway; the parts that failed are null in it.
+    """
+
+    def __init__(self, messages: list[str], data: dict | None = None):
         super().__init__('; '.join(messages)[:500])
         self.messages = messages
+        self.data = data
 
 
 @dataclass
@@ -160,5 +164,7 @@ def query(
     finally:
         _query_slots.release()
     if payload.get('errors'):
-        raise OtpQueryError([str(error.get('message', error)) for error in payload['errors']])
+        raise OtpQueryError(
+            [str(error.get('message', error)) for error in payload['errors']], payload.get('data')
+        )
     return payload['data']

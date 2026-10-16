@@ -116,11 +116,14 @@ def otp(monkeypatch, graph):
 
     class Fake:
         calls = []
+        running_error = None  # raised for the running-trips query when set
 
         def query(self, document, variables=None, timeout=None):
             self.calls.append(variables)
             if document == vehicles.VEHICLES_DOCUMENT:
                 return VEHICLES
+            if self.running_error:
+                raise self.running_error
             if variables['agency'] == 'kml:1':
                 return {'agency': {**MPK['agency'], 'gtfsId': 'kml:1', 'name': 'KML'}}
             return MPK if variables['agency'] == 'krk:302' else {'agency': None}
@@ -201,6 +204,29 @@ def test_while_one_request_recounts_others_use_the_previous_count(otp, graph):
 
     assert row['trips_under_way'] == 2
     assert len([call for call in otp.calls if call and 'agency' in call]) == 1
+
+
+def test_trips_otp_cannot_resolve_are_left_out(otp):
+    # OTP fails on the start or end of a few trips (Warsaw on 2026-10-16) and answers
+    # null for their pattern; the operator's other patterns still count.
+    routes = [*MPK['agency']['routes'], {'patterns': [None]}]
+    otp.running_error = otp_runtime.OtpQueryError(
+        ['Exception while fetching data : null'], {'agency': {**MPK['agency'], 'routes': routes}}
+    )
+
+    [row] = get({'agencies': 'krk:302'}).json()['results']
+
+    assert (row['trips_under_way'], row['trips_with_position']) == (2, 1)
+
+
+def test_an_operator_otp_cannot_resolve_fails_the_request(otp):
+    otp.running_error = otp_runtime.OtpQueryError(
+        ['Exception while fetching data : null'], {'agency': None}
+    )
+
+    response = get({'agencies': 'krk:302'})
+
+    assert (response.status_code, response.json()['code']) == (503, 'planner.unavailable')
 
 
 def test_no_served_graph_no_coverage(otp, graph):

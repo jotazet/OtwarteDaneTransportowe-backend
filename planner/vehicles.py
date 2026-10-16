@@ -196,9 +196,11 @@ def running_trips(agency_id: str, graph_id: int, query) -> dict | None:
 
 def _under_way(agency: dict, now: datetime) -> set[str]:
     trips = set()
-    for route in agency.get('routes') or []:
-        for pattern in route.get('patterns') or []:
-            for run in (pattern.get('today') or []) + (pattern.get('yesterday') or []):
+    # A part OTP failed to resolve is null and is skipped (see VehicleCoverageView).
+    for route in filter(None, agency.get('routes') or []):
+        for pattern in filter(None, route.get('patterns') or []):
+            runs = (pattern.get('today') or []) + (pattern.get('yesterday') or [])
+            for run in filter(None, runs):
                 if (run.get('realTimeTripState') or {}).get('canceled'):
                     continue
                 began = _time(run.get('start'), 'departure')

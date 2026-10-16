@@ -531,7 +531,7 @@ How many of the chosen operators' trips under way now report a vehicle position:
 - `vehicle_positions`: whether the planner receives the operator's vehicle positions at all. `false` when the operator publishes none, or its feed is currently served from an older version (which gets no realtime data); `coverage` is then `null`, not 0.
 - `coverage`: their ratio, `null` when nothing runs (at night) or `vehicle_positions` is `false`.
 
-Trips under way are recounted at most once a minute per operator (while one request recounts, others get the previous count); vehicles every 10 seconds. Operators not in the planner are left out.
+Trips under way are recounted at most once a minute per operator (while one request recounts, others get the previous count); vehicles every 10 seconds. Operators not in the planner are left out. When the engine fails to resolve the start or end of a trip, every trip of that line variant is left out of both counts; the request fails with `503 planner.unavailable` only when the engine cannot answer for an operator at all.
 
 ### `GET /api/planner/v1/alerts/`
 
