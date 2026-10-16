@@ -620,6 +620,13 @@ class VehicleCoverageView(LookupListView):
         def query(document, variables):
             return self.otp_query(document, variables, timeout=SCHEDULE_TIMEOUT_SECONDS)
 
+        # OTP fails on the start or end of a few trips of some operators (Warsaw on
+        # 2026-10-16: 4 of 1,927 patterns came back null); the other trips still count.
+        def running_query(document, variables):
+            return self.otp_query(
+                document, variables, timeout=SCHEDULE_TIMEOUT_SECONDS, partial=True
+            )
+
         try:
             reporting = {row['trip_id'] for row in vehicles.snapshot(query)}
         except otp_runtime.OtpBusy:
@@ -628,7 +635,7 @@ class VehicleCoverageView(LookupListView):
             ) from None
         rows = []
         for agency_id in agency_ids:
-            running = vehicles.running_trips(agency_id, graph['id'], query)
+            running = vehicles.running_trips(agency_id, graph['id'], running_query)
             if running is None:
                 continue  # not an operator of the served graph
             positions = agency_id.split(':', 1)[0] in with_positions

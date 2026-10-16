@@ -281,7 +281,14 @@ class PlannerPublicView(APIView):
         """Field errors for OTP errors caused by the client's input; override per endpoint."""
         return {}
 
-    def otp_query(self, document: str, variables: dict, timeout: int) -> dict:
+    def otp_query(
+        self, document: str, variables: dict, timeout: int, partial: bool = False
+    ) -> dict:
+        """Run a GraphQL document on OTP; engine failures become planner errors.
+
+        ``partial``: if OTP fails on parts of the answer but resolves every top-level
+        field, return the answer with those parts null instead of failing.
+        """
         try:
             return otp_runtime.query(document, variables, timeout=timeout)
         except otp_runtime.OtpBusy:
@@ -292,6 +299,9 @@ class PlannerPublicView(APIView):
             fields = self.otp_input_errors(exc.messages)
             if fields:
                 raise exceptions.ValidationError(fields) from None
+            if partial and exc.data and None not in exc.data.values():
+                logger.warning('OTP answered a planner query in part: %s', exc)
+                return exc.data
             logger.warning('OTP failed a planner query', exc_info=True)
             raise PlannerError('planner.unavailable', 503, details={'reason': 'engine'}) from None
         except otp_runtime.OtpUnavailable:

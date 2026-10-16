@@ -203,6 +203,40 @@ def test_while_one_request_recounts_others_use_the_previous_count(otp, graph):
     assert len([call for call in otp.calls if call and 'agency' in call]) == 1
 
 
+def test_trips_otp_cannot_resolve_are_left_out(otp, monkeypatch):
+    # OTP fails on the start or end of a few trips (Warsaw on 2026-10-16) and answers
+    # null for their pattern; the operator's other trips still count.
+    routes = [*MPK['agency']['routes'], {'patterns': [None]}]
+    answer = {'agency': {**MPK['agency'], 'routes': routes}}
+    fake = otp.query
+
+    def query(document, variables=None, timeout=None):
+        if document == vehicles.RUNNING_DOCUMENT:
+            raise otp_runtime.OtpQueryError(['Exception while fetching data : null'], answer)
+        return fake(document, variables, timeout)
+
+    monkeypatch.setattr(otp_runtime, 'query', query)
+
+    [row] = get({'agencies': 'krk:302'}).json()['results']
+
+    assert (row['trips_under_way'], row['trips_with_position']) == (2, 1)
+
+
+def test_an_operator_otp_cannot_resolve_fails_the_request(otp, monkeypatch):
+    def query(document, variables=None, timeout=None):
+        if document == vehicles.RUNNING_DOCUMENT:
+            raise otp_runtime.OtpQueryError(
+                ['Exception while fetching data : null'], {'agency': None}
+            )
+        return VEHICLES
+
+    monkeypatch.setattr(otp_runtime, 'query', query)
+
+    response = get({'agencies': 'krk:302'})
+
+    assert (response.status_code, response.json()['code']) == (503, 'planner.unavailable')
+
+
 def test_no_served_graph_no_coverage(otp, graph):
     GraphBuild.objects.update(is_active=False)
 
