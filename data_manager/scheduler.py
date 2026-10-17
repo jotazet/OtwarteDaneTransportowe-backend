@@ -179,7 +179,7 @@ def _log_static_error(entry, error_type, exc, http_code=None) -> None:
 
 
 def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
-    """Pobiera plik z URL i zapisuje jako cached_file. Błędy trafiają do FeedFetchError."""
+    """Fetch the URL and store it as cached_file. Errors are recorded as FeedFetchError."""
     if not endpoint.is_proxy_managed:
         logger.info(
             'Skipping realtime endpoint_rt=%d — not proxy-managed (hide_original=False)',

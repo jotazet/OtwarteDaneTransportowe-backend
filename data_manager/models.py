@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.files.storage import FileSystemStorage
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from data_manager.fields import EncryptedCharField
@@ -1012,10 +1012,20 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
         Never removes one: alerts come and go, and a feed is empty at night. New
         endpoints (a changed URL recreates them) start from none.
         """
-        merged = sorted(set(self.entity_types) | found)
-        if merged != self.entity_types:
-            RealtimeEndpointRT.objects.filter(pk=self.pk).update(entity_types=merged)
-            self.entity_types = merged
+        if found <= set(self.entity_types):
+            return
+        # Merge with the stored list under a lock: verification and the refresh
+        # loop may both add types to the same endpoint.
+        with transaction.atomic():
+            stored = (
+                RealtimeEndpointRT.objects.select_for_update()
+                .values_list('entity_types', flat=True)
+                .get(pk=self.pk)
+            )
+            merged = sorted(set(stored) | found)
+            if merged != stored:
+                RealtimeEndpointRT.objects.filter(pk=self.pk).update(entity_types=merged)
+        self.entity_types = merged
 
 
 # ---------------------------------------------------------------------------
