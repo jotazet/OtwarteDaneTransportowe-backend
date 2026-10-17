@@ -251,6 +251,22 @@ def test_answer_is_mapped_to_utc_instants_ids_and_cursors(otp):
         'krk:2047482',
         'krk:2047513',
     ]
+    assert tram['stops'][1] == {
+        'stop_id': 'krk:2047482',
+        'name': 'Hala Targowa',
+        'lat': 50.058639,
+        'lon': 19.948875,
+        'arrival': {
+            'scheduled': '2026-10-14T06:17:00Z',
+            'estimated': '2026-10-14T06:18:00Z',
+            'delay_s': 60,
+        },
+        'departure': {
+            'scheduled': '2026-10-14T06:17:00Z',
+            'estimated': '2026-10-14T06:18:00Z',
+            'delay_s': 60,
+        },
+    }
     assert tram['alerts'][0] == {
         'id': 'QWxlcnQ6a3JrOjE',
         'header': 'Objazd',
@@ -259,6 +275,21 @@ def test_answer_is_mapped_to_utc_instants_ids_and_cursors(otp):
         'effect': 'detour',
         'severity': 'warning',
     }
+
+
+def test_flexible_stop_has_no_scheduled_time(otp):
+    answer = copy.deepcopy(OTP_ANSWER)
+    call = answer['planConnection']['edges'][0]['node']['legs'][1]['stopCalls'][1]
+    # A flexible call's schedule is a TimeWindow, which the ArrivalDepartureTime fragment skips.
+    call['schedule'] = {'time': {}}
+    call['realTime'] = None
+    otp.answer = answer
+
+    body = get({'from': '50.06,19.93', 'to': '50.07,20.03', 'stops': 'true'}).json()
+
+    stop = body['itineraries'][0]['legs'][1]['stops'][1]
+    empty = {'scheduled': None, 'estimated': None, 'delay_s': None}
+    assert (stop['stop_id'], stop['arrival'], stop['departure']) == ('krk:2047482', empty, empty)
 
 
 @pytest.mark.parametrize(

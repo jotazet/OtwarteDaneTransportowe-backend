@@ -77,6 +77,8 @@ query Plan(
           }
           stopCalls @include(if: $withStops) {
             stopLocation { ... on Stop { gtfsId name lat lon } }
+            schedule { time { ... on ArrivalDepartureTime { arrival departure } } }
+            realTime { arrival { time delay } departure { time delay } }
           }
         }
       }
@@ -263,11 +265,7 @@ def _leg(leg: dict) -> dict:
         'rented': bool(leg.get('rentedBike')),
         'geometry': (leg.get('legGeometry') or {}).get('points'),
         'alerts': [_alert(alert) for alert in leg.get('alerts') or []],
-        'stops': (
-            [_stop_call(call['stopLocation']) for call in stop_calls]
-            if stop_calls is not None
-            else None
-        ),
+        'stops': [_stop_call(call) for call in stop_calls] if stop_calls is not None else None,
     }
 
 
@@ -304,12 +302,27 @@ def _alert(alert: dict) -> dict:
     }
 
 
-def _stop_call(location: dict) -> dict:
+def _stop_call(call: dict) -> dict:
+    location = call['stopLocation']
+    # Flexible (GTFS-Flex) calls have a time window instead of times: `scheduled` is null.
+    scheduled = (call.get('schedule') or {}).get('time') or {}
+    realtime = call.get('realTime') or {}
     return {
         'stop_id': location.get('gtfsId'),
         'name': location.get('name'),
         'lat': location.get('lat'),
         'lon': location.get('lon'),
+        'arrival': call_time(scheduled.get('arrival'), realtime.get('arrival')),
+        'departure': call_time(scheduled.get('departure'), realtime.get('departure')),
+    }
+
+
+def call_time(scheduled: str | None, estimate: dict | None) -> dict:
+    """A stop call's arrival or departure: timetable time and realtime estimate, in UTC."""
+    return {
+        'scheduled': utc(scheduled),
+        'estimated': utc(estimate['time']) if estimate else None,
+        'delay_s': duration_seconds(estimate['delay']) if estimate else None,
     }
 
 

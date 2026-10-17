@@ -212,7 +212,7 @@ An unknown `from` or `to` stop is not a parameter error: the answer is `200` wit
 | `legs[].trip_id`, `service_date` | Identify the vehicle's trip on that day (`service_date` is the timetable day, which for trips after midnight can be the day before). |
 | `legs[].geometry` | With `geometry=true`: the leg's path as an [encoded polyline](https://developers.google.com/maps/documentation/utilities/polylinealgorithm) (precision 5); otherwise `null`. |
 | `legs[].alerts` | Service alerts published by the operator for that leg. `header` and `description` are the operator's own texts, usually in Polish; `effect` and `severity` are the lowercase GTFS-RT values (`detour`, `no_service`, …; `info`, `warning`, `severe`). |
-| `legs[].stops` | With `stops=true`: the stops of a transit leg from boarding to alighting (walking legs: `[]`); otherwise `null`. |
+| `legs[].stops` | With `stops=true`: the stops of a transit leg from boarding to alighting (walking legs: `[]`); otherwise `null`. Each has `stop_id`, `name`, `lat`, `lon`, `arrival` and `departure`; the times are `scheduled`, `estimated` and `delay_s` as in `start`. Show `departure` at the boarding stop and in between, `arrival` at the alighting stop. `scheduled` is `null` at the stops of flexible (GTFS-Flex) trips, which have a time window instead of a time. |
 | `next_cursor`, `previous_cursor` | Pass as `cursor` for the next or previous page. |
 | `routing_errors` | Why no (or no better) trip was found; see below. The answer is still `200`. |
 

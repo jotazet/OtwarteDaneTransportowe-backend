@@ -252,11 +252,19 @@ class AlertSerializer(serializers.Serializer):
     severity = serializers.CharField(allow_null=True)
 
 
+class CallTimeSerializer(serializers.Serializer):
+    scheduled = serializers.CharField(allow_null=True)
+    estimated = serializers.CharField(allow_null=True)
+    delay_s = serializers.IntegerField(allow_null=True)
+
+
 class StopCallSerializer(serializers.Serializer):
     stop_id = serializers.CharField(allow_null=True)
     name = serializers.CharField(allow_null=True)
     lat = serializers.FloatField(allow_null=True)
     lon = serializers.FloatField(allow_null=True)
+    arrival = CallTimeSerializer()
+    departure = CallTimeSerializer()
 
 
 class LegSerializer(FromFieldMixin, serializers.Serializer):

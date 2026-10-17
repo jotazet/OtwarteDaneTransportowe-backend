@@ -27,7 +27,7 @@ from planner.api.params import (
     id_list,
     organization_list,
 )
-from planner.api.public_views import AgencySummarySerializer
+from planner.api.public_views import AgencySummarySerializer, CallTimeSerializer
 from planner.models import SCOPE_ID_PATTERN, GraphBuild, IndexedBlockTrip, IndexedRoute
 
 SCHEDULE_TIMEOUT_SECONDS = 10
@@ -121,12 +121,6 @@ class RouteVariantSerializer(serializers.Serializer):
 
 class RouteDetailSerializer(RouteRefSerializer):
     variants = RouteVariantSerializer(many=True)
-
-
-class CallTimeSerializer(serializers.Serializer):
-    scheduled = serializers.CharField(allow_null=True)
-    estimated = serializers.CharField(allow_null=True)
-    delay_s = serializers.IntegerField(allow_null=True)
 
 
 class CallSerializer(serializers.Serializer):

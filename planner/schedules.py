@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from planner.otp_config import TRANSIT_TIME_ZONE
-from planner.planning import duration_seconds, utc
+from planner.planning import call_time
 from planner.search_index import sort_key
 
 ROUTE_FIELDS = 'gtfsId shortName longName mode color textColor agency { gtfsId name }'
@@ -298,7 +298,7 @@ def _block_call(call: dict, which: str) -> dict:
     estimate = (call.get('realTime') or {}).get(which)
     return {
         'stop': _stop(call.get('stopLocation') or {}),
-        **_call_time(scheduled, estimate),
+        **call_time(scheduled, estimate),
     }
 
 
@@ -354,16 +354,8 @@ def _call(call: dict) -> dict:
     realtime = call.get('realTime') or {}
     return {
         'stop': _stop(call.get('stopLocation') or {}),
-        'arrival': _call_time(scheduled.get('arrival'), realtime.get('arrival')),
-        'departure': _call_time(scheduled.get('departure'), realtime.get('departure')),
-    }
-
-
-def _call_time(scheduled: str | None, estimate: dict | None) -> dict:
-    return {
-        'scheduled': utc(scheduled),
-        'estimated': utc(estimate['time']) if estimate else None,
-        'delay_s': duration_seconds(estimate['delay']) if estimate else None,
+        'arrival': call_time(scheduled.get('arrival'), realtime.get('arrival')),
+        'departure': call_time(scheduled.get('departure'), realtime.get('departure')),
     }
 
 
