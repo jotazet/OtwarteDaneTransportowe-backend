@@ -40,6 +40,15 @@ class PlannerFeed(models.Model):
     )
     is_enabled = models.BooleanField(default=True)
     include_realtime = models.BooleanField(default=True)
+    # Poll the GTFS-RT published for this other feed of the organization instead,
+    # e.g. for ODT's copy of a provider's feed with shapes added and the same trip IDs.
+    realtime_from = models.ForeignKey(
+        'data_manager.FeedSubmission',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+    )
     failure_policy = models.CharField(
         max_length=16, choices=FAILURE_POLICY_CHOICES, default=POLICY_KEEP_LAST_GOOD
     )

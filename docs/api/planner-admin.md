@@ -43,6 +43,7 @@ DELETE /api/planner/admin/feeds/{id}/
   "feed_id": "krk",
   "is_enabled": true,
   "include_realtime": true,
+  "realtime_from": null,
   "failure_policy": "keep_last_good",
   "last_good_at": "2026-10-14T01:52:10Z",
   "active_result": {
@@ -60,11 +61,12 @@ DELETE /api/planner/admin/feeds/{id}/
 | `feed_id` | OTP feed ID, the prefix of every stop, route and trip ID in the planner (`krk:2047691`). Lowercase letters, digits and hyphens, 2–32 characters. **Cannot change** after creation. |
 | `is_enabled` | Disabled feeds are left out of the next build. |
 | `include_realtime` | Whether OTP polls the feed's published GTFS-RT endpoints. |
+| `realtime_from` | A `FeedSubmission` of the **same organization** whose published GTFS-RT OTP polls instead of this feed's own, or `null` (default). For a copy of a provider's feed with the same trip IDs that has no GTFS-RT of its own, such as ODT's version with shapes added. |
 | `failure_policy` | `keep_last_good` (default): if the newest file fails, the last version that went into a served graph is used and the feed is marked `stale`. `exclude`: the feed is left out. |
 | `last_good_at` | When the feed's last good version went into a served graph. Read-only. |
 | `active_result` | This feed's entry in the build being served, or `null`. Read-only. |
 
-Field error codes: `planner.feed_not_gtfs`, `planner.feed_not_published`, `planner.feed_other_organization` (on `submission`); `planner.invalid_feed_id`, `planner.feed_id_immutable`, `unique` (on `feed_id`).
+Field error codes: `planner.feed_not_gtfs`, `planner.feed_not_published` (on `submission`); `planner.feed_other_organization` (on `submission` and `realtime_from`); `planner.invalid_feed_id`, `planner.feed_id_immutable`, `unique` (on `feed_id`).
 
 Changes take effect at the next build.
 

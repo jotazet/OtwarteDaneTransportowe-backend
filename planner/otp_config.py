@@ -4,6 +4,9 @@ OTP reads build-config.json when it builds a graph and otp-config.json plus
 router-config.json when it serves one; nothing here is edited by hand.
 """
 
+from collections import defaultdict
+from itertools import product
+
 from django.conf import settings
 
 from data_manager.models import RealtimeSubmission, completed_realtime_submission_ids
@@ -84,10 +87,13 @@ def realtime_updaters(planner_feeds) -> tuple[list[dict], list[dict]]:
     OTP reads the same links the public catalogue shows: proxied endpoints from
     this app's cached copy (over the internal network, with the token header),
     the others from the provider's URL. Those URLs are checked like any other
-    outbound URL first; a blocked one is skipped. Returns ``(updaters, skipped)``
-    where ``skipped`` lists ``{feed_id, endpoint_type, error_code}``.
+    outbound URL first; a blocked one is skipped. A feed with ``realtime_from``
+    gets the GTFS-RT published for that feed instead of its own. Returns
+    ``(updaters, skipped)`` where ``skipped`` lists ``{feed_id, endpoint_type, error_code}``.
     """
-    feed_ids = {feed.submission_id: feed.feed_id for feed in planner_feeds}
+    feed_ids = defaultdict(list)
+    for feed in planner_feeds:
+        feed_ids[feed.realtime_from_id or feed.submission_id].append(feed.feed_id)
     submissions = (
         RealtimeSubmission.objects.filter(
             static_submission_id__in=feed_ids,
@@ -99,8 +105,7 @@ def realtime_updaters(planner_feeds) -> tuple[list[dict], list[dict]]:
     )
     updaters, skipped = [], []
     for rts in submissions:
-        feed_id = feed_ids[rts.static_submission_id]
-        for endpoint in rts.endpoints.all():
+        for feed_id, endpoint in product(feed_ids[rts.static_submission_id], rts.endpoints.all()):
             updater_type = UPDATER_TYPES.get(endpoint.endpoint_type)
             if updater_type is None:
                 continue

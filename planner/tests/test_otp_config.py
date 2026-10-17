@@ -98,6 +98,21 @@ def test_endpoint_resolving_to_a_private_address_is_skipped(make_feed, fake_dns)
     ]
 
 
+def test_feed_with_realtime_from_polls_that_feeds_realtime_instead(make_feed, fake_dns):
+    original = make_feed('olkusz')
+    make_realtime(original, [('trip_update', 'https://src.example.org/tu.pb', False)])
+    shaped = make_feed('olkusz-shaped', org=original.submission.transport_organization)
+    make_realtime(shaped, [('trip_update', 'https://src.example.org/own.pb', False)])
+    shaped.realtime_from = original.submission
+
+    updaters, _ = otp_config.realtime_updaters([original, shaped])
+
+    assert sorted((u['feedId'], u['url']) for u in updaters) == [
+        ('olkusz', 'https://src.example.org/tu.pb'),
+        ('olkusz-shaped', 'https://src.example.org/tu.pb'),
+    ]
+
+
 def test_unpublished_realtime_is_ignored(make_feed, fake_dns):
     feed = make_feed('krk')
     make_realtime(feed, [('trip_update', 'https://src.example.org/tu.pb', False)], published=False)
