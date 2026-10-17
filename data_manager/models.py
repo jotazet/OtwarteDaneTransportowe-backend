@@ -2,9 +2,10 @@ import os
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.files.storage import FileSystemStorage
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from data_manager.fields import EncryptedCharField
@@ -957,6 +958,12 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
         help_text='Server-cached copy when hide_original=True.',
     )
     cached_at = models.DateTimeField(null=True, blank=True)
+    entity_types = ArrayField(
+        models.CharField(max_length=30),
+        default=list,
+        blank=True,
+        help_text='GTFS-RT endpoint types whose entities fetched bodies held (a feed may mix them).',
+    )
     fetch_status = models.CharField(
         max_length=20,
         choices=FETCH_STATUS_CHOICES,
@@ -998,6 +1005,27 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
     def is_proxy_managed(self) -> bool:
         """True when the server periodically caches and serves this endpoint URL."""
         return self.hide_original
+
+    def record_entity_types(self, found: set[str]) -> None:
+        """Add the entity types seen in a fetched body.
+
+        Never removes one: alerts come and go, and a feed is empty at night. New
+        endpoints (a changed URL recreates them) start from none.
+        """
+        if found <= set(self.entity_types):
+            return
+        # Merge with the stored list under a lock: verification and the refresh
+        # loop may both add types to the same endpoint.
+        with transaction.atomic():
+            stored = (
+                RealtimeEndpointRT.objects.select_for_update()
+                .values_list('entity_types', flat=True)
+                .get(pk=self.pk)
+            )
+            merged = sorted(set(stored) | found)
+            if merged != stored:
+                RealtimeEndpointRT.objects.filter(pk=self.pk).update(entity_types=merged)
+        self.entity_types = merged
 
 
 # ---------------------------------------------------------------------------

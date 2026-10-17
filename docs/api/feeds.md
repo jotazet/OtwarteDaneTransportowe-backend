@@ -577,7 +577,8 @@ This is not a list of individual feeds, but a list of **all** transport organiza
             "interval": 30,
             "feed_url": "https://example.com/feed/rt/12/trip_update/",
             "cached_at": "2026-04-27T11:00:00Z",
-            "is_original": true
+            "is_original": true,
+            "entity_types": ["trip_update", "vehicle_position"]
           }
         ]
       }
@@ -600,7 +601,8 @@ This is not a list of individual feeds, but a list of **all** transport organiza
             "interval": 60,
             "feed_url": "https://example.com/feed/rt/14/gbfs/",
             "cached_at": "2026-04-27T11:00:00Z",
-            "is_original": true
+            "is_original": true,
+            "entity_types": []
           }
         ]
       }
@@ -610,6 +612,8 @@ This is not a list of individual feeds, but a list of **all** transport organiza
 ```
 
 The public catalogue shows only feeds whose latest history entry has `stage_after=4`.
+
+`endpoints[].entity_types` lists what a GTFS-RT endpoint actually carries, as endpoint type values (`trip_update`, `vehicle_position`, `service_alert`), sorted. One GTFS-RT feed may mix entity types, so an endpoint submitted as `trip_update` can also hold vehicle positions and alerts, as in the example. ODT records the types it has seen in the bodies it fetched: at verification, and on every refresh of a proxied endpoint (`hide_original=true`). A type is never removed (alerts come and go, and many feeds are empty at night), so the list may hold a type the current body lacks. An endpoint ODT has not fetched since it was saved has `[]`, and so do SIRI and GBFS endpoints.
 
 `static_feed.download_time_1` and `download_time_2` are the daily times, in **UTC** (`HH:MM:SS`), at which ODT refreshes a proxied feed (`hide_original=true`). Both are `null` for a feed that is not proxied, because ODT does not fetch it on a schedule; `download_time_2` is also `null` when only one time is set. Convert them to local time for display (Poland is UTC+1, UTC+2 in summer).
 

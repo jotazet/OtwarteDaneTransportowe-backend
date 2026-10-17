@@ -1244,7 +1244,14 @@ class PublishedEndpointRTSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = RealtimeEndpointRT
-        fields = ['endpoint_type', 'interval', 'feed_url', 'cached_at', 'is_original']
+        fields = [
+            'endpoint_type',
+            'interval',
+            'feed_url',
+            'cached_at',
+            'is_original',
+            'entity_types',
+        ]
 
     def get_feed_url(self, obj):
         request = self.context.get('request')
