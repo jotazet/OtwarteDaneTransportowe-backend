@@ -253,8 +253,8 @@ class AlertSerializer(serializers.Serializer):
 
 
 class CallTimeSerializer(serializers.Serializer):
-    scheduled = serializers.CharField(allow_null=True)
-    estimated = serializers.CharField(allow_null=True)
+    scheduled = serializers.CharField(allow_null=True, help_text='UTC instant.')
+    estimated = serializers.CharField(allow_null=True, help_text='Realtime estimate, if any.')
     delay_s = serializers.IntegerField(allow_null=True)
 
 

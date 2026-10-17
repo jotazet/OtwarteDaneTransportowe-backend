@@ -14,7 +14,7 @@ from planner.models import IndexedAgency, PlannerSettings
 pytestmark = pytest.mark.django_db
 
 PLAN = '/api/planner/v1/plan/'
-# A real OTP 2.10 answer (Kraków, tram 70), trimmed, with a realtime estimate added.
+# A real OTP 2.10 answer (Kraków, tram 70), trimmed, with a realtime estimate and stop call times added.
 OTP_ANSWER = json.loads((Path(__file__).parent / 'fixtures' / 'otp_plan_krakow.json').read_text())
 EMPTY_ANSWER = {
     'planConnection': {'routingErrors': [], 'pageInfo': {}, 'edges': []},

@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from planner.otp_config import TRANSIT_TIME_ZONE
-from planner.planning import CALL_TIMES_FRAGMENT, call_time, call_times
+from planner.planning import CALL_TIMES_FRAGMENT, call_times
 from planner.search_index import sort_key
 
 ROUTE_FIELDS = 'gtfsId shortName longName mode color textColor agency { gtfsId name }'
@@ -292,12 +292,7 @@ def block_trips(data: dict, trip_count: int, now: datetime) -> list[dict]:
 
 
 def _block_call(call: dict, which: str) -> dict:
-    scheduled = ((call.get('schedule') or {}).get('time') or {}).get(which)
-    estimate = (call.get('realTime') or {}).get(which)
-    return {
-        'stop': _stop(call.get('stopLocation') or {}),
-        **call_time(scheduled, estimate),
-    }
+    return {'stop': _stop(call.get('stopLocation') or {}), **call_times(call)[which]}
 
 
 def route_detail(data: dict) -> dict | None:
