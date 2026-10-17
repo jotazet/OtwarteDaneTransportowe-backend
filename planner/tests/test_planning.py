@@ -277,6 +277,21 @@ def test_answer_is_mapped_to_utc_instants_ids_and_cursors(otp):
     }
 
 
+def test_stops_have_no_estimates_when_the_leg_has_none(otp):
+    answer = copy.deepcopy(OTP_ANSWER)
+    tram = answer['planConnection']['edges'][0]['node']['legs'][1]
+    # With realtime=false OTP drops the leg's estimates but still fills its stop calls'.
+    tram['start']['estimated'] = tram['end']['estimated'] = None
+    otp.answer = answer
+
+    body = get({'from': '50.06,19.93', 'to': '50.07,20.03', 'stops': 'true', 'realtime': 'false'})
+
+    stops = body.json()['itineraries'][0]['legs'][1]['stops']
+    assert {stop['departure']['estimated'] for stop in stops} == {None}
+    assert {stop['arrival']['delay_s'] for stop in stops} == {None}
+    assert stops[1]['departure']['scheduled'] == '2026-10-14T06:17:00Z'
+
+
 def test_flexible_stop_has_no_scheduled_time(otp):
     answer = copy.deepcopy(OTP_ANSWER)
     call = answer['planConnection']['edges'][0]['node']['legs'][1]['stopCalls'][1]

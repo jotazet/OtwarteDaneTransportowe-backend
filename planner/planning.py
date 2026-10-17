@@ -248,6 +248,7 @@ def _leg(leg: dict) -> dict:
     route = leg.get('route')
     agency = leg.get('agency')
     stop_calls = leg.get('stopCalls')
+    realtime = leg['start'].get('estimated') is not None
     return {
         'mode': _lower(leg['mode']),
         'from': _place(leg['from']),
@@ -271,11 +272,13 @@ def _leg(leg: dict) -> dict:
         'trip_id': (leg.get('trip') or {}).get('gtfsId'),
         'service_date': leg.get('serviceDate'),
         'headsign': leg.get('headsign'),
-        'realtime': leg['start'].get('estimated') is not None,
+        'realtime': realtime,
         'rented': bool(leg.get('rentedBike')),
         'geometry': (leg.get('legGeometry') or {}).get('points'),
         'alerts': [_alert(alert) for alert in leg.get('alerts') or []],
-        'stops': [_stop_call(call) for call in stop_calls] if stop_calls is not None else None,
+        'stops': (
+            [_stop_call(call, realtime) for call in stop_calls] if stop_calls is not None else None
+        ),
     }
 
 
@@ -307,8 +310,12 @@ def _alert(alert: dict) -> dict:
     }
 
 
-def _stop_call(call: dict) -> dict:
+def _stop_call(call: dict, realtime: bool) -> dict:
     location = call['stopLocation']
+    if not realtime:
+        # OTP reads a call's realTime from the live timetable even with excludeRealTimeUpdates,
+        # so the stops would show delays the leg was not planned with.
+        call = {**call, 'realTime': None}
     return {
         'stop_id': location.get('gtfsId'),
         'name': location.get('name'),

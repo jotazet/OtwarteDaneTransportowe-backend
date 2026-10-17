@@ -4,7 +4,7 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ## 2026-10-17: times at the stops of a planned leg
 
-Not breaking. With `stops=true`, every stop in `legs[].stops` of `GET /api/planner/v1/plan/` now has `arrival` and `departure` (`scheduled`, `estimated`, `delay_s`, as in `trip/`), so a trip's details can show when the vehicle calls at the stops along the way, not only at boarding and alighting. `scheduled` is `null` at the stops of flexible (GTFS-Flex) trips. See [plan/](planner.md#get-apiplannerv1plan).
+Not breaking. With `stops=true`, every stop in `legs[].stops` of `GET /api/planner/v1/plan/` now has `arrival` and `departure` (`scheduled`, `estimated`, `delay_s`, as in `trip/`), so a trip's details can show when the vehicle calls at the stops along the way, not only at boarding and alighting. `scheduled` is `null` at the stops of flexible (GTFS-Flex) trips. Stops get estimates only on legs that have one (`realtime`), so never with `realtime=false` (fixed on the day of release: they had live estimates there). See [plan/](planner.md#get-apiplannerv1plan).
 
 ---
 
