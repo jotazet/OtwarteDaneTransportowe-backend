@@ -146,9 +146,9 @@ def _polled_entity_types(endpoints) -> list[tuple]:
     for endpoint in endpoints:
         extra = [t for t in endpoint.entity_types if t not in covered]
         covered.update(extra)
-        entity_types = [t for t in [endpoint.endpoint_type, *extra] if t in UPDATER_TYPES]
-        if entity_types:
-            polled.append((endpoint, entity_types))
+        own = [endpoint.endpoint_type] if endpoint.endpoint_type in UPDATER_TYPES else []
+        if own or extra:
+            polled.append((endpoint, own + extra))
     return polled
 
 
