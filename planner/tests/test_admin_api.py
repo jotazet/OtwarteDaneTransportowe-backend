@@ -126,6 +126,19 @@ def test_realtime_from_only_names_a_feed_of_the_same_organization(
     assert cleared.data['realtime_from'] is None
 
 
+def test_new_feed_takes_realtime_only_from_its_organization(admin_client, make_submission):
+    shaped = make_submission('olkusz-shaped')
+    other_org = make_submission('waw')
+
+    refused = admin_client.post(
+        f'{BASE}/feeds/',
+        {'submission': shaped.id, 'feed_id': 'olkusz', 'realtime_from': other_org.id},
+        format='json',
+    )
+
+    assert refused.data['realtime_from'][0].code == 'planner.feed_other_organization'
+
+
 def test_candidates_show_which_feeds_are_already_included(admin_client, make_feed, make_submission):
     feed = make_feed('krk')
     make_submission('waw')
