@@ -105,15 +105,10 @@ def realtime_updaters(planner_feeds) -> tuple[list[dict], list[dict]]:
     )
     updaters, skipped = [], []
     for rts in submissions:
-        for feed_id, endpoint in product(feed_ids[rts.static_submission_id], rts.endpoints.all()):
-            updater_type = UPDATER_TYPES.get(endpoint.endpoint_type)
-            if updater_type is None:
-                continue
-            updater = {
-                'type': updater_type,
-                'feedId': feed_id,
-                'frequency': f'PT{endpoint.interval}S',
-            }
+        polled = _polled_entity_types(rts.endpoints.all())
+        for feed_id, (endpoint, entity_types) in product(
+            feed_ids[rts.static_submission_id], polled
+        ):
             try:
                 url, headers = otp_link(rts.id, endpoint)
             except OutboundURLBlocked:
@@ -125,11 +120,36 @@ def realtime_updaters(planner_feeds) -> tuple[list[dict], list[dict]]:
                     }
                 )
                 continue
-            updater['url'] = url
-            if headers:
-                updater['headers'] = headers
-            updaters.append(updater)
+            for entity_type in entity_types:
+                updater = {
+                    'type': UPDATER_TYPES[entity_type],
+                    'feedId': feed_id,
+                    'frequency': f'PT{endpoint.interval}S',
+                    'url': url,
+                }
+                if headers:
+                    updater['headers'] = headers
+                updaters.append(updater)
     return updaters, skipped
+
+
+def _polled_entity_types(endpoints) -> list[tuple]:
+    """Each endpoint OTP polls, with the entity types it reads from it.
+
+    One GTFS-RT feed may mix entity types, and some providers publish everything
+    under one endpoint. A type is read from its own endpoint when the submission
+    has one, otherwise from the first endpoint whose bodies held it.
+    """
+    endpoints = list(endpoints)
+    covered = {endpoint.endpoint_type for endpoint in endpoints}
+    polled = []
+    for endpoint in endpoints:
+        extra = [t for t in endpoint.entity_types if t not in covered]
+        covered.update(extra)
+        entity_types = [t for t in [endpoint.endpoint_type, *extra] if t in UPDATER_TYPES]
+        if entity_types:
+            polled.append((endpoint, entity_types))
+    return polled
 
 
 def rental_updaters(sources) -> tuple[list[dict], list[dict]]:

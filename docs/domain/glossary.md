@@ -79,7 +79,7 @@ Roles are Django groups; see [ADR 0003](../architecture/decisions/0003-jwt-and-g
 | Name | What it is | Reference |
 | --- | --- | --- |
 | GTFS | Static schedule format (ZIP of CSV files). | <https://gtfs.org/documentation/schedule/reference/> |
-| GTFS-RT | Realtime extension of GTFS (protobuf): trip updates, vehicle positions, service alerts. | <https://gtfs.org/documentation/realtime/reference/> |
+| GTFS-RT | Realtime extension of GTFS (protobuf): trip updates, vehicle positions, service alerts (its entity types; one feed may mix them). | <https://gtfs.org/documentation/realtime/reference/> |
 | NeTEx | European XML standard for static transport data (CEN/TS 16614); the EU MMTIS format. | <https://netex-cen.eu> |
 | SIRI | European realtime standard (CEN/TS 15531); ODT supports SX, SM, VM, ET, GM. | <https://transmodel-cen.eu/index.php/siri/> |
 | GBFS | Shared mobility (bikes, scooters) realtime format. | <https://gbfs.org> |

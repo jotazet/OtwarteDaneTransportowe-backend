@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-10-17: entity types of a realtime endpoint
+
+Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).
+
+---
+
 ## 2026-10-17: planner feed with another feed's realtime
 
 Not breaking. Planner feeds in `/api/planner/admin/feeds/` gain **`realtime_from`**: the id of a `FeedSubmission` of the same organization whose published GTFS-RT OTP polls instead of the feed's own, or `null` (default, unchanged behaviour). It lets a copy of a provider's feed with the same trip IDs, such as ODT's version with shapes added, use the provider's realtime. A feed of another organization is refused with `400` and field code `planner.feed_other_organization` on `realtime_from`. Takes effect at the next build. See [Planner feeds](planner-admin.md#planner-feeds).

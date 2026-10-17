@@ -200,7 +200,7 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
 
             # Reject garbage BEFORE touching the cache (see _fetch_static_entry).
             # GTFS-RT is parsed as protobuf here, not merely prefix-checked.
-            validate_realtime_feed_stream(endpoint.submission.protocol, body)
+            entity_types = validate_realtime_feed_stream(endpoint.submission.protocol, body)
 
             # Derive the public cache filename from the URL *path* only — the
             # raw last segment would keep the query string (e.g. '?token=...')
@@ -215,6 +215,7 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
             cached_at=now,
         )
         _delete_stale_cache_file(endpoint.cached_file, old_cached_name)
+        endpoint.record_entity_types(entity_types)
         endpoint.mark_fetch_success(now)
         logger.info('Refreshed realtime endpoint_rt=%d  url=%s', endpoint.pk, endpoint.url)
         return FETCH_OK

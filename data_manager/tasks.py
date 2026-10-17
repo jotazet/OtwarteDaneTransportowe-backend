@@ -996,7 +996,7 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                     )
                 )
             else:
-                validate_realtime_feed_content(rts.protocol, resp.content)
+                ep.record_entity_types(validate_realtime_feed_content(rts.protocol, resp.content))
         except Exception as exc:
             code = next(
                 (c for exc_type, c in exception_codes if isinstance(exc, exc_type)),
