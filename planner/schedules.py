@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from planner.otp_config import TRANSIT_TIME_ZONE
-from planner.planning import call_time
+from planner.planning import CALL_TIMES_FRAGMENT, call_time, call_times
 from planner.search_index import sort_key
 
 ROUTE_FIELDS = 'gtfsId shortName longName mode color textColor agency { gtfsId name }'
@@ -84,13 +84,12 @@ query Trip($id: String!, $date: LocalDate!, $withGeometry: Boolean!) {{
       serviceDate
       stopCalls {{
         stopLocation {{ ... on Stop {{ gtfsId name lat lon platformCode }} }}
-        schedule {{ time {{ ... on ArrivalDepartureTime {{ arrival departure }} }} }}
-        realTime {{ arrival {{ time delay }} departure {{ time delay }} }}
+        ...CallTimes
       }}
     }}
   }}
 }}
-"""
+{CALL_TIMES_FRAGMENT}"""
 
 # A block is one vehicle's trips; its trips of every day type are asked for at
 # once (Kraków's largest: 366 trips, 21 ms). More means a feed misuses block_id.
@@ -253,10 +252,9 @@ fragment BlockTrip on Trip {{
 
 fragment BlockCall on StopCall {{
   stopLocation {{ ... on Stop {{ gtfsId name }} }}
-  schedule {{ time {{ ... on ArrivalDepartureTime {{ arrival departure }} }} }}
-  realTime {{ arrival {{ time delay }} departure {{ time delay }} }}
+  ...CallTimes
 }}
-"""
+{CALL_TIMES_FRAGMENT}"""
 
 
 def block_variables(trip_ids: list[str], day: date) -> dict:
@@ -350,13 +348,7 @@ def trip_detail(data: dict) -> dict | None:
 
 
 def _call(call: dict) -> dict:
-    scheduled = (call.get('schedule') or {}).get('time') or {}
-    realtime = call.get('realTime') or {}
-    return {
-        'stop': _stop(call.get('stopLocation') or {}),
-        'arrival': call_time(scheduled.get('arrival'), realtime.get('arrival')),
-        'departure': call_time(scheduled.get('departure'), realtime.get('departure')),
-    }
+    return {'stop': _stop(call.get('stopLocation') or {}), **call_times(call)}
 
 
 def _stop(stop: dict) -> dict:

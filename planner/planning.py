@@ -10,7 +10,16 @@ from datetime import UTC, datetime
 from django.utils.dateparse import parse_duration
 from rest_framework.exceptions import ErrorDetail
 
-PLAN_DOCUMENT = """
+# A stop call's times, as call_times() reads them; append CALL_TIMES_FRAGMENT to the document.
+CALL_TIMES_FRAGMENT = """
+fragment CallTimes on StopCall {
+  schedule { time { ... on ArrivalDepartureTime { arrival departure } } }
+  realTime { arrival { time delay } departure { time delay } }
+}
+"""
+
+PLAN_DOCUMENT = (
+    """
 query Plan(
   $origin: PlanLabeledLocationInput!
   $destination: PlanLabeledLocationInput!
@@ -77,8 +86,7 @@ query Plan(
           }
           stopCalls @include(if: $withStops) {
             stopLocation { ... on Stop { gtfsId name lat lon } }
-            schedule { time { ... on ArrivalDepartureTime { arrival departure } } }
-            realTime { arrival { time delay } departure { time delay } }
+            ...CallTimes
           }
         }
       }
@@ -86,6 +94,8 @@ query Plan(
   }
 }
 """
+    + CALL_TIMES_FRAGMENT
+)
 
 # Our transit mode names (lowercase) to OTP's TransitMode.
 TRANSIT_MODES = {
@@ -283,12 +293,7 @@ def _place(place: dict) -> dict:
 
 
 def _time(leg_time: dict) -> dict:
-    estimated = leg_time.get('estimated')
-    return {
-        'scheduled': utc(leg_time['scheduledTime']),
-        'estimated': utc(estimated['time']) if estimated else None,
-        'delay_s': duration_seconds(estimated['delay']) if estimated else None,
-    }
+    return call_time(leg_time['scheduledTime'], leg_time.get('estimated'))
 
 
 def _alert(alert: dict) -> dict:
@@ -304,14 +309,21 @@ def _alert(alert: dict) -> dict:
 
 def _stop_call(call: dict) -> dict:
     location = call['stopLocation']
-    # Flexible (GTFS-Flex) calls have a time window instead of times: `scheduled` is null.
-    scheduled = (call.get('schedule') or {}).get('time') or {}
-    realtime = call.get('realTime') or {}
     return {
         'stop_id': location.get('gtfsId'),
         'name': location.get('name'),
         'lat': location.get('lat'),
         'lon': location.get('lon'),
+        **call_times(call),
+    }
+
+
+def call_times(call: dict) -> dict:
+    """A stop call's ``arrival`` and ``departure`` (selected with CALL_TIMES_FRAGMENT)."""
+    # Flexible (GTFS-Flex) calls have a time window instead of times: `scheduled` is null.
+    scheduled = (call.get('schedule') or {}).get('time') or {}
+    realtime = call.get('realTime') or {}
+    return {
         'arrival': call_time(scheduled.get('arrival'), realtime.get('arrival')),
         'departure': call_time(scheduled.get('departure'), realtime.get('departure')),
     }
