@@ -44,6 +44,7 @@ class PlannerFeedSerializer(serializers.ModelSerializer):
             'feed_id',
             'is_enabled',
             'include_realtime',
+            'realtime_from',
             'failure_policy',
             'last_good_at',
             'active_result',
@@ -84,6 +85,20 @@ class PlannerFeedSerializer(serializers.ModelSerializer):
                 code='planner.feed_other_organization',
             )
         return submission
+
+    def validate(self, attrs):
+        # An unchanged realtime_from stays valid: the submission only moves within its organization.
+        realtime_from = attrs.get('realtime_from')
+        submission = attrs.get('submission') or self.instance.submission
+        if (
+            realtime_from is not None
+            and realtime_from.transport_organization_id != submission.transport_organization_id
+        ):
+            raise serializers.ValidationError(
+                {'realtime_from': 'Realtime only from a feed of the same organization.'},
+                code='planner.feed_other_organization',
+            )
+        return attrs
 
 
 class PlannerRentalSourceSerializer(serializers.ModelSerializer):

@@ -105,6 +105,40 @@ def test_feed_moves_only_within_its_organization(admin_client, make_feed, make_s
     assert refused.data['submission'][0].code == 'planner.feed_other_organization'
 
 
+def test_realtime_from_only_names_a_feed_of_the_same_organization(
+    admin_client, make_feed, make_submission
+):
+    feed = make_feed('olkusz-shaped')
+    same_org = make_submission('olkusz', org=feed.submission.transport_organization)
+    other_org = make_submission('waw')
+
+    linked = admin_client.patch(
+        f'{BASE}/feeds/{feed.id}/', {'realtime_from': same_org.id}, format='json'
+    )
+    refused = admin_client.patch(
+        f'{BASE}/feeds/{feed.id}/', {'realtime_from': other_org.id}, format='json'
+    )
+    cleared = admin_client.patch(f'{BASE}/feeds/{feed.id}/', {'realtime_from': None}, format='json')
+
+    assert linked.status_code == 200
+    assert linked.data['realtime_from'] == same_org.id
+    assert refused.data['realtime_from'][0].code == 'planner.feed_other_organization'
+    assert cleared.data['realtime_from'] is None
+
+
+def test_new_feed_takes_realtime_only_from_its_organization(admin_client, make_submission):
+    shaped = make_submission('olkusz-shaped')
+    other_org = make_submission('waw')
+
+    refused = admin_client.post(
+        f'{BASE}/feeds/',
+        {'submission': shaped.id, 'feed_id': 'olkusz', 'realtime_from': other_org.id},
+        format='json',
+    )
+
+    assert refused.data['realtime_from'][0].code == 'planner.feed_other_organization'
+
+
 def test_candidates_show_which_feeds_are_already_included(admin_client, make_feed, make_submission):
     feed = make_feed('krk')
     make_submission('waw')
