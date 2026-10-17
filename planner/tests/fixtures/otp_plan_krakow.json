@@ -124,6 +124,22 @@
           "name": "Starowiślna",
           "lat": 50.057227,
           "lon": 19.946086
+         },
+         "schedule": {
+          "time": {
+           "arrival": "2026-10-14T08:15:00+02:00",
+           "departure": "2026-10-14T08:15:00+02:00"
+          }
+         },
+         "realTime": {
+          "arrival": {
+           "time": "2026-10-14T08:16:30+02:00",
+           "delay": "PT1M30S"
+          },
+          "departure": {
+           "time": "2026-10-14T08:16:30+02:00",
+           "delay": "PT1M30S"
+          }
          }
         },
         {
@@ -132,6 +148,22 @@
           "name": "Hala Targowa",
           "lat": 50.058639,
           "lon": 19.948875
+         },
+         "schedule": {
+          "time": {
+           "arrival": "2026-10-14T08:17:00+02:00",
+           "departure": "2026-10-14T08:17:00+02:00"
+          }
+         },
+         "realTime": {
+          "arrival": {
+           "time": "2026-10-14T08:18:00+02:00",
+           "delay": "PT1M"
+          },
+          "departure": {
+           "time": "2026-10-14T08:18:00+02:00",
+           "delay": "PT1M"
+          }
          }
         },
         {
@@ -140,6 +172,22 @@
           "name": "Os. Kolorowe",
           "lat": 50.072198,
           "lon": 20.0298
+         },
+         "schedule": {
+          "time": {
+           "arrival": "2026-10-14T08:36:00+02:00",
+           "departure": "2026-10-14T08:36:00+02:00"
+          }
+         },
+         "realTime": {
+          "arrival": {
+           "time": "2026-10-14T08:35:00+02:00",
+           "delay": "-PT1M"
+          },
+          "departure": {
+           "time": "2026-10-14T08:35:00+02:00",
+           "delay": "-PT1M"
+          }
          }
         }
        ]
