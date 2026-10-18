@@ -72,13 +72,24 @@ def validate_static_feed_stream(data_type: str, fh) -> None:
     validate_static_feed_content(data_type, _read_head(fh))
 
 
-def _validate_gtfs_rt_protobuf(content: bytes) -> None:
-    """Parse the body as a GTFS-RT ``FeedMessage``.
+# FeedEntity fields and the endpoint type each one is published under.
+GTFS_RT_ENTITY_ENDPOINT_TYPES = {
+    'trip_update': 'trip_update',
+    'vehicle': 'vehicle_position',
+    'alert': 'service_alert',
+}
+
+
+def _validate_gtfs_rt_protobuf(content: bytes) -> set[str]:
+    """Parse the body as a GTFS-RT ``FeedMessage``; return the endpoint types it holds.
 
     ``FeedMessage.header`` and ``FeedHeader.gtfs_realtime_version`` are
     proto2 *required* fields, so arbitrary binary garbage fails to decode
     rather than silently landing in the public cache — which is all the old
     "does not start with '<'" check could tell us.
+
+    Since GTFS-RT 2.0 one feed may mix trip updates, vehicle positions and
+    alerts, whatever endpoint type it was submitted as.
     """
     try:
         from google.transit import gtfs_realtime_pb2
@@ -87,7 +98,7 @@ def _validate_gtfs_rt_protobuf(content: bytes) -> None:
             'gtfs-realtime-bindings is not installed — GTFS-RT bodies are only '
             'checked for an XML/HTML prefix, not parsed as protobuf.'
         )
-        return
+        return set()
 
     message = gtfs_realtime_pb2.FeedMessage()
     try:
@@ -98,13 +109,20 @@ def _validate_gtfs_rt_protobuf(content: bytes) -> None:
         ) from exc
     if not message.header.gtfs_realtime_version:
         raise InvalidFeedContent('GTFS-RT feed is missing header.gtfs_realtime_version.')
+    return {
+        endpoint_type
+        for entity in message.entity
+        for field, endpoint_type in GTFS_RT_ENTITY_ENDPOINT_TYPES.items()
+        if entity.HasField(field)
+    }
 
 
-def validate_realtime_feed_content(protocol: str, content: bytes) -> None:
+def validate_realtime_feed_content(protocol: str, content: bytes) -> set[str]:
     """Sanity-check fetched realtime feed bytes before caching them.
 
     GTFS-RT is binary protobuf and is fully parsed; SIRI is XML (only an HTML
-    page is rejected); every GBFS file is a JSON document.
+    page is rejected); every GBFS file is a JSON document. Returns the GTFS-RT
+    endpoint types whose entities the body holds (empty for other protocols).
     """
     if not content:
         raise EmptyFeedContent('Fetched content is empty.')
@@ -116,15 +134,16 @@ def validate_realtime_feed_content(protocol: str, content: bytes) -> None:
     elif protocol == 'gtfs_rt':
         if content.lstrip()[:1] == b'<':
             raise InvalidFeedContent('Fetched content looks like HTML/XML, not a GTFS-RT protobuf.')
-        _validate_gtfs_rt_protobuf(content)
+        return _validate_gtfs_rt_protobuf(content)
     elif protocol == 'siri':
         if _looks_like_html(content):
             raise InvalidFeedContent(
                 'Fetched content looks like an HTML page, not a SIRI document.'
             )
+    return set()
 
 
-def validate_realtime_feed_stream(protocol: str, fh) -> None:
+def validate_realtime_feed_stream(protocol: str, fh) -> set[str]:
     """:func:`validate_realtime_feed_content` against a stream.
 
     SIRI only needs its head; GBFS and GTFS-RT are parsed in full. Realtime
@@ -132,11 +151,10 @@ def validate_realtime_feed_stream(protocol: str, fh) -> None:
     so reading them back from the spool is cheap.
     """
     if protocol == 'siri':
-        validate_realtime_feed_content(protocol, _read_head(fh))
-        return
+        return validate_realtime_feed_content(protocol, _read_head(fh))
     position = fh.tell()
     try:
-        validate_realtime_feed_content(protocol, fh.read())
+        return validate_realtime_feed_content(protocol, fh.read())
     finally:
         fh.seek(position)
 

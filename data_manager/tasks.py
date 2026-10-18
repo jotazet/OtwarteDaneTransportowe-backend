@@ -979,6 +979,7 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     )
 
     for ep in endpoints:
+        entity_types = set()
         try:
             resp = safe_get(
                 ep.url,
@@ -996,7 +997,7 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                     )
                 )
             else:
-                validate_realtime_feed_content(rts.protocol, resp.content)
+                entity_types = validate_realtime_feed_content(rts.protocol, resp.content)
         except Exception as exc:
             code = next(
                 (c for exc_type, c in exception_codes if isinstance(exc, exc_type)),
@@ -1016,6 +1017,8 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
             elif code == rr.ENDPOINT_TOO_LARGE:
                 extra['limit_bytes'] = exc.max_bytes
             reasons.append(rr.rejection_reason(code, endpoint_type=ep.endpoint_type, **extra))
+        # Outside the try: saving them is not a fault of the endpoint.
+        ep.record_entity_types(entity_types)
 
     if not reasons:
         now = timezone.now()

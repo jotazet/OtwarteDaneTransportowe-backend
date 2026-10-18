@@ -113,6 +113,41 @@ def test_feed_with_realtime_from_polls_that_feeds_realtime_instead(make_feed, fa
     ]
 
 
+def test_vehicles_and_alerts_inside_a_trip_update_endpoint_are_polled_too(make_feed, fake_dns):
+    feed = make_feed('olkusz')
+    rts = make_realtime(feed, [('trip_update', 'https://src.example.org/all.pb', False)])
+    rts.endpoints.update(entity_types=['service_alert', 'trip_update', 'vehicle_position'])
+
+    updaters, _ = otp_config.realtime_updaters([feed])
+
+    assert sorted((u['type'], u['url']) for u in updaters) == [
+        ('real-time-alerts', 'https://src.example.org/all.pb'),
+        ('stop-time-updater', 'https://src.example.org/all.pb'),
+        ('vehicle-positions', 'https://src.example.org/all.pb'),
+    ]
+
+
+def test_an_entity_type_is_polled_once_preferring_its_own_endpoint(make_feed, fake_dns):
+    feed = make_feed('warszawa')
+    rts = make_realtime(
+        feed,
+        [
+            ('trip_update', 'https://src.example.org/tu.pb', False),
+            ('vehicle_position', 'https://src.example.org/vp.pb', False),
+        ],
+    )
+    # Both bodies carry vehicles and alerts; neither type is polled twice.
+    rts.endpoints.update(entity_types=['service_alert', 'trip_update', 'vehicle_position'])
+
+    updaters, _ = otp_config.realtime_updaters([feed])
+
+    assert sorted((u['type'], u['url']) for u in updaters) == [
+        ('real-time-alerts', 'https://src.example.org/tu.pb'),
+        ('stop-time-updater', 'https://src.example.org/tu.pb'),
+        ('vehicle-positions', 'https://src.example.org/vp.pb'),
+    ]
+
+
 def test_unpublished_realtime_is_ignored(make_feed, fake_dns):
     feed = make_feed('krk')
     make_realtime(feed, [('trip_update', 'https://src.example.org/tu.pb', False)], published=False)

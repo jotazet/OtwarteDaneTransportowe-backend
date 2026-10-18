@@ -241,3 +241,23 @@ def test_catalogue_shows_refresh_times_only_for_proxied_static_feeds(
     # Not proxied: ODT never fetches it, so the stored times are not published.
     assert static_feeds[direct.id]['download_time_1'] is None
     assert static_feeds[direct.id]['download_time_2'] is None
+
+
+def test_catalogue_shows_the_entity_types_of_a_realtime_endpoint(api_client, org, provider_user):
+    static = _make_submission(org, provider_user)
+    rts = _make_rt_submission(org, provider_user, protocol=RealtimeSubmission.PROTOCOL_GTFS_RT)
+    rts.static_submission = static
+    rts.save()
+    RealtimeEndpointRT.objects.create(
+        submission=rts,
+        endpoint_type='trip_update',
+        url='https://example.org/rt.pb',
+        entity_types=['trip_update', 'vehicle_position'],
+    )
+
+    response = api_client.get(f'/api/data_manager/feeds/{org.id}/')
+
+    assert response.status_code == 200
+    (feed,) = [f for f in response.data['feeds'] if f['id'] == static.id]
+    (endpoint,) = feed['realtime_feed']['endpoints']
+    assert endpoint['entity_types'] == ['trip_update', 'vehicle_position']

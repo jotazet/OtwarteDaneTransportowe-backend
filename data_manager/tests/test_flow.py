@@ -31,12 +31,25 @@ from data_manager.tasks import validate_gtfs_feed_task
 pytestmark = pytest.mark.django_db
 
 
-def gtfs_rt_feed_bytes(version: str = '2.0') -> bytes:
-    """A minimal but genuinely valid serialized GTFS-RT FeedMessage."""
+def gtfs_rt_feed_bytes(version: str = '2.0', entities: tuple[str, ...] = ()) -> bytes:
+    """A minimal but genuinely valid serialized GTFS-RT FeedMessage.
+
+    ``entities`` adds one entity per FeedEntity field named (``trip_update``,
+    ``vehicle`` or ``alert``).
+    """
     from google.transit import gtfs_realtime_pb2
 
     message = gtfs_realtime_pb2.FeedMessage()
     message.header.gtfs_realtime_version = version
+    for number, field in enumerate(entities):
+        entity = message.entity.add(id=str(number))
+        if field == 'trip_update':
+            entity.trip_update.trip.trip_id = 't1'
+        elif field == 'vehicle':
+            entity.vehicle.position.latitude = 50.28
+            entity.vehicle.position.longitude = 19.56
+        else:
+            entity.alert.header_text.translation.add(text='x')
     return message.SerializeToString()
 
 
