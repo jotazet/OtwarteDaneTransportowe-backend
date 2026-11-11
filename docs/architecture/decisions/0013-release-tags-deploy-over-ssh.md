@@ -18,14 +18,13 @@ runs other projects and a memory-hungry OpenTripPlanner.
 
 - **A release is a `vX.Y.Z` tag on `main`**, usually created as a GitHub Release. The CI
   workflow runs every check on the tag, then the `deploy` job deploys it. Nothing else
-  deploys: not a push to `main`, not a tag outside `main` (checked by the job and again on
-  the server).
+  deploys: not a push to `main`, not a tag outside `main` (checked on the server).
 - **The job connects over SSH as a dedicated `deploy` user** whose key has a forced command,
   `/usr/local/sbin/odt-deploy` (root-owned, installed once from `scripts/deploy/`), run
   through sudo as the user that owns the checkout. The key can pass a tag and a `.env`,
   nothing else: no shell, no forwarding.
 - **The server builds the image from the checked-out tag** (`scripts/deploy/release.sh`):
-  `.env` check, database dump, new `.env`, `docker compose build --pull`, `up -d` with
+  `.env` check, `docker compose build --pull`, database dump, new `.env`, `up -d` with
   migrations first, then the API must answer. The production Compose overlay runs the code
   from the image and mounts only `uploaded_data/` and `planner_data/`.
 - **The production configuration lives in the GitHub environment `production`**: settings

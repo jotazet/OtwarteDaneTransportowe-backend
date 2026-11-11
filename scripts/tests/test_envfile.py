@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.deploy import envfile
+
 SCRIPT = Path(__file__).resolve().parents[1] / 'deploy' / 'envfile.py'
 SECRETS = {
     'DJANGO_SECRET_KEY': 'k+/=$HOME#x',
@@ -40,11 +42,6 @@ def write(tmp_path, variables, secrets=SECRETS):
 
 
 def parse(path):
-    sys.path.insert(0, str(SCRIPT.parent))
-    try:
-        import envfile
-    finally:
-        sys.path.pop(0)
     return envfile.parse(path.read_text())
 
 

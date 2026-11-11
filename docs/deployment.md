@@ -864,16 +864,16 @@ flowchart LR
 ```
 
 1. **CI** (`.github/workflows/ci.yml`) runs every check on the tag. The `deploy` job runs only
-   when they pass, refuses a tag that is not `vX.Y.Z` or not on `main`, and writes `.env`
-   from the environment's variables and secrets (`scripts/deploy/envfile.py`).
+   when they pass and writes `.env` from the environment's variables and secrets
+   (`scripts/deploy/envfile.py`).
 2. It connects as `deploy`, whose key can only run `/usr/local/sbin/odt-deploy` as the owner
-   of the checkout. `odt-deploy` refuses a checkout with local changes, fetches the tag,
-   checks again that it is on `main`, checks it out and runs that tag's `release.sh`.
+   of the checkout. `odt-deploy` refuses a tag that is not `vX.Y.Z` and a checkout with local
+   changes, fetches the tag, refuses it unless it is on `main`, checks it out and runs that tag's `release.sh`.
 3. **`release.sh`**: refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
-   `POSTGRES_PASSWORD`, dumps the database with the current `.env` and commit into
-   `~/backups/release-<UTC time>-<tag>/` (keeps the newest 10), installs the new `.env`, tags
-   the running image `odt-backend:previous`, builds `odt-backend:latest` with `--pull`, runs
-   `up -d` (the `migrate` service first, then every service is recreated) and waits up to
+   `POSTGRES_PASSWORD`, tags the running image `odt-backend:previous`, builds
+   `odt-backend:latest` with `--pull` (nothing running changes yet), dumps the database with
+   the current `.env` and commit into `~/backups/release-<UTC time>-<tag>/` (keeps the newest
+   10), installs the new `.env`, runs `up -d` (the `migrate` service first, then every service is recreated) and waits up to
    3 minutes for the API to answer. Any failure stops it and the job turns red.
 
 Before releasing, make sure **no planner graph build is running** (admin, graph builds): the

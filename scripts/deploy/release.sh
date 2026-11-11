@@ -1,8 +1,9 @@
 #!/bin/sh
 # Deploys the checked-out release, in the order that keeps the data safe: the .env check,
-# a database dump, the new .env, the image, migrations and new containers, then an answer
-# from the API. Any failure stops it there. odt-deploy runs it after checking out the tag
-# (docs/deployment.md, section 20); it also works by hand from the checkout:
+# the image (which changes nothing running), a database dump, the new .env, migrations and
+# new containers, then an answer from the API. Any failure stops it there. odt-deploy runs
+# it after checking out the tag (docs/deployment.md, section 20); it also works by hand from
+# the checkout:
 #
 #   sh scripts/deploy/release.sh <label> <new .env>
 set -eu
@@ -18,6 +19,11 @@ log() { echo "release: $*"; }
 
 python3 -I scripts/deploy/envfile.py check .env "$env_new"
 
+# The running image stays as :previous for a quick manual rollback (section 20).
+docker image tag odt-backend:latest odt-backend:previous 2>/dev/null || true
+# --pull: the newest python:3.12-slim of the same tag, so base image fixes reach production.
+./scripts/deploy.sh build --pull web
+
 # The dump, and the .env and commit it belongs to, before anything changes.
 backup="$HOME/backups/release-$(date -u +%Y%m%dT%H%M%SZ)-$tag"
 mkdir -p "$HOME/backups"
@@ -32,11 +38,6 @@ find "$HOME/backups" -maxdepth 1 -name 'release-*' -type d | sort | head -n "-$B
     | xargs -r rm -rf
 
 install -m 600 "$env_new" .env
-
-# The running image stays as :previous for a quick manual rollback (section 20).
-docker image tag odt-backend:latest odt-backend:previous 2>/dev/null || true
-# --pull: the newest python:3.12-slim of the same tag, so base image fixes reach production.
-./scripts/deploy.sh build --pull web
 # `migrate` runs first (depends_on), then every service is recreated on the new image.
 ./scripts/deploy.sh up -d
 

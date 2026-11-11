@@ -106,26 +106,13 @@ jobs:
       group: deploy-production
       cancel-in-progress: false
     steps:
+      # The server refuses a tag that is not vX.Y.Z or not on main (odt-deploy): a check
+      # here would run from the tag's own workflow file, which the tag's author controls.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-          # The whole history, so the next step can see main.
-          fetch-depth: 0
-      # A tag on a branch nobody merged would otherwise reach production unreviewed.
-      # The server checks this again (odt-deploy).
-      - name: Refuse a tag that is not a release on main
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          if ! printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
-            echo "::error::$TAG is not a release tag vX.Y.Z."
-            exit 1
-          fi
-          if ! git merge-base --is-ancestor HEAD origin/main; then
-            echo "::error::$TAG points at a commit that is not on main."
-            exit 1
-          fi
-      # Every variable of the environment and its named secrets (scripts/deploy/envfile.py).
+      # Every variable of the environment and its named secrets: keep this list in step
+      # with REQUIRED_SECRETS and OPTIONAL_SECRETS in scripts/deploy/envfile.py.
       - name: Write .env from the environment's variables and secrets
         env:
           VARS_JSON: ${{ toJSON(vars) }}
@@ -150,6 +137,3 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$USER_NAME@$HOST" "$TAG" < "$RUNNER_TEMP/production.env"
-      - name: Remove the key and the .env
-        if: always()
-        run: rm -f ~/.ssh/deploy_key "$RUNNER_TEMP/production.env"

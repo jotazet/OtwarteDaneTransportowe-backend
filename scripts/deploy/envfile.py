@@ -21,7 +21,8 @@ import json
 import os
 import sys
 
-# Secrets of the environment; each becomes a .env line under the same name.
+# Secrets of the environment; each becomes a .env line under the same name. The deploy
+# job in .github/workflows/ci.yml passes each one by name: change both together.
 REQUIRED_SECRETS = ("DJANGO_SECRET_KEY", "POSTGRES_PASSWORD", "FEED_AUTH_ENCRYPTION_KEY")
 OPTIONAL_SECRETS = ("PLANNER_INTERNAL_TOKEN",)
 # Changing these in GitHub alone breaks production (see the module docstring).
@@ -86,12 +87,9 @@ def parse(text):
 def write(path):
     variables = json.loads(os.environ.get("VARS_JSON") or "{}")
     text = render(variables, os.environ)
-    old_umask = os.umask(0o077)
-    try:
-        with open(path, "w", encoding="utf-8") as env_file:
-            env_file.write(text)
-    finally:
-        os.umask(old_umask)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with open(fd, "w", encoding="utf-8") as env_file:
+        env_file.write(text)
     print(f"envfile: {text.count(chr(10))} lines -> {path}")
 
 
