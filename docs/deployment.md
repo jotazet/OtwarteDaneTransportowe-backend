@@ -601,7 +601,7 @@ By hand, from a clean checkout, with the same steps (dump, image, migrations, he
 
 ```bash
 git fetch --tags && git checkout --detach vX.Y.Z
-sh scripts/deploy/release.sh vX.Y.Z .env      # keeps the current .env
+cp -p .env ~/odt.env && sh scripts/deploy/release.sh vX.Y.Z ~/odt.env && rm ~/odt.env   # keeps the current .env
 ```
 
 The application services run the code built into the image, not the checkout, so code
@@ -991,7 +991,11 @@ end of a line are not part of the value in the server's `.env` either.
 ### The first release
 
 The first release also switches production from the bind-mounted checkout to the image,
-so every application container is recreated (as in any deployment). Afterwards:
+so every application container is recreated (as in any deployment). Until then the running
+containers still mount the checkout: if this first release stops before `up -d` (a refused
+`.env`, a failed build or dump), they already see the new tag's code, so go back with
+`git checkout --detach <previous commit>` (printed as `odt-deploy: <old> -> <new>`) and
+restart them, or fix the cause and re-run the job. Afterwards:
 
 - remove the per-service images of the old layout
   (`docker image ls 'otwartedanetransportowe-backend-*'`, then `docker image rm ...`);

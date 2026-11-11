@@ -19,8 +19,10 @@ log() { echo "release: $*"; }
 
 python3 -I scripts/deploy/envfile.py check .env "$env_new"
 
-# The running image stays as :previous for a quick manual rollback (section 20).
-docker image tag odt-backend:latest odt-backend:previous 2>/dev/null || true
+# The image web runs now stays as :previous for a quick manual rollback (section 20); taken
+# from the container, not :latest, which a failed earlier attempt may have rebuilt already.
+running="$(./scripts/deploy.sh images -q web 2>/dev/null || true)"
+[ -z "$running" ] || docker image tag "$running" odt-backend:previous
 # --pull: the newest python:3.12-slim of the same tag, so base image fixes reach production.
 ./scripts/deploy.sh build --pull web
 
@@ -55,4 +57,5 @@ until ./scripts/deploy.sh exec -T web python -c \
 done
 log "$tag is live"
 
-docker image prune -f > /dev/null
+# Only this project's replaced images: the host runs other projects too.
+docker image prune -f --filter label=org.opencontainers.image.title=odt-backend > /dev/null

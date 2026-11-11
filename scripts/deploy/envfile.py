@@ -25,6 +25,16 @@ import sys
 # job in .github/workflows/ci.yml passes each one by name: change both together.
 REQUIRED_SECRETS = ("DJANGO_SECRET_KEY", "POSTGRES_PASSWORD", "FEED_AUTH_ENCRYPTION_KEY")
 OPTIONAL_SECRETS = ("PLANNER_INTERNAL_TOKEN",)
+# Without these the containers fall back to the development values in .env.example (also
+# an env_file) and the release still looks healthy, so a missing one stops it.
+REQUIRED_VARIABLES = (
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "DJANGO_ALLOWED_HOSTS",
+    "CSRF_TRUSTED_ORIGINS",
+    "CORS_ALLOWED_ORIGINS",
+    "TRUSTED_PROXY_CIDRS",
+)
 # Changing these in GitHub alone breaks production (see the module docstring).
 PINNED = ("FEED_AUTH_ENCRYPTION_KEY", "POSTGRES_PASSWORD")
 DEPLOY_PREFIX = "DEPLOY_"
@@ -44,6 +54,9 @@ def quote(name, value):
 def render(variables, secrets):
     """The .env text for the environment's variables and secrets."""
     reserved = set(REQUIRED_SECRETS + OPTIONAL_SECRETS)
+    for name in REQUIRED_VARIABLES:
+        if not variables.get(name):
+            fail(f"The production environment has no variable {name}.")
     lines = []
     for name in sorted(variables):
         if name.startswith(DEPLOY_PREFIX):
@@ -71,11 +84,14 @@ def parse(text):
         key, value = line.split("=", 1)
         key = key.strip().removeprefix("export ").strip()
         value = value.strip()
-        if value.startswith("'") and value.endswith("'") and len(value) > 1:
-            value = value[1:-1]
-        elif value.startswith('"') and value.endswith('"') and len(value) > 1:
-            out, chars = [], iter(value[1:-1])
+        if value.startswith("'") and "'" in value[1:]:
+            value = value[1 : value.index("'", 1)]
+        elif value.startswith('"'):
+            # Up to the closing quote; a comment may follow it.
+            out, chars = [], iter(value[1:])
             for char in chars:
+                if char == '"':
+                    break
                 out.append(next(chars, "") if char == "\\" else char)
             value = "".join(out).replace("$$", "$")
         else:

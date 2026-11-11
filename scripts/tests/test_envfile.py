@@ -16,6 +16,8 @@ SECRETS = {
     'POSTGRES_PASSWORD': 'p1',
     'FEED_AUTH_ENCRYPTION_KEY': 'f1',
 }
+# The variables a release cannot do without (envfile.REQUIRED_VARIABLES).
+REQUIRED = {name: 'set' for name in envfile.REQUIRED_VARIABLES}
 # Values that break naive quoting: $, quotes, a trailing backslash, #, spaces, regexes.
 TRICKY = {
     'CORS_URLS_REGEX': '^/(api|feed)/.*$',
@@ -37,7 +39,7 @@ def run(*args, vars_json=None, secrets=SECRETS):
 
 def write(tmp_path, variables, secrets=SECRETS):
     path = tmp_path / 'production.env'
-    result = run('write', str(path), vars_json=variables, secrets=secrets)
+    result = run('write', str(path), vars_json={**REQUIRED, **variables}, secrets=secrets)
     return path, result
 
 
@@ -53,8 +55,8 @@ def test_write_variables_then_secrets(tmp_path):
     )
 
     assert result.returncode == 0, result.stdout
-    assert path.read_text() == (
-        'DJANGO_ALLOWED_HOSTS="api.example.org"\n'
+    variables = {**REQUIRED, 'DJANGO_ALLOWED_HOSTS': 'api.example.org'}
+    assert path.read_text() == ''.join(f'{k}="{v}"\n' for k, v in sorted(variables.items())) + (
         'DJANGO_SECRET_KEY="k+/=$$HOME#x"\n'
         'POSTGRES_PASSWORD="p1"\n'
         'FEED_AUTH_ENCRYPTION_KEY="f1"\n'
@@ -67,7 +69,7 @@ def test_write_round_trips_tricky_values(tmp_path):
     path, result = write(tmp_path, TRICKY)
 
     assert result.returncode == 0, result.stdout
-    assert parse(path) == {**TRICKY, **SECRETS}
+    assert parse(path) == {**REQUIRED, **TRICKY, **SECRETS}
 
 
 @pytest.mark.parametrize(
@@ -78,6 +80,7 @@ def test_write_round_trips_tricky_values(tmp_path):
             {'POSTGRES_PASSWORD': 'p1', 'FEED_AUTH_ENCRYPTION_KEY': 'f1'},
             'no secret DJANGO_SECRET_KEY',
         ),
+        ({'CORS_ALLOWED_ORIGINS': ''}, SECRETS, 'no variable CORS_ALLOWED_ORIGINS'),
         ({'POSTGRES_PASSWORD': 'p2'}, SECRETS, 'must be a secret'),
         ({'MULTI': 'a\nb'}, SECRETS, 'line break'),
     ],
@@ -95,7 +98,7 @@ def test_write_refuses(tmp_path, variables, secrets, message):
     [
         # A hand-written .env as on the server before the first release.
         ('POSTGRES_PASSWORD=p1\nFEED_AUTH_ENCRYPTION_KEY=f1  # never change\n', 0),
-        ("export POSTGRES_PASSWORD='p1'\nFEED_AUTH_ENCRYPTION_KEY=\"f1\"\n", 0),
+        ("export POSTGRES_PASSWORD='p1'\nFEED_AUTH_ENCRYPTION_KEY=\"f1\"  # keep\n", 0),
         ('POSTGRES_PASSWORD=p0\nFEED_AUTH_ENCRYPTION_KEY=f1\n', 1),
         ('POSTGRES_PASSWORD=p1\nFEED_AUTH_ENCRYPTION_KEY=f0\n', 1),
         # Not set before (development fallback): setting it now is allowed.
@@ -134,4 +137,8 @@ def test_compose_reads_the_exact_values(tmp_path):
     assert result.returncode == 0, result.stderr
     environment = json.loads(result.stdout)['services']['app']['environment']
     # `config` prints a Compose file, so it escapes every $ of a value as $$ again.
-    assert {k: v.replace('$$', '$') for k, v in environment.items()} == {**TRICKY, **SECRETS}
+    assert {k: v.replace('$$', '$') for k, v in environment.items()} == {
+        **REQUIRED,
+        **TRICKY,
+        **SECRETS,
+    }
