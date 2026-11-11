@@ -979,11 +979,14 @@ sudo -u odt-runner docker ps          # permission denied
 sudo -u odt-runner sudo -n -u rocky id   # a password is required: refused
 ```
 
-**Another ODT repository** (the frontend): another directory under `/opt/actions-runner/`,
-registered to that repository with the same user and its own label, and its own deploy
-command in `/etc/sudoers.d/odt-runner`. The runners of one user can read each other's
-files, which is acceptable while they all deploy ODT; a project outside ODT gets its own
-user.
+**Another ODT repository**: another directory under `/opt/actions-runner/`, registered to
+that repository with the same user (the label `odt-production` may repeat: a repository's
+runner never takes another repository's jobs), and its own deploy command in its own
+sudoers file. The frontend does this with `/opt/actions-runner/odt-frontend`,
+`/usr/local/sbin/odt-deploy-frontend` and `/etc/sudoers.d/odt-runner-frontend` (its
+`docs/deployment.md`, section 6). The
+runners of one user can read each other's files, which is acceptable while they all deploy
+ODT; a project outside ODT gets its own user.
 
 ### Moving the current `.env` into GitHub (once)
 
