@@ -54,7 +54,8 @@ OpenTripPlanner.
   change in GitHub, without review or history in the repository, and redeploying an old tag
   uses today's settings.
 - The image is built on the production host (a minute or two, little memory). A release
-  restarts the planner worker, so it must not run during a graph build.
+  restarts the planner worker, so it refuses to start while a graph build runs; it prunes
+  the host's build cache older than a week.
 - Rolling back across a migration still means restoring the dump; a release does not
   reverse migrations.
 - `odt-deploy` changes need a manual reinstall on the server; it is kept minimal for that

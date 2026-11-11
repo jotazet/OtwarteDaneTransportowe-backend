@@ -871,15 +871,20 @@ flowchart LR
    command `odt-runner` may run that way. `odt-deploy` refuses a tag that is not `vX.Y.Z`
    and a checkout with local changes, fetches the tag, refuses it unless it is on `main`,
    checks it out and runs that tag's `release.sh`.
-3. **`release.sh`**: refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
+3. **`release.sh`**: stops while a planner graph build or feed test is running (a container
+   labelled `odt.planner`), refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
    `POSTGRES_PASSWORD`, tags the running image `odt-backend:previous`, builds
    `odt-backend:latest` with `--pull` (nothing running changes yet), dumps the database with
    the current `.env` and commit into `~/backups/release-<UTC time>-<tag>/` (keeps the newest
    10), installs the new `.env`, runs `up -d` (the `migrate` service first, then every
-   service is recreated) and waits up to 3 minutes for the API to answer. Any failure stops it and the job turns red.
+   service is recreated), waits up to 3 minutes for the API to answer, then removes replaced
+   `odt-backend` images and build cache older than 7 days (of every project on the host).
+   Any failure stops it and the job turns red.
 
-Before releasing, make sure **no planner graph build is running** (admin, graph builds): the
-release recreates the planner worker and interrupts it. Each dump counts towards the 10 kept,
+A release during a **planner graph build** stops before it changes anything (the build takes
+up to 8 GB of RAM and swap, and the release would restart its worker): re-run the job when the
+build has finished (admin, graph builds). A build that starts during a release is still
+interrupted. Each dump counts towards the 10 kept,
 so check the disk if the database grows.
 
 ### Releasing

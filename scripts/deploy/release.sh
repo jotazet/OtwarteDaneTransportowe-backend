@@ -17,6 +17,14 @@ HEALTH_DELAY=5
 cd "$(dirname "$0")/../.."
 log() { echo "release: $*"; }
 
+# A planner graph build or feed test (containers labelled odt.planner) holds up to 8 GB of
+# RAM and swap: an image build beside it risks the OOM killer, and the release would
+# restart the worker that runs it. Nothing has changed yet, so release again later.
+if [ -n "$(docker ps -q --filter label=odt.planner)" ]; then
+    log "a planner graph build is running; release again when it has finished" >&2
+    exit 1
+fi
+
 python3 -I scripts/deploy/envfile.py check .env "$env_new"
 
 # The image web runs now stays as :previous for a quick manual rollback (section 20); taken
@@ -59,3 +67,6 @@ log "$tag is live"
 
 # Only this project's replaced images: the host runs other projects too.
 docker image prune -f --filter label=org.opencontainers.image.title=odt-backend > /dev/null
+# Build cache older than a week, of every project on the host (it grew to 17 GB): only a
+# cache, so another project at most builds slower. The release is live either way.
+docker builder prune -f --filter until=168h > /dev/null || log "could not prune the build cache"
