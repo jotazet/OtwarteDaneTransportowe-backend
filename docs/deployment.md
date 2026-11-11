@@ -853,31 +853,38 @@ The first build also builds the street graph. Until then `otp` waits for a graph
 ## 20. Releases: automatic deployment from GitHub
 
 A release tag `vX.Y.Z` on `main` deploys itself
-([ADR 0013](architecture/decisions/0013-release-tags-deploy-over-ssh.md)):
+([ADR 0013](architecture/decisions/0013-release-tags-deploy-from-a-server-runner.md)):
 
 ```mermaid
 flowchart LR
   rel["GitHub Release vX.Y.Z"] --> ci["CI on the tag: tests, image, scripts"]
-  ci --> job["deploy job (environment production)"]
-  job -->|"SSH deploy@host: tag + .env"| od["odt-deploy (forced command)"]
+  ci --> job["deploy job on the server's runner (environment production)"]
+  job -->|"sudo: tag + .env"| od["odt-deploy"]
   od --> rs["scripts/deploy/release.sh of that tag"]
 ```
 
-1. **CI** (`.github/workflows/ci.yml`) runs every check on the tag. The `deploy` job runs only
-   when they pass and writes `.env` from the environment's variables and secrets
-   (`scripts/deploy/envfile.py`).
-2. It connects as `deploy`, whose key can only run `/usr/local/sbin/odt-deploy` as the owner
-   of the checkout. `odt-deploy` refuses a tag that is not `vX.Y.Z` and a checkout with local
-   changes, fetches the tag, refuses it unless it is on `main`, checks it out and runs that tag's `release.sh`.
-3. **`release.sh`**: refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
+1. **CI** (`.github/workflows/ci.yml`) runs every check on the tag on GitHub's runners. The
+   `deploy` job runs only when they pass, on the self-hosted runner on the server (label
+   `odt-production`, user `odt-runner`), and writes `.env` from the environment's variables
+   and secrets (`scripts/deploy/envfile.py`).
+2. It runs `/usr/local/sbin/odt-deploy` through sudo as the owner of the checkout, the only
+   command `odt-runner` may run that way. `odt-deploy` refuses a tag that is not `vX.Y.Z`
+   and a checkout with local changes, fetches the tag, refuses it unless it is on `main`,
+   checks it out and runs that tag's `release.sh`.
+3. **`release.sh`**: stops while a planner graph build or feed test is running (a container
+   labelled `odt.planner`), refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
    `POSTGRES_PASSWORD`, tags the running image `odt-backend:previous`, builds
    `odt-backend:latest` with `--pull` (nothing running changes yet), dumps the database with
    the current `.env` and commit into `~/backups/release-<UTC time>-<tag>/` (keeps the newest
-   10), installs the new `.env`, runs `up -d` (the `migrate` service first, then every service is recreated) and waits up to
-   3 minutes for the API to answer. Any failure stops it and the job turns red.
+   10), installs the new `.env`, runs `up -d` (the `migrate` service first, then every
+   service is recreated), waits up to 3 minutes for the API to answer, then removes replaced
+   `odt-backend` images and build cache older than 7 days (of every project on the host).
+   Any failure stops it and the job turns red.
 
-Before releasing, make sure **no planner graph build is running** (admin, graph builds): the
-release recreates the planner worker and interrupts it. Each dump counts towards the 10 kept,
+A release during a **planner graph build** stops before it changes anything (the build takes
+up to 8 GB of RAM and swap, and the release would restart its worker): re-run the job when the
+build has finished (admin, graph builds). A build that starts during a release is still
+interrupted. Each dump counts towards the 10 kept,
 so check the disk if the database grows.
 
 ### Releasing
@@ -904,17 +911,15 @@ deployment in *Actions*; the job's log shows `odt-deploy: <old> -> <new>` and
   [section 5](#5-the-env-file--full-configuration) (`DJANGO_SETTINGS_MODULE`,
   `DJANGO_ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`,
   `TRUSTED_PROXY_CIDRS`, `POSTGRES_DB`, `POSTGRES_USER`, `UID`, `GID`, `HOST_PROJECT_PATH`,
-  `HOST_MEDIA_ROOT`, `COMPOSE_PROFILES`, `PLANNER_*`, ...), plus for the job itself:
-
-  | Variable | Value |
-  | --- | --- |
-  | `DEPLOY_HOST` | server address |
-  | `DEPLOY_KNOWN_HOSTS` | the server's host key line, see below |
-  | `DEPLOY_USER` | optional, default `deploy` |
-
+  `HOST_MEDIA_ROOT`, `COMPOSE_PROFILES`, `PLANNER_*`, ...). Optionally `DEPLOY_APP_USER`, the
+  owner of the checkout that `odt-deploy` runs as (default `rocky`).
 - **Environment secrets:** `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`,
-  `FEED_AUTH_ENCRYPTION_KEY`, `PLANNER_INTERNAL_TOKEN` (with the planner) and
-  `DEPLOY_SSH_KEY` (the private key below).
+  `FEED_AUTH_ENCRYPTION_KEY` and `PLANNER_INTERNAL_TOKEN` (with the planner).
+
+Also under *Settings → Actions → General → Fork pull request workflows from outside
+collaborators*, choose **Require approval for all outside collaborators**: a pull request can
+change `ci.yml` and send a job to the server's runner, so read a fork's workflow changes
+before approving its run.
 
 Rules of `envfile.py`: every variable becomes a `.env` line except `DEPLOY_*`; the secrets
 above must not also be variables (the job stops); a value cannot contain a line break;
@@ -930,46 +935,55 @@ both changed.
 
 As the admin user (`rocky` on the current VPS), with the checkout in
 `~/OtwarteDaneTransportowe-backend` (`odt-deploy` expects it in the home of the user it runs
-as):
+as; sudo sets `HOME` to it with `always_set_home`, the Rocky default):
 
 ```bash
-# The deploy user: no password, a shell only for the forced command.
-sudo useradd --create-home --shell /bin/sh deploy
+# The runners' user: no password, no login shell, not in the docker group.
+sudo useradd --system --create-home --home-dir /home/odt-runner --shell /sbin/nologin odt-runner
 
-# The forced command, owned by root; reinstall it whenever scripts/deploy/odt-deploy changes.
+# The deploy command, owned by root; reinstall it whenever scripts/deploy/odt-deploy changes.
 sudo install -o root -g root -m 755 scripts/deploy/odt-deploy /usr/local/sbin/odt-deploy
 
-# deploy may run exactly that command as rocky, nothing else.
-echo 'deploy ALL=(rocky) NOPASSWD: /usr/local/sbin/odt-deploy' \
-  | sudo tee /etc/sudoers.d/odt-deploy > /dev/null
-sudo chmod 440 /etc/sudoers.d/odt-deploy && sudo visudo -cf /etc/sudoers.d/odt-deploy
+# odt-runner may run exactly that command as rocky, nothing else.
+echo 'odt-runner ALL=(rocky) NOPASSWD: /usr/local/sbin/odt-deploy' \
+  | sudo tee /etc/sudoers.d/odt-runner > /dev/null
+sudo chmod 440 /etc/sudoers.d/odt-runner && sudo visudo -cf /etc/sudoers.d/odt-runner
 ```
 
-On your own machine, a key used only by GitHub:
+The runner, one directory per repository (take the version, its checksum and a
+registration token from *Settings → Actions → Runners → New self-hosted runner*):
 
 ```bash
-ssh-keygen -t ed25519 -N '' -C odt-github-deploy -f odt_deploy_key
+sudo install -d -m 755 /opt/actions-runner
+sudo install -d -o odt-runner -g odt-runner -m 750 /opt/actions-runner/odt-backend
+curl -fsSLO https://github.com/actions/runner/releases/download/v<version>/actions-runner-linux-x64-<version>.tar.gz
+echo "<sha256>  actions-runner-linux-x64-<version>.tar.gz" | sha256sum -c
+sudo -u odt-runner tar xzf actions-runner-linux-x64-<version>.tar.gz -C /opt/actions-runner/odt-backend
+cd /opt/actions-runner/odt-backend
+sudo -u odt-runner ./config.sh --unattended --url https://github.com/jotazet/OtwarteDaneTransportowe-backend \
+  --token <registration token> --name odt-vps-backend --labels odt-production --work _work
+sudo ./svc.sh install odt-runner && sudo ./svc.sh start
 ```
 
-Back on the server, allow it with the forced command (paste the content of `odt_deploy_key.pub`):
+The runner must show as *Idle* in *Settings → Actions → Runners*. It connects out to GitHub
+(no open port), updates itself, and uses about 90 MB of RAM when idle. `installdependencies.sh`
+does not know Rocky 10; the libraries it would install (`libicu`, `krb5-libs`,
+`openssl-libs`) are already there.
+
+Check the restriction without deploying:
 
 ```bash
-sudo install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
-echo 'restrict,command="sudo -n -u rocky /usr/local/sbin/odt-deploy \"$SSH_ORIGINAL_COMMAND\"" ssh-ed25519 AAAA... odt-github-deploy' \
-  | sudo tee /home/deploy/.ssh/authorized_keys > /dev/null
-sudo chown deploy:deploy /home/deploy/.ssh/authorized_keys
-sudo chmod 600 /home/deploy/.ssh/authorized_keys
-sudo restorecon -R /home/deploy/.ssh     # SELinux labels
+sudo -u odt-runner sudo -n -u rocky /usr/local/sbin/odt-deploy nope < /dev/null
+# odt-deploy: expected a release tag vX.Y.Z, got 'nope'
+sudo -u odt-runner docker ps          # permission denied
+sudo -u odt-runner sudo -n -u rocky id   # a password is required: refused
 ```
 
-Then put `odt_deploy_key` (the private key) into the secret `DEPLOY_SSH_KEY` and delete the
-local copy. For `DEPLOY_KNOWN_HOSTS` take the server's key line with
-`ssh-keyscan -t ed25519 <host>` and compare its fingerprint (`ssh-keygen -lf -`) with
-`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server before saving it.
-
-Test the key without deploying: `ssh -i odt_deploy_key deploy@<host> nope` must answer
-`odt-deploy: expected a release tag vX.Y.Z, got 'nope'`, and
-`ssh -i odt_deploy_key deploy@<host>` must not give a shell.
+**Another ODT repository** (the frontend): another directory under `/opt/actions-runner/`,
+registered to that repository with the same user and its own label, and its own deploy
+command in `/etc/sudoers.d/odt-runner`. The runners of one user can read each other's
+files, which is acceptable while they all deploy ODT; a project outside ODT gets its own
+user.
 
 ### Moving the current `.env` into GitHub (once)
 

@@ -48,7 +48,7 @@ Applies to both ODT repositories: this backend and [the frontend](https://github
 ## Releases
 
 - A release is an annotated `vX.Y.Z` tag on a commit of `main` ([Semantic Versioning](https://semver.org/)), usually created as a GitHub Release with generated notes.
-- In this repository the tag deploys to production after CI passes ([ADR 0013](../architecture/decisions/0013-release-tags-deploy-over-ssh.md), [deployment, section 20](../deployment.md#20-releases-automatic-deployment-from-github)). A tag outside `main` is refused.
+- In this repository the tag deploys to production after CI passes ([ADR 0013](../architecture/decisions/0013-release-tags-deploy-from-a-server-runner.md), [deployment, section 20](../deployment.md#20-releases-automatic-deployment-from-github)). A tag outside `main` is refused.
 - Never move or delete a published tag; release a new version instead.
 
 ## Enforcement
