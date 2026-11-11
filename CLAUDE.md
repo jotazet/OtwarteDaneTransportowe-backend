@@ -33,6 +33,7 @@ Backend of **Otwarte Dane Transportowe (ODT)**, a Polish portal for open public 
 - Commit messages use Conventional Commits: `type(scope): imperative summary`, at most 72 characters, with a body that explains *why* when it isn't obvious.
 - **No AI attribution:** no `Co-Authored-By` trailers and no "Generated with" lines in commits or PRs.
 - Commit freely on your branch. Push and open a PR only when the user asks.
+- **Releases:** a `vX.Y.Z` tag on `main` deploys to production through CI ([ADR 0013](docs/architecture/decisions/0013-release-tags-deploy-over-ssh.md)). Create tags and releases only when the user asks.
 - Full details: [`docs/development/git-workflow.md`](docs/development/git-workflow.md).
 
 ## Architecture at a glance
@@ -47,7 +48,7 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md). Decisions 
 
 ## Django conventions
 
-- **Settings and secrets** come from environment variables read in `OtwarteDaneTransportowe/settings_base.py` (or the dev/prod layer), never through `os.environ` elsewhere in the code. Document every new variable in `.env.example` and `docs/deployment.md`. Never hardcode secrets.
+- **Settings and secrets** come from environment variables read in `OtwarteDaneTransportowe/settings_base.py` (or the dev/prod layer), never through `os.environ` elsewhere in the code. Document every new variable in `.env.example` and `docs/deployment.md`; production reads it from the GitHub environment `production`, and a new secret must also be added to `scripts/deploy/envfile.py` and the `deploy` job. Never hardcode secrets.
 - **Time:** `USE_TZ = True`, stored in UTC. Instants are timezone-aware `datetime`; times of day such as `download_time_1/2` are UTC and named as such in the API.
 - **Permissions** only through `auth_roles.py` helpers and permission classes, never ad-hoc role checks in views. Public views declare `AllowAny` explicitly.
 - **Outbound HTTP** to user-supplied URLs only through `data_manager/net_security.py` (SSRF protection, DNS pinning, size caps). Credentials for sources are stored in encrypted fields (`data_manager/fields.py`).
@@ -65,7 +66,7 @@ cases/                    transport organizations, data providers, case statuses
 data_manager/             feed submissions, proxying, validation, Celery tasks
 OtwarteDaneTransportowe/  settings, urls, celery, auth_roles, jwt_views, pagination
 <app>/tests/              pytest tests per app
-scripts/                  deploy.sh and container helpers
+scripts/                  deploy.sh, release deployment (deploy/) and container helpers
 docs/api/                 API reference and changelog (shared contract with the frontend)
 docs/domain/              glossary, feed workflow, Polish and EU context
 docs/architecture/        overview and ADRs

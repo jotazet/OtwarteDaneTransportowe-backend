@@ -12,7 +12,7 @@ This README intentionally stays **high-level**. Detailed API docs and deployment
 ## Documentation
 
 - **API reference**: [`docs/api/`](docs/api/README.md), with breaking changes in [`docs/api/changelog.md`](docs/api/changelog.md)
-- **Deployment**: [`docs/deployment.md`](docs/deployment.md) (production: `./scripts/deploy.sh up -d --build`)
+- **Deployment**: [`docs/deployment.md`](docs/deployment.md). A GitHub Release with a `vX.Y.Z` tag on `main` deploys to production automatically ([section 20](docs/deployment.md#20-releases-automatic-deployment-from-github)); production settings live in the GitHub environment `production`
 - **Domain, architecture and decisions**: [`docs/`](docs/README.md)
 - **Conventions for contributors and AI agents**: [`CLAUDE.md`](CLAUDE.md)
 

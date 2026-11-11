@@ -45,8 +45,14 @@ Applies to both ODT repositories: this backend and [the frontend](https://github
 - Squash-merge, using the PR title as a Conventional Commit summary. Exception: a PR whose commits are listed in `.git-blame-ignore-revs` is merged with a merge commit, so the hashes survive.
 - Delete the branch after merging.
 
+## Releases
+
+- A release is an annotated `vX.Y.Z` tag on a commit of `main` ([Semantic Versioning](https://semver.org/)), usually created as a GitHub Release with generated notes.
+- In this repository the tag deploys to production after CI passes ([ADR 0013](../architecture/decisions/0013-release-tags-deploy-over-ssh.md), [deployment, section 20](../deployment.md#20-releases-automatic-deployment-from-github)). A tag outside `main` is refused.
+- Never move or delete a published tag; release a new version instead.
+
 ## Enforcement
 
 - **Locally (Claude Code):** `.claude/hooks/protect-main.sh` blocks `git commit` on `main`/`master`, and any `git push` that targets them. The hook needs `jq`.
-- **CI:** `.github/workflows/ci.yml` runs the checks on every pull request and on every push to `main`.
+- **CI:** `.github/workflows/ci.yml` runs the checks on every pull request, on every push to `main` and on release tags, where it also deploys. Dependabot proposes updates of actions, Python packages and the base image monthly.
 - **On GitHub (to set up by a repository admin):** a branch protection rule or ruleset on `main` that requires a pull request, blocks force pushes, and requires the CI jobs to pass. This is the real guarantee; the hook only protects Claude sessions.

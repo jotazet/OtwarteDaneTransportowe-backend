@@ -1,0 +1,36 @@
+# Monthly pull requests for what this repository pins and does not build itself: the
+# actions (pinned by commit), the Python lock file and the Dockerfile's base images.
+# Each version waits a week after its release. Security updates do not wait for the
+# schedule. Compose images (postgres, OTP, the validator) move by hand: each is a data
+# or results migration (docs/deployment.md).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      # Everything that is not a major version: one pull request, one CI run a month.
+      python-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    ignore:
+      # Python 3.12 is pinned in pyproject.toml too; a new minor moves both by hand.
+      - dependency-name: python
+        update-types: ["version-update:semver-minor"]

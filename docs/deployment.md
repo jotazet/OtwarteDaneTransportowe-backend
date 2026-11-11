@@ -33,6 +33,7 @@ external reverse proxy (nginx/Caddy). The application listens locally on
 17. [Security checklist](#17-security-checklist)
 18. [Troubleshooting](#18-troubleshooting)
 19. [Journey planner (OpenTripPlanner)](#19-journey-planner-opentripplanner)
+20. [Releases: automatic deployment from GitHub](#20-releases-automatic-deployment-from-github)
 
 ---
 
@@ -114,6 +115,10 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ---
 
 ## 5. The `.env` file — full configuration
+
+> Once releases deploy automatically ([section 20](#20-releases-automatic-deployment-from-github)),
+> the server's `.env` is **generated** from the GitHub environment `production` on every
+> release: set the variables below there, not in the file. A hand edit lasts until the next release.
 
 Copy the template and fill in real values:
 
@@ -422,16 +427,11 @@ file server. Configuration:
 
 ### Generating the files (`collectstatic`)
 
-The image runs `collectstatic` at build time, but in dev/server mode with the
-bind mount (`.:/app`) the host **shadows** the directory from the image. That is why the
-`migrate` service in `docker-compose.yml` runs `collectstatic` on **every** startup:
-
-```yaml
-command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput"
-```
-
-As a result, after `git pull` + `up` the files land in `./staticfiles/` on the host and are
-visible to WhiteNoise. If needed, it can be run manually:
+The image runs `collectstatic` at build time, and production serves those files from the
+image (`docker-compose.prod.yml` mounts only `uploaded_data/` and `planner_data/`). In
+development the bind mount (`.:/app`) **shadows** the directory from the image, so the
+`migrate` service in `docker-compose.yml` runs `collectstatic` on every startup and the files
+land in `./staticfiles/` on the host. If needed, it can be run manually:
 
 ```bash
 docker compose exec web python manage.py collectstatic --noinput
@@ -595,18 +595,17 @@ Expected: no `security.W*` warnings. Then check through the browser/proxy:
 
 ## 15. Updates
 
+Normally an update is a release: create a GitHub Release with a new `vX.Y.Z` tag on `main`
+and GitHub Actions deploys it ([section 20](#20-releases-automatic-deployment-from-github)).
+By hand, from a clean checkout, with the same steps (dump, image, migrations, health check):
+
 ```bash
-cd /opt/odt
-git pull
-
-# Rebuild and recreate the services (migrations will run automatically)
-./scripts/deploy.sh up -d --build
-
-# (when needed) manual migrations
-./scripts/deploy.sh exec web python manage.py migrate
+git fetch --tags && git checkout --detach vX.Y.Z
+sh scripts/deploy/release.sh vX.Y.Z .env      # keeps the current .env
 ```
 
-After changing dependencies (`pyproject.toml` and `uv.lock`) or the `Dockerfile`, a build is required.
+The application services run the code built into the image, not the checkout, so code
+changes always need a build (`release.sh` does it; `./scripts/deploy.sh up -d --build` works too).
 
 To roll back to an older version, first reverse the migrations it does not know about
 (`./scripts/deploy.sh exec web python manage.py migrate <app> <last migration of the old version>`),
@@ -695,8 +694,8 @@ it now defaults to `False` in `settings_prod`.
 → Add the frontend origin to `CORS_ALLOWED_ORIGINS`; check `CORS_URLS_REGEX`.
 
 **No CSS in `/admin/` or Swagger (`/static/` files return 404)**
-→ Run `collectstatic` (the `migrate` service does this at startup; manually:
-`docker compose exec web python manage.py collectstatic --noinput`). If locally
+→ In production the image holds the collected files (the `Dockerfile` runs `collectstatic`),
+so rebuild it; in development the `migrate` service collects them at startup. If locally
 `curl http://127.0.0.1:8000/static/admin/css/base.css` returns `200`, but through the domain
 `404` — the reverse proxy is not forwarding `/static/` (see sections
 [12](#12-static-files-static) and [13](#13-reverse-proxy--tls)).
@@ -848,3 +847,185 @@ The first build also builds the street graph. Until then `otp` waits for a graph
   3. Build now: the next build re-tests every feed and rebuilds the street graph, and graphs built with the old image can no longer be activated.
 - **Search index.** After each build the planner worker copies operators, lines, stops and which trips share a block from OTP into Postgres (~3 s for Małopolska with 85k block trips; all of Poland has ~93k stops and ~1.3M trips). If that fails, search keeps the previous data and the watchdog queues `planner.refresh_index` every 5 minutes until it succeeds; `GraphBuild.indexed_at` shows when it last did. The migration creates the `pg_trgm` extension, which needs `CREATE` on the database (the default `postgres` user has it).
 - **Backups.** Back up `planner_data/snapshots/` (the last good version of each feed cannot be recreated). Graphs, the street graph and the OSM extract can be rebuilt or downloaded again.
+
+---
+
+## 20. Releases: automatic deployment from GitHub
+
+A release tag `vX.Y.Z` on `main` deploys itself
+([ADR 0013](architecture/decisions/0013-release-tags-deploy-over-ssh.md)):
+
+```mermaid
+flowchart LR
+  rel["GitHub Release vX.Y.Z"] --> ci["CI on the tag: tests, image, scripts"]
+  ci --> job["deploy job (environment production)"]
+  job -->|"SSH deploy@host: tag + .env"| od["odt-deploy (forced command)"]
+  od --> rs["scripts/deploy/release.sh of that tag"]
+```
+
+1. **CI** (`.github/workflows/ci.yml`) runs every check on the tag. The `deploy` job runs only
+   when they pass, refuses a tag that is not `vX.Y.Z` or not on `main`, and writes `.env`
+   from the environment's variables and secrets (`scripts/deploy/envfile.py`).
+2. It connects as `deploy`, whose key can only run `/usr/local/sbin/odt-deploy` as the owner
+   of the checkout. `odt-deploy` refuses a checkout with local changes, fetches the tag,
+   checks again that it is on `main`, checks it out and runs that tag's `release.sh`.
+3. **`release.sh`**: refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
+   `POSTGRES_PASSWORD`, dumps the database with the current `.env` and commit into
+   `~/backups/release-<UTC time>-<tag>/` (keeps the newest 10), installs the new `.env`, tags
+   the running image `odt-backend:previous`, builds `odt-backend:latest` with `--pull`, runs
+   `up -d` (the `migrate` service first, then every service is recreated) and waits up to
+   3 minutes for the API to answer. Any failure stops it and the job turns red.
+
+Before releasing, make sure **no planner graph build is running** (admin, graph builds): the
+release recreates the planner worker and interrupts it. Each dump counts towards the 10 kept,
+so check the disk if the database grows.
+
+### Releasing
+
+Merge to `main`, then on GitHub: *Releases → Draft a new release → Choose a tag →* a new tag
+`vX.Y.Z` on `main` → *Generate release notes → Publish*. Or from a clean `main`:
+
+```bash
+git tag -a v1.4.0 -m "v1.4.0" && git push origin v1.4.0
+```
+
+[Semantic Versioning](https://semver.org/): MAJOR for a breaking API change (with its
+frontend PR, see `docs/api/changelog.md`), MINOR for features, PATCH for fixes. Follow the
+deployment in *Actions*; the job's log shows `odt-deploy: <old> -> <new>` and
+`release: vX.Y.Z is live`.
+
+### GitHub environment `production`
+
+*Settings → Environments → New environment* `production`:
+
+- **Deployment branches and tags:** *Selected branches and tags*, add the tag rule `v*`.
+  Then no branch, pull request or other workflow gets its secrets.
+- **Environment variables:** every `.env` setting, under the names from `.env.example` and
+  [section 5](#5-the-env-file--full-configuration) (`DJANGO_SETTINGS_MODULE`,
+  `DJANGO_ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`,
+  `TRUSTED_PROXY_CIDRS`, `POSTGRES_DB`, `POSTGRES_USER`, `UID`, `GID`, `HOST_PROJECT_PATH`,
+  `HOST_MEDIA_ROOT`, `COMPOSE_PROFILES`, `PLANNER_*`, ...), plus for the job itself:
+
+  | Variable | Value |
+  | --- | --- |
+  | `DEPLOY_HOST` | server address |
+  | `DEPLOY_KNOWN_HOSTS` | the server's host key line, see below |
+  | `DEPLOY_USER` | optional, default `deploy` |
+
+- **Environment secrets:** `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`,
+  `FEED_AUTH_ENCRYPTION_KEY`, `PLANNER_INTERNAL_TOKEN` (with the planner) and
+  `DEPLOY_SSH_KEY` (the private key below).
+
+Rules of `envfile.py`: every variable becomes a `.env` line except `DEPLOY_*`; the secrets
+above must not also be variables (the job stops); a value cannot contain a line break.
+Repository-level and organization variables are part of the same `vars` context, so they
+land in `.env` too: keep production settings in the environment. A secret not listed in
+`envfile.py` and the workflow's `deploy` job does not reach the server: a new secret needs
+both changed.
+
+### One-time server setup
+
+As the admin user (`rocky` on the current VPS), with the checkout in
+`~/OtwarteDaneTransportowe-backend` (`odt-deploy` expects it in the home of the user it runs
+as):
+
+```bash
+# The deploy user: no password, a shell only for the forced command.
+sudo useradd --create-home --shell /bin/sh deploy
+
+# The forced command, owned by root; reinstall it whenever scripts/deploy/odt-deploy changes.
+sudo install -o root -g root -m 755 scripts/deploy/odt-deploy /usr/local/sbin/odt-deploy
+
+# deploy may run exactly that command as rocky, nothing else.
+echo 'deploy ALL=(rocky) NOPASSWD: /usr/local/sbin/odt-deploy' \
+  | sudo tee /etc/sudoers.d/odt-deploy > /dev/null
+sudo chmod 440 /etc/sudoers.d/odt-deploy && sudo visudo -cf /etc/sudoers.d/odt-deploy
+```
+
+On your own machine, a key used only by GitHub:
+
+```bash
+ssh-keygen -t ed25519 -N '' -C odt-github-deploy -f odt_deploy_key
+```
+
+Back on the server, allow it with the forced command (paste the content of `odt_deploy_key.pub`):
+
+```bash
+sudo install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
+echo 'restrict,command="sudo -n -u rocky /usr/local/sbin/odt-deploy \"$SSH_ORIGINAL_COMMAND\"" ssh-ed25519 AAAA... odt-github-deploy' \
+  | sudo tee /home/deploy/.ssh/authorized_keys > /dev/null
+sudo chown deploy:deploy /home/deploy/.ssh/authorized_keys
+sudo chmod 600 /home/deploy/.ssh/authorized_keys
+sudo restorecon -R /home/deploy/.ssh     # SELinux labels
+```
+
+Then put `odt_deploy_key` (the private key) into the secret `DEPLOY_SSH_KEY` and delete the
+local copy. For `DEPLOY_KNOWN_HOSTS` take the server's key line with
+`ssh-keyscan -t ed25519 <host>` and compare its fingerprint (`ssh-keygen -lf -`) with
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server before saving it.
+
+Test the key without deploying: `ssh -i odt_deploy_key deploy@<host> nope` must answer
+`odt-deploy: expected a release tag vX.Y.Z, got 'nope'`, and
+`ssh -i odt_deploy_key deploy@<host>` must not give a shell.
+
+### Moving the current `.env` into GitHub (once)
+
+On a machine with the [GitHub CLI](https://cli.github.com/), signed in to the repository, in
+an empty directory that is not synced anywhere:
+
+```bash
+scp rocky@<host>:OtwarteDaneTransportowe-backend/.env odt.env
+secrets='^(DJANGO_SECRET_KEY|POSTGRES_PASSWORD|FEED_AUTH_ENCRYPTION_KEY|PLANNER_INTERNAL_TOKEN)='
+grep -E "$secrets" odt.env > secrets.env
+grep -vE "$secrets" odt.env | grep -vE '^\s*(#|$)' > variables.env
+gh secret set --env production -f secrets.env
+gh variable set --env production -f variables.env
+shred -u odt.env secrets.env variables.env
+gh variable list --env production && gh secret list --env production
+```
+
+`gh` reads these as dotenv files and expands `$VAR` in values (unverified for every
+case): check any value with a `$`, quotes or a `#` by hand in the web UI. Comments at the
+end of a line are not part of the value in the server's `.env` either.
+
+### The first release
+
+The first release also switches production from the bind-mounted checkout to the image,
+so every application container is recreated (as in any deployment). Afterwards:
+
+- remove the per-service images of the old layout
+  (`docker image ls 'otwartedanetransportowe-backend-*'`, then `docker image rm ...`);
+- `staticfiles/` in the checkout is no longer used.
+
+Compose 2.24.4 or newer is required (`volumes: !override` in `docker-compose.prod.yml`).
+
+### Changing a setting or a secret
+
+Change it in the environment, then deploy: a new release, or *Re-run jobs* on the latest
+release's run (it uses the workflow of that tag and today's settings).
+
+- `DJANGO_SECRET_KEY` may change: every session and JWT becomes invalid.
+- `POSTGRES_PASSWORD`: first change it in the database
+  ([section 6](#6-postgresql)), then in the server's `.env` by hand, then in GitHub, then
+  deploy. The release refuses a password that differs from the server's `.env`.
+- `FEED_AUTH_ENCRYPTION_KEY`: never. The release refuses a change; there is no tool that
+  re-encrypts stored credentials.
+
+### Rolling back
+
+- **No migration since the previous release:** release a fix (`vX.Y.Z+1` with the revert),
+  or *Re-run jobs* on the previous release's run.
+- **With migrations:** stop the application, restore the dump taken just before the
+  release, then redeploy the previous tag:
+
+  ```bash
+  ./scripts/deploy.sh stop web celery_worker celery_beat celery_validator_worker celery_planner_worker
+  ./scripts/deploy.sh exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' \
+    < ~/backups/release-<time>-<failed tag>/db.dump
+  ```
+
+  Data written between the release and the restore is lost; reversing the migrations
+  instead (section 15) keeps it, when the migrations are reversible.
+- **Emergency, code only:** `docker image tag odt-backend:previous odt-backend:latest &&
+  ./scripts/deploy.sh up -d` runs the previous image without a build. The checkout and
+  `.env` stay on the new release until the next deployment.
