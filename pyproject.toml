@@ -10,7 +10,7 @@ dependencies = [
     "django-cors-headers==4.9.0",
     "gunicorn>=23.0.0",
     "whitenoise>=6.6.0",
-    "django-filter==25.2",
+    "django-filter==26.2",
     "psycopg2-binary>=2.9.9",
     "pillow>=10.0.0",
     "requests>=2.32.0",
