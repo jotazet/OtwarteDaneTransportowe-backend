@@ -1,14 +1,18 @@
 name: CI
 
+# Pull requests and main run the checks. A release tag vX.Y.Z runs them too and, when
+# they pass, goes to production through the deploy job (ADR 0013, docs/deployment.md
+# section 20).
 on:
   pull_request:
   push:
     branches: [main]
+    tags: ["v*"]
 
 permissions:
   contents: read
 
-# Only the newest run of a pull request matters. Pushes to main get a group each
+# Only the newest run of a pull request matters. Pushes (main, tags) get a group each
 # (the run ID): a shared group would cancel a waiting run when the next one queues.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.run_id }}
@@ -17,6 +21,8 @@ concurrency:
 jobs:
   backend:
     runs-on: ubuntu-24.04
+    # A hung test fails here instead of holding the runner for six hours.
+    timeout-minutes: 15
     services:
       # Settings default to postgres/postgres on 127.0.0.1:5420; tests need no
       # Redis (the cache falls back to local memory without REDIS_CACHE_URL).
@@ -35,7 +41,16 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # The token stays out of .git/config, where every later step could read it.
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        # Dependencies cached by uv.lock. A release tag runs without the cache, so its
+        # tests use freshly resolved packages; the deployment itself builds its image on
+        # the server and takes nothing from this job. zizmor cannot evaluate the expression.
+        with:
+          enable-cache: ${{ github.ref_type != 'tag' }} # zizmor: ignore[cache-poisoning]
+          cache-dependency-glob: uv.lock
       - run: uv sync --locked
       # The fast checks go first, so lint errors show before the tests run.
       - run: uv run ruff check .
@@ -43,10 +58,82 @@ jobs:
       - run: uv run python manage.py makemigrations --check --dry-run
       - run: uv run pytest
 
-  docker:
+  # The production image, its settings and Compose files, the workflows and the scripts
+  # that deploy them.
+  production:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      # The production image: no dev dependencies.
+        with:
+          persist-credentials: false
+      # Template injection, unpinned actions, tokens with more rights than a job needs.
+      - name: Audit the workflows
+        run: >-
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt
+          ghcr.io/zizmorcore/zizmor:1.32.0@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d
+          --offline --format=github .github/
+      - name: Lint the shell scripts
+        run: >-
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt
+          koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+          --severity=warning scripts/*.sh scripts/deploy/*.sh scripts/deploy/odt-deploy
+      - name: Check the production Compose files
+        run: COMPOSE_PROFILES=planner ./scripts/deploy.sh config --quiet
       - run: docker build --build-arg INSTALL_DEV=false --tag odt-backend .
+      # settings_prod imports and passes Django's checks with placeholder values.
+      - name: Check the production settings
+        run: >-
+          docker run --rm
+          -e DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
+          -e DJANGO_SECRET_KEY=ci-placeholder-ci-placeholder-ci-placeholder-ci-placeholder
+          -e DJANGO_ALLOWED_HOSTS=api.example.org
+          -e POSTGRES_PASSWORD=ci-placeholder
+          -e TRUSTED_PROXY_CIDRS=172.16.0.0/12
+          odt-backend python manage.py check
       - run: docker run --rm --entrypoint gunicorn odt-backend --version
+
+  # A release: a green vX.Y.Z tag on main goes to production.
+  deploy:
+    needs: [backend, production]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    # The environment hands its secrets only to v* tags (deployment rule in its settings).
+    environment: production
+    timeout-minutes: 30
+    # Never two deployments at once, and never cancel one halfway through.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      # The server refuses a tag that is not vX.Y.Z or not on main (odt-deploy): a check
+      # here would run from the tag's own workflow file, which the tag's author controls.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # Every variable of the environment and its named secrets: keep this list in step
+      # with REQUIRED_SECRETS and OPTIONAL_SECRETS in scripts/deploy/envfile.py.
+      - name: Write .env from the environment's variables and secrets
+        env:
+          VARS_JSON: ${{ toJSON(vars) }}
+          DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          FEED_AUTH_ENCRYPTION_KEY: ${{ secrets.FEED_AUTH_ENCRYPTION_KEY }}
+          PLANNER_INTERNAL_TOKEN: ${{ secrets.PLANNER_INTERNAL_TOKEN }}
+        run: python3 -I scripts/deploy/envfile.py write "$RUNNER_TEMP/production.env"
+      # The key's forced command on the server is odt-deploy: it takes the tag as its only
+      # argument and the .env on standard input.
+      - name: Deploy
+        env:
+          TAG: ${{ github.ref_name }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ vars.DEPLOY_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER || 'deploy' }}
+          KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$USER_NAME@$HOST" "$TAG" < "$RUNNER_TEMP/production.env"
