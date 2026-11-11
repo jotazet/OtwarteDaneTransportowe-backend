@@ -1,7 +1,7 @@
 #!/bin/sh
-# The forced command of the GitHub Actions deploy key (docs/deployment.md, section 20).
-# Installed by hand as /usr/local/sbin/odt-deploy, owned by root, and run through sudo
-# as the user that owns the checkout: the key can run this and nothing else.
+# Deploys a release tag (docs/deployment.md, section 20); the deploy job runs it on the
+# production runner. Installed by hand as /usr/local/sbin/odt-deploy, owned by root, and
+# run through sudo as the user that owns the checkout: the runner may run nothing else.
 #
 #   odt-deploy vX.Y.Z < production.env
 #

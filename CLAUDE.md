@@ -33,7 +33,7 @@ Backend of **Otwarte Dane Transportowe (ODT)**, a Polish portal for open public 
 - Commit messages use Conventional Commits: `type(scope): imperative summary`, at most 72 characters, with a body that explains *why* when it isn't obvious.
 - **No AI attribution:** no `Co-Authored-By` trailers and no "Generated with" lines in commits or PRs.
 - Commit freely on your branch. Push and open a PR only when the user asks.
-- **Releases:** a `vX.Y.Z` tag on `main` deploys to production through CI ([ADR 0013](docs/architecture/decisions/0013-release-tags-deploy-over-ssh.md)). Create tags and releases only when the user asks.
+- **Releases:** a `vX.Y.Z` tag on `main` deploys to production through CI ([ADR 0013](docs/architecture/decisions/0013-release-tags-deploy-from-a-server-runner.md)). Create tags and releases only when the user asks.
 - Full details: [`docs/development/git-workflow.md`](docs/development/git-workflow.md).
 
 ## Architecture at a glance

@@ -1,4 +1,4 @@
-# 0013. Deploy release tags from GitHub Actions over SSH
+# 0013. Deploy release tags from a GitHub Actions runner on the server
 
 - **Status:** Proposed
 - **Date:** 2026-11-11
@@ -11,18 +11,25 @@ base Compose file bind-mounts the checkout over `/app`, so between the pull and 
 running Celery workers imported the next release's modules (a burst of `FeedFetchError`
 on every deployment). The production `.env` existed only on the server.
 
-The repository is public and owned by a personal account. The server has a public IP and
-runs other projects and a memory-hungry OpenTripPlanner.
+The repository is public and owned by a personal account; only its owner can push tags.
+The server runs the backend, the frontend, other projects and a memory-hungry
+OpenTripPlanner.
 
 ## Decision
 
 - **A release is a `vX.Y.Z` tag on `main`**, usually created as a GitHub Release. The CI
   workflow runs every check on the tag, then the `deploy` job deploys it. Nothing else
   deploys: not a push to `main`, not a tag outside `main` (checked on the server).
-- **The job connects over SSH as a dedicated `deploy` user** whose key has a forced command,
-  `/usr/local/sbin/odt-deploy` (root-owned, installed once from `scripts/deploy/`), run
-  through sudo as the user that owns the checkout. The key can pass a tag and a `.env`,
-  nothing else: no shell, no forwarding.
+- **The `deploy` job runs on a self-hosted runner on the production server** (label
+  `odt-production`), as the system user `odt-runner`. That user is not in the `docker`
+  group and may run exactly one command through sudo: `/usr/local/sbin/odt-deploy`
+  (root-owned, installed once from `scripts/deploy/`) as the user that owns the checkout.
+  Every other job runs on GitHub-hosted runners. ODT's runners (backend now, frontend
+  later) share `odt-runner`, one runner directory per repository under
+  `/opt/actions-runner/`.
+- **Workflows from fork pull requests need the owner's approval** for every outside
+  contributor (repository setting), because a pull request can change `ci.yml` and point a
+  job at the runner.
 - **The server builds the image from the checked-out tag** (`scripts/deploy/release.sh`):
   `.env` check, `docker compose build --pull`, database dump, new `.env`, `up -d` with
   migrations first, then the API must answer. The production Compose overlay runs the code
@@ -37,7 +44,12 @@ runs other projects and a memory-hungry OpenTripPlanner.
 ## Consequences
 
 - Deploying is creating a release; every deployment has a log in Actions and a dump in
-  `~/backups/release-*` (the newest ten).
+  `~/backups/release-*` (the newest ten). No inbound port or key is involved: the runner
+  connects out to GitHub.
+- The runner is persistent. Code that reaches it (an approved pull request with a changed
+  workflow) runs as `odt-runner` and could stay there to read later deployments' secrets;
+  it cannot use Docker or deploy anything but a tag on `main`. Approving a fork's workflow
+  means reading its workflow changes first.
 - The server's `.env` is generated. A hand edit is overwritten by the next release; settings
   change in GitHub, without review or history in the repository, and redeploying an old tag
   uses today's settings.
@@ -46,14 +58,15 @@ runs other projects and a memory-hungry OpenTripPlanner.
 - Rolling back across a migration still means restoring the dump; a release does not
   reverse migrations.
 - `odt-deploy` changes need a manual reinstall on the server; it is kept minimal for that
-  reason.
+  reason. The runner updates itself.
 
 ## Alternatives considered
 
-- **Self-hosted runner on the server** (as in other team projects behind a VPN) — no open
-  port or key in GitHub, but GitHub advises against self-hosted runners for public
-  repositories: a pull request from a fork can run code on them, and a personal account
-  has no runner groups to restrict which workflows may use one.
+- **SSH from a GitHub-hosted runner** to a `deploy` user whose key has `odt-deploy` as a
+  forced command (the first version of this decision) — nothing runs permanently on the
+  server and a pull request cannot reach it, but a private key with access to production
+  lives in GitHub and the SSH port must accept connections from GitHub's address ranges.
+  The owner preferred the runner, as in other team projects.
 - **Images built in Actions and pulled from GHCR** — no build on the host and faster
   rollback, but a registry login on the server and more moving parts. Still open; the
   production overlay already names the image `odt-backend:latest`.

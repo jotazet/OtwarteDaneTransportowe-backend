@@ -5,8 +5,8 @@
 
 `write` turns every variable of the `production` environment (VARS_JSON, the job's
 toJSON(vars)) into one line under its own name, then the secrets listed in SECRETS, which
-the job passes one by one: toJSON(secrets) would hand the step every secret, the deploy
-key included. Variables named DEPLOY_* configure the deploy job itself and stay out of
+the job passes one by one: toJSON(secrets) would hand the step every secret, GitHub's
+token included. Variables named DEPLOY_* configure the deploy job itself and stay out of
 the file. Values go in double quotes with \\, \" and $ escaped ($$), which Compose reads
 back as the exact value through env_file and ${...} alike; single quotes break on a value
 that ends in a backslash. A line break is refused.

@@ -97,7 +97,10 @@ jobs:
   deploy:
     needs: [backend, production]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
+    # The runner on the production server, as the user odt-runner: no Docker, and through
+    # sudo only odt-deploy as the application's user (docs/deployment.md section 20). No
+    # other job may use this label.
+    runs-on: [self-hosted, odt-production]
     # The environment hands its secrets only to v* tags (deployment rule in its settings).
     environment: production
     timeout-minutes: 30
@@ -121,19 +124,13 @@ jobs:
           FEED_AUTH_ENCRYPTION_KEY: ${{ secrets.FEED_AUTH_ENCRYPTION_KEY }}
           PLANNER_INTERNAL_TOKEN: ${{ secrets.PLANNER_INTERNAL_TOKEN }}
         run: python3 -I scripts/deploy/envfile.py write "$RUNNER_TEMP/production.env"
-      # The key's forced command on the server is odt-deploy: it takes the tag as its only
-      # argument and the .env on standard input.
+      # odt-deploy takes the tag as its only argument and the .env on standard input.
       - name: Deploy
         env:
           TAG: ${{ github.ref_name }}
-          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          HOST: ${{ vars.DEPLOY_HOST }}
-          USER_NAME: ${{ vars.DEPLOY_USER || 'deploy' }}
-          KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$USER_NAME@$HOST" "$TAG" < "$RUNNER_TEMP/production.env"
+          APP_USER: ${{ vars.DEPLOY_APP_USER || 'rocky' }}
+        run: sudo -n -u "$APP_USER" /usr/local/sbin/odt-deploy "$TAG" < "$RUNNER_TEMP/production.env"
+      # The runner is not thrown away after the job: the secrets must not stay on its disk.
+      - name: Remove the .env
+        if: always()
+        run: rm -f "$RUNNER_TEMP/production.env"
