@@ -917,7 +917,10 @@ deployment in *Actions*; the job's log shows `odt-deploy: <old> -> <new>` and
   `DEPLOY_SSH_KEY` (the private key below).
 
 Rules of `envfile.py`: every variable becomes a `.env` line except `DEPLOY_*`; the secrets
-above must not also be variables (the job stops); a value cannot contain a line break.
+above must not also be variables (the job stops); a value cannot contain a line break;
+`POSTGRES_DB`, `POSTGRES_USER`, `DJANGO_ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`,
+`CORS_ALLOWED_ORIGINS` and `TRUSTED_PROXY_CIDRS` are required, because without them the
+containers would take the development values from `.env.example` and still look healthy.
 Repository-level and organization variables are part of the same `vars` context, so they
 land in `.env` too: keep production settings in the environment. A secret not listed in
 `envfile.py` and the workflow's `deploy` job does not reach the server: a new secret needs
