@@ -138,7 +138,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(64))"
 # FEED_AUTH_ENCRYPTION_KEY (Fernet key for encrypting feed credentials)
 python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 # (if you do not have 'cryptography' locally, generate it in the container after the first build:
-#  docker compose run --rm web python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+#  ./scripts/deploy.sh run --rm web python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 
 # POSTGRES_PASSWORD (strong database password)
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -451,11 +451,17 @@ docker compose up -d --build
 docker compose ps
 ```
 
-> **Passwords and keys in `.env`:** the values are loaded via `env_file`, so they may
-> contain the `$` character without double escaping. Avoid writing secrets as
-> `${POSTGRES_PASSWORD}` in compose files — this caused warnings such as
-> `The "o" variable is not set`. `REDIS_PASSWORD` is the exception: Compose interpolates
-> it into the Redis URLs, which is why it is limited to letters, digits, `-` and `_`.
+> **`$` in `.env` values:** Compose expands `$NAME` and `${NAME}` in unquoted and
+> double-quoted values, both in the `env_file` entries the containers receive and in the
+> project `.env` it interpolates into `docker-compose*.yml` (such as `PLANNER_INTERNAL_TOKEN`).
+> Write a literal `$` as `$$` (`pa$$word` is `pa$word`), or put the whole value in single
+> quotes (`'pa$word'`), which Compose takes as is. An unescaped `pa$word` becomes `pa` plus
+> the value of a variable `word`, with a warning such as `The "word" variable is not set`. A
+> `$` followed by neither a letter, `_` nor `{` stays as it is (`^/(api|feed)/.*$`). This
+> applies to every hand-written file: `.env` and the host file
+> ([section 20](#the-host-file)). Values in the GitHub environment are literal: the release
+> writes them into `.env` escaped. `REDIS_PASSWORD` also goes into the Redis URLs
+> unencoded, which is why it is limited to letters, digits, `-` and `_`.
 
 The startup order is enforced by dependencies: `init_uploads` → `postgres`/`redis`
 (healthcheck) → `migrate` → `web`/workers.
@@ -471,7 +477,7 @@ Migrations run automatically in the `migrate` service at startup. The role group
 Create the first administrator account:
 
 ```bash
-docker compose exec web python manage.py createsuperuser
+./scripts/deploy.sh exec web python manage.py createsuperuser
 ```
 
 You assign roles in the `/admin/` panel (Groups) or via the user management API
@@ -480,7 +486,7 @@ You assign roles in the `/admin/` panel (Groups) or via the user management API
 Manual migrations (if needed):
 
 ```bash
-docker compose exec web python manage.py migrate
+./scripts/deploy.sh exec web python manage.py migrate
 ```
 
 ---
@@ -638,7 +644,7 @@ Verification: add a reaction to a blog post you have not reacted to yet; the new
 address must be your own IP, not a Cloudflare one:
 
 ```bash
-docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT ip_address FROM blog_reaction ORDER BY date DESC LIMIT 1"'
+./scripts/deploy.sh exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT ip_address FROM blog_reaction ORDER BY date DESC LIMIT 1"'
 ```
 
 ---
@@ -647,14 +653,14 @@ docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB
 
 ```bash
 # Service status and healthcheck: web, the workers and beat should be (healthy)
-docker compose ps
+./scripts/deploy.sh ps
 
 # Application and worker logs
-docker compose logs -f web
-docker compose logs -f celery_validator_worker
+./scripts/deploy.sh logs -f web
+./scripts/deploy.sh logs -f celery_validator_worker
 
 # Security configuration check (inside the container, prod)
-docker compose exec web python manage.py check --deploy
+./scripts/deploy.sh exec web python manage.py check --deploy
 ```
 
 Expected: no `security.W*` warnings. Then check through the browser/proxy:
@@ -900,8 +906,8 @@ lower its concurrency.
 `./scripts/deploy.sh up -d --build`.
 
 **Compose warnings: `The "o" variable is not set`**
-→ Secrets in `.env` must not be substituted via `${VAR}` in compose — use
-`env_file` (the project default). Passwords may contain `$` without escaping.
+→ A value in `.env` or the host file contains `$o`, which Compose expands. Write the `$` as
+`$$` or single-quote the value ([section 10](#10-startup)).
 
 **CSRF 403 on POST**
 → Fill in `CSRF_TRUSTED_ORIGINS` and make sure the proxy sends `X-Forwarded-Proto`.
@@ -917,8 +923,8 @@ so rebuild it; in development the `migrate` service collects them at startup. If
 [12](#12-static-files-static) and [13](#13-reverse-proxy--tls)).
 
 **GTFS validation does not work / "Cannot connect to Docker"**
-→ Check that the `docker-socket-proxy` service is running (`docker compose ps`,
-`docker compose logs docker-socket-proxy`) and that `celery_validator_worker`
+→ Check that the `docker-socket-proxy` service is running (`./scripts/deploy.sh ps`,
+`./scripts/deploy.sh logs docker-socket-proxy`) and that `celery_validator_worker`
 has `DOCKER_HOST=tcp://docker-socket-proxy:2375` and is on the `docker-api` network.
 
 **Files in `uploaded_data/` are owned by root / cannot write**
@@ -931,7 +937,7 @@ required for the lock and throttling across processes).
 **Blog reactions: everyone overwrites each other's reaction / one reaction globally; anonymous visitors get `429` together**
 → The backend sees everyone with a single IP (the proxy's address). Set `TRUSTED_PROXY_CIDRS`
 to the proxy network (e.g. `172.16.0.0/12,127.0.0.1/32`) and make sure nginx/Caddy
-forwards `X-Forwarded-For`. Verification: `docker compose exec web python
+forwards `X-Forwarded-For`. Verification: `./scripts/deploy.sh exec web python
 manage.py check` must not report `blog.W001`.
 
 **Blog reactions are stored with Cloudflare addresses**
@@ -950,21 +956,21 @@ needed; only the proxy mounts the socket (read-only).
 
 1. Make sure the proxy is running:
    ```bash
-   docker compose up -d docker-socket-proxy celery_validator_worker
-   docker compose ps docker-socket-proxy
+   ./scripts/deploy.sh up -d docker-socket-proxy celery_validator_worker
+   ./scripts/deploy.sh ps docker-socket-proxy
    ```
 
 2. Check the logs:
    ```bash
-   docker compose logs celery_validator_worker --tail 50
+   ./scripts/deploy.sh logs celery_validator_worker --tail 50
    ```
    The error `Cannot connect to Docker` = the proxy is not running or `DOCKER_HOST`
    is missing from the worker's environment (see `docker-compose.yml`).
 
 3. Retry validation for submissions stuck at stage 2:
    ```bash
-   docker compose exec web python manage.py retry_gtfs_validation
-   docker compose exec web python manage.py retry_gtfs_validation --submission-id 64
+   ./scripts/deploy.sh exec web python manage.py retry_gtfs_validation
+   ./scripts/deploy.sh exec web python manage.py retry_gtfs_validation --submission-id 64
    ```
    Without `--submission-id` it re-queues GTFS entries at stage 2 or 3 whose `validation_status` is
    `error` (validation could not run: the submission was not rejected) or `pending` (the task was lost
@@ -1174,7 +1180,8 @@ interpolates into `docker-compose*.yml` (`*_HOST_PORT`, `WEB_HOST_BIND`, `GUNICO
 `PLANNER_DATA_DIR`, `PLANNER_OSM_FILE`, `PLANNER_OTP_CONTAINER`, `PLANNER_OTP_URL`,
 `PLANNER_ODT_INTERNAL_URL`, `REDIS_CACHE_URL`). It may also pin an application setting. It
 holds no secret. `odt-deploy` refuses to run unless the file and `/etc/odt` are owned by root
-and writable by nobody else; the format is that of `.env`. Change it as root, then deploy.
+and writable by nobody else; the format is that of `.env`, `$$` for a literal `$` included
+([section 10](#10-startup)). Change it as root, then deploy.
 
 ```bash
 sudo install -d -o root -g root -m 755 /etc/odt

@@ -1,5 +1,5 @@
 # App secrets and Django config are loaded from .env via env_file (not ${VAR}
-# interpolation) so passwords/keys may contain '$' without breaking Compose.
+# interpolation). Compose still expands $NAME in env_file values: a literal '$' is '$$'.
 x-app-env: &app-env
   HOME: /app
   POSTGRES_HOST: postgres
