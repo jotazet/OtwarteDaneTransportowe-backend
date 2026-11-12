@@ -1,5 +1,5 @@
 # The daily backup (scripts/deploy/backup.sh); installed with odt-backup.timer, see
-# docs/deployment.md, section 16. User and path match the production checkout.
+# docs/deployment.md, section 16. User and path match the production deployment directory.
 [Unit]
 Description=ODT backup: database, uploaded_data/, planner snapshots
 Documentation=https://github.com/jotazet/OtwarteDaneTransportowe-backend/blob/main/docs/deployment.md#16-backups-and-restore
@@ -13,7 +13,7 @@ User=rocky
 # Root-owned settings (docs/deployment.md, section 16).
 EnvironmentFile=-/etc/odt/backup.env
 # Through /bin/sh, so the script needs no executable bit or SELinux label of its own.
-ExecStart=/bin/sh /home/rocky/OtwarteDaneTransportowe-backend/scripts/deploy/backup.sh
+ExecStart=/bin/sh /home/rocky/odt-backend/scripts/deploy/backup.sh
 # A hung copy fails the run instead of blocking every later one (oneshot has no default limit).
 TimeoutStartSec=6h
 Nice=10

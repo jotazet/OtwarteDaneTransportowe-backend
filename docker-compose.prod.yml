@@ -1,7 +1,8 @@
 # Production override for Docker Compose.
 #
 # Releases are deployed by GitHub Actions (docs/deployment.md, section 20). By hand
-# (single VPS, TLS terminated by an external reverse-proxy such as nginx/Caddy):
+# (single VPS, TLS terminated by an external reverse-proxy such as nginx/Caddy), from a
+# checkout:
 #   ./scripts/deploy.sh up -d --build
 #
 # Or manually:
@@ -18,12 +19,18 @@
 #
 # The reverse-proxy must forward X-Forwarded-Proto so SECURE_PROXY_SSL_HEADER works.
 
+# The project name decides the names of the database volume and the networks, so it must not
+# follow the name of the directory the files are deployed in.
+name: otwartedanetransportowe-backend
+
 # The application services run the code baked into the image, not the checkout: the base
 # file bind-mounts the project over /app for development, which in production let running
 # workers import the next release's modules the moment the checkout changed. Only the
 # data directories stay mounted. `!override` needs Docker Compose 2.24.4 or newer.
 x-prod-app: &prod-app
-  image: odt-backend:latest
+  # CI builds and pushes the image of every release tag; a release sets ODT_VERSION to it
+  # (scripts/deploy/release.sh). The build section stays for building by hand.
+  image: ${ODT_BACKEND_IMAGE:-ghcr.io/jotazet/odt-backend}:${ODT_VERSION:-latest}
   build:
     args:
       INSTALL_DEV: "false"

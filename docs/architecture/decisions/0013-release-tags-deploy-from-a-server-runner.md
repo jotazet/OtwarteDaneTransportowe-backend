@@ -1,6 +1,6 @@
 # 0013. Deploy release tags from a GitHub Actions runner on the server
 
-- **Status:** Proposed
+- **Status:** Proposed; the build on the server and the checkout are superseded by [0016](0016-release-images-from-ghcr-without-a-server-checkout.md)
 - **Date:** 2026-11-11
 
 ## Context

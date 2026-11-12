@@ -12,7 +12,7 @@ This README intentionally stays **high-level**. Detailed API docs and deployment
 ## Documentation
 
 - **API reference**: [`docs/api/`](docs/api/README.md), with breaking changes in [`docs/api/changelog.md`](docs/api/changelog.md)
-- **Deployment**: [`docs/deployment.md`](docs/deployment.md). A GitHub Release with a `vX.Y.Z` tag on `main` deploys to production automatically ([section 20](docs/deployment.md#20-releases-automatic-deployment-from-github)); application settings and secrets live in the GitHub environment `production`, host settings in `/etc/odt/backend-host.env` on the server
+- **Deployment**: [`docs/deployment.md`](docs/deployment.md). A GitHub Release with a `vX.Y.Z` tag on `main` deploys to production automatically: CI pushes the image to `ghcr.io/jotazet/odt-backend` and the server pulls it ([section 20](docs/deployment.md#20-releases-automatic-deployment-from-github)); application settings and secrets live in the GitHub environment `production`, host settings in `/etc/odt/backend-host.env` on the server
 - **Domain, architecture and decisions**: [`docs/`](docs/README.md)
 - **Conventions for contributors and AI agents**: [`CLAUDE.md`](CLAUDE.md)
 
