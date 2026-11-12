@@ -1,12 +1,11 @@
 # App secrets and Django config are loaded from .env via env_file (not ${VAR}
-# interpolation) so passwords/keys may contain '$' without breaking Compose.
+# interpolation). Compose still expands $NAME in env_file values: a literal '$' is '$$'.
 x-app-env: &app-env
   HOME: /app
   POSTGRES_HOST: postgres
   POSTGRES_PORT: "5432"
   # REDIS_PASSWORD goes into the URLs unencoded: letters, digits, - and _ only. Empty in dev.
   CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
-  CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-}@redis:6379/1
   # Shared cache: required so the realtime self-scheduling lock and DRF throttling
   # work across web + worker processes (per-process LocMemCache would break them).
   REDIS_CACHE_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/2
@@ -156,6 +155,22 @@ services:
       --queues=default
       --concurrency=${CELERY_DEFAULT_CONCURRENCY:-2}
     mem_limit: ${CELERY_DEFAULT_MEM_LIMIT:-1g}
+    healthcheck: *worker-healthcheck
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Realtime fetching and verification, kept apart from the dispatchers on
+  # 'default': a slow upstream holds a worker for up to 90 s per fetch.
+  celery_realtime_worker:
+    <<: *app-service
+    container_name: odt-celery-realtime-worker
+    command: >
+      celery -A OtwarteDaneTransportowe worker
+      --loglevel=info
+      --queues=realtime
+      --concurrency=${CELERY_REALTIME_CONCURRENCY:-2}
+    mem_limit: ${CELERY_REALTIME_MEM_LIMIT:-1g}
     healthcheck: *worker-healthcheck
     depends_on:
       migrate:

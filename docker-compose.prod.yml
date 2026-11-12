@@ -58,6 +58,9 @@ services:
   celery_worker:
     <<: *prod-app
 
+  celery_realtime_worker:
+    <<: *prod-app
+
   celery_beat:
     <<: *prod-app
 

@@ -13,9 +13,16 @@ from unittest.mock import patch
 import pytest
 from django.core.files.base import ContentFile
 from django.utils import timezone
+from kombu.exceptions import OperationalError
 
 from cases.models import TransportOrganization
-from data_manager.models import FeedSubmission, FeedSubmissionHistory, StaticFeedEntry
+from data_manager.models import (
+    FETCH_STATUS_ACTIVE,
+    FeedFetchError,
+    FeedSubmission,
+    FeedSubmissionHistory,
+    StaticFeedEntry,
+)
 from data_manager.scheduler import FETCH_OK, _fetch_static_entry
 from OtwarteDaneTransportowe.auth_roles import ROLE_DATA_PROVIDER
 
@@ -197,3 +204,18 @@ def test_no_conditional_request_without_a_cached_copy(entry, upstream, validate)
     entry.refresh_from_db()
     assert _cached_bytes(entry) == CACHED
     validate.assert_called_once_with(entry.pk)
+
+
+def test_broker_error_after_a_fetch_is_not_a_fetch_failure(entry, upstream, validate):
+    """The new copy is cached; only queuing its validation failed (issue #47)."""
+    validate.side_effect = OperationalError('broker unreachable')
+    upstream.body = b'PK\x03\x04new-feed'
+
+    assert _fetch_static_entry(entry) == FETCH_OK
+
+    validate.assert_called_once_with(entry.pk)
+    entry.refresh_from_db()
+    assert _cached_bytes(entry) == upstream.body
+    assert entry.fetch_status == FETCH_STATUS_ACTIVE
+    assert entry.fetch_failure_count == 0
+    assert not FeedFetchError.objects.filter(static_entry=entry).exists()
