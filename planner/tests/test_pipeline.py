@@ -264,6 +264,104 @@ def test_ensure_serving_leaves_a_running_build_alone(make_feed, fake_otp):
     assert not fake_otp.running
 
 
+def declare_interrupted():
+    """What the watchdog does once a running build's heartbeat is 15 minutes old."""
+    GraphBuild.objects.filter(status=GraphBuild.STATUS_RUNNING).update(
+        heartbeat_at=timezone.now() - timedelta(hours=1)
+    )
+    assert pipeline.fail_stale_builds() == 1
+
+
+def test_build_declared_interrupted_during_osmium_stops_without_activating(
+    make_feed, fake_otp, planner_data, monkeypatch
+):
+    make_feed('krk')
+    first = build_now()
+    (planner_data / 'osm' / 'region.osm.pbf').write_bytes(b'new map')  # rebuild streets
+    fake_otp.runs.clear()
+    fake_otp.events.clear()
+    beats = []
+
+    def prepare_osm(source, cells, target, on_tick=None):
+        running = GraphBuild.objects.filter(status=GraphBuild.STATUS_RUNNING)
+        running.update(heartbeat_at=timezone.now() - timedelta(minutes=10))
+        on_tick()  # osmium is running: the heartbeat is refreshed
+        beats.append(running.get().heartbeat_at)
+        declare_interrupted()
+        on_tick()  # the next heartbeat finds the build failed
+
+    monkeypatch.setattr(pipeline.osm, 'prepare_osm', prepare_osm)
+
+    build = build_now()
+
+    assert beats[0] > timezone.now() - timedelta(minutes=1)
+    assert (build.status, build.error_code) == ('failed', 'planner.build_interrupted')
+    assert 'street' not in fake_otp.kinds() and 'graph' not in fake_otp.kinds()
+    # Serving is the watchdog's again: the aborted build does not start OTP.
+    assert fake_otp.events == ['stop']
+    assert GraphBuild.objects.get(is_active=True) == first
+    assert serving_target() == f'graphs/{first.id}'
+
+
+def test_build_declared_interrupted_during_activation_never_becomes_active(
+    make_feed, fake_otp, monkeypatch
+):
+    feed = make_feed('krk')
+    first = build_now()
+    feed.refresh_from_db()
+    last_good = feed.last_good_sha256
+    set_feed_content(feed, gtfs_variant('v2'))
+    fake_otp.events.clear()
+    real_query = fake_otp.query
+
+    def query(*args, **kwargs):  # the activation check, after the health wait
+        declare_interrupted()
+        return real_query(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.otp_runtime, 'query', query)
+
+    build = build_now()
+
+    assert (build.status, build.error_code) == ('failed', 'planner.build_interrupted')
+    assert not build.is_active
+    assert GraphBuild.objects.get(is_active=True) == first
+    assert serving_target() == f'graphs/{first.id}'
+    assert fake_otp.events == ['stop', 'start', 'stop']
+    feed.refresh_from_db()
+    assert feed.last_good_sha256 == last_good
+
+
+def test_build_failing_after_it_was_declared_interrupted_leaves_serving_alone(
+    make_feed, fake_otp, monkeypatch
+):
+    make_feed('krk')
+    real_run_otp = fake_otp.run_otp
+
+    def run_otp(host_dir, args, **kwargs):
+        if args == ['--loadStreet', '--save']:
+            # ensure_serving removed the container before the build's next heartbeat.
+            declare_interrupted()
+            return pipeline.otp_runtime.RunResult(exit_code=137, oom=False, log_tail='')
+        return real_run_otp(host_dir, args, **kwargs)
+
+    monkeypatch.setattr(pipeline.otp_runtime, 'run_otp', run_otp)
+
+    build = build_now()
+
+    assert (build.status, build.error_code) == ('failed', 'planner.build_interrupted')
+    assert fake_otp.events == ['stop']
+
+
+def test_watchdog_does_not_overwrite_a_finished_build(make_feed, fake_otp):
+    make_feed('krk')
+    build = build_now()
+    GraphBuild.objects.filter(pk=build.pk).update(heartbeat_at=timezone.now() - timedelta(hours=1))
+
+    assert pipeline.fail_stale_builds() == 0
+    build.refresh_from_db()
+    assert build.status == GraphBuild.STATUS_SUCCEEDED
+
+
 def test_heartbeat_is_refreshed_while_feeds_are_collected(make_feed, fake_otp, monkeypatch):
     make_feed('krk')
     make_feed('waw')
@@ -319,11 +417,24 @@ def test_failed_first_activation_serves_nothing(make_feed, fake_otp):
 
 def test_feed_copy_is_retried_on_the_current_file(make_feed, fake_otp, monkeypatch):
     feed = make_feed('krk', content=b'PK\x03\x04 mid-rewrite')
-    monkeypatch.setattr(pipeline, '_sleep', lambda seconds: set_feed_content(feed, GTFS_ZIP))
+    beats = []
+    real_heartbeat = pipeline._heartbeat
+    monkeypatch.setattr(
+        pipeline, '_heartbeat', lambda build: (beats.append(1), real_heartbeat(build))
+    )
+
+    def retry(seconds):
+        beats.append('retry')
+        set_feed_content(feed, GTFS_ZIP)
+
+    monkeypatch.setattr(pipeline, '_sleep', retry)
 
     build = build_now()
 
     assert results(build)['krk']['outcome'] == 'fresh'
+    # One heartbeat for the feed, one more before the retry (a download may take
+    # the whole fetch timeout).
+    assert beats[: beats.index('retry')] == [1, 1]
 
 
 def test_last_good_version_is_retested_after_an_otp_upgrade(
