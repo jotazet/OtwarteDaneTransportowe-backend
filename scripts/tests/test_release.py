@@ -71,7 +71,7 @@ def test_a_release_waits_for_every_service_and_tags_its_image(sandbox):
     result, calls = release(sandbox)
 
     assert result.returncode == 0, result.stderr
-    assert 'compose up -d --wait --wait-timeout 300' in calls
+    assert 'compose up -d --wait --wait-timeout 900' in calls
     assert 'docker image tag odt-backend:latest odt-backend:v1.4.0' in calls
     assert 'release: v1.4.0 is live' in result.stdout
 

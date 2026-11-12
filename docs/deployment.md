@@ -885,7 +885,7 @@ flowchart LR
    yet), dumps the database with the current `.env` and commit into
    `~/backups/release-<UTC time>-<tag>/` (keeps the newest 10), installs the new `.env`,
    runs `up -d --wait` (the `migrate` service first, then every service is recreated) and
-   waits up to 5 minutes for every service to pass its healthcheck
+   waits up to 15 minutes, migrations included, for every service to pass its healthcheck
    ([section 18](#18-troubleshooting)); one that exits, keeps restarting or turns unhealthy
    fails the release. Only then is the image tagged `odt-backend:<tag>` (the newest 3 are
    kept, for a rollback), and replaced `odt-backend` images and build cache older than 7

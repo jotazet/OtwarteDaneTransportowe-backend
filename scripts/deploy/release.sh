@@ -12,7 +12,9 @@ tag="$1"
 env_new="$2"
 BACKUPS_KEEP=10
 RELEASES_KEEP=3
-WAIT_TIMEOUT=300
+# Covers the migrations too: when it expires, Compose leaves the services after `migrate`
+# created but not started. Within the deploy job's 30 minutes.
+WAIT_TIMEOUT=900
 
 cd "$(dirname "$0")/../.."
 log() { echo "release: $*"; }
