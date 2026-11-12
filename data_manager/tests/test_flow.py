@@ -4,7 +4,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.conf import settings
@@ -63,6 +63,7 @@ def fake_download(body: bytes, status_code: int = 200):
     def _cm(*args, **kwargs):
         response = MagicMock()
         response.status_code = status_code
+        response.headers = {}
         response.content = body
         response.raise_for_status = MagicMock()
         yield response, io.BytesIO(body)
@@ -135,10 +136,13 @@ def _mock_docker_from_env(error_count: int, runs: list | None = None):
             }
             with open(os.path.join(output_host_dir, 'report.json'), 'w', encoding='utf-8') as fh:
                 json.dump(payload, fh)
-            return b''
+            container = MagicMock()
+            container.wait.return_value = {'StatusCode': 0}
+            return container
 
     class _DockerClient:
         containers = _Containers()
+        api = MagicMock()
 
     return lambda: _DockerClient()
 

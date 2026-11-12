@@ -214,7 +214,7 @@ FEED_AUTH_ENCRYPTION_KEY=<wklej-klucz-Fernet>
 # Resource limits of the validator container:
 # GTFS_VALIDATOR_MEM_LIMIT=2g
 # GTFS_VALIDATOR_PIDS_LIMIT=512
-# GTFS_VALIDATOR_NANO_CPUS=2000000000   # 2 vCPU (1e9 = 1 core)
+# GTFS_VALIDATOR_NANO_CPUS=2000000000   # default 2 vCPU (1e9 = 1 core, 0 = no cap)
 
 # ───────────────────────── Worker memory ─────────────────────────
 # Child process recycling — without it a single large feed download permanently
@@ -294,7 +294,7 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `PUBLIC_BASE_URL` | Currently unused (defined in settings, not read by any code). |
 | `UID` / `GID` | User the application containers run as, and the user of the GTFS validator container, so it can write its report into `uploaded_data/`. Default `1000`. |
 | `HOST_PROJECT_PATH` / `HOST_MEDIA_ROOT` | Host paths of the project and of `uploaded_data/`. The validator is started by the host's Docker daemon, so its bind mounts need host paths. Compose passes `${PWD}` and `${PWD}/uploaded_data` when unset; outside compose `HOST_MEDIA_ROOT` defaults to `HOST_PROJECT_PATH/uploaded_data`. |
-| `GTFS_VALIDATOR_MEM_LIMIT`, `GTFS_VALIDATOR_PIDS_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS` | Resource limits of the validator container. Defaults `2g`, `512` and no CPU cap (`1000000000` = one core). |
+| `GTFS_VALIDATOR_MEM_LIMIT`, `GTFS_VALIDATOR_PIDS_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS` | Resource limits of the validator container. Defaults `2g`, `512` and two cores (`2000000000`; `1000000000` = one core, `0` = no cap). Two of the production VPS's six vCPUs leave the rest to OpenTripPlanner, the web and the other workers; a validation then takes longer but still has to fit the 10-minute budget below. Docker refuses a cap above the host's CPU count, so set `1000000000` (or `0`) on a single-CPU machine. |
 | `WEB_MEM_LIMIT`, `CELERY_DEFAULT_MEM_LIMIT`, `CELERY_FEEDS_MEM_LIMIT`, `CELERY_PLANNER_MEM_LIMIT`, `POSTGRES_MEM_LIMIT` | `mem_limit` of `web`, `celery_worker`, `celery_validator_worker`, `celery_planner_worker` and `postgres`. Default `1g` each, `6g` for the planner worker (it crops the OSM extract); raise the web and worker ones together with `GUNICORN_WORKERS` and the Celery concurrencies, the planner one with a larger OSM extract. See [section 1](#memory-limits-and-logs). |
 | `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis databases of the Celery broker and result backend. `docker-compose.yml` sets them (databases `0` and `1`), which overrides `.env`; the defaults (`redis://localhost:6379/0`, `/1`) are for running outside Docker. |
 | `POSTGRES_HOST` / `POSTGRES_PORT` | Database address. `docker-compose.yml` sets `postgres` and `5432`; the defaults `127.0.0.1` and `5420` (the port published on the host in development) are for running on the host. |
@@ -375,15 +375,25 @@ real feeds through the new tag, then bump the default in code (or set the variab
 in `.env` and recreate the worker with `./scripts/deploy.sh up -d celery_validator_worker`;
 a plain `restart` does not re-read `.env`). Pull the new image on the host first
 (`docker pull <image>`): otherwise the first validation pulls it inside the task, and on a
-slow link it can hit the task's time limit and reject the submission. Published feeds are
+slow link it can run out of time (`gtfs_validation.timeout`). Published feeds are
 not unpublished by a failed revalidation.
+
+One validation has 10 minutes in total (the task's soft time limit). For a URL feed that ODT
+does not proxy this includes downloading the file, so the validator container gets whatever
+is left, minus 30 seconds for cleanup. A container still running then is killed and removed,
+and the entry gets `validation_status=error` with `gtfs_validation.timeout` (the stage is
+kept; `manage.py retry_gtfs_validation` re-runs it). Validator containers are named
+`odt-gtfs-validator-<entry id>-<random>` and carry the label `odt.gtfs-validator.expires`
+(Unix time of the task's hard time limit). If a worker is killed before it removes its
+container, the next validation removes every labelled container past that time. To find
+leftovers by hand: `docker ps -a --filter label=odt.gtfs-validator.expires`.
 
 > ⚠️ **Security (honestly):** the proxy cuts off exec/volumes/networks/secrets,
 > but the `containers create` API still accepts bind mounts and the `privileged` flag,
 > so a compromised worker remains dangerous — the attack surface is reduced,
 > not eliminated. Full closure: rootless Docker or the validator as a
 > separate microservice. Additional mitigations for the validator container:
-> `network_disabled`, non-root, `--rm`, `mem/pids/cpu` limits.
+> `network_disabled`, non-root, removed after every run, `mem/pids/cpu` limits.
 
 ---
 
@@ -1030,7 +1040,7 @@ The first build also builds the street graph. Until then `otp` waits for a graph
 
 - **Status and logs.** Build status, per-feed outcomes and OTP's log excerpts are in `GET /api/planner/admin/builds/{id}/`; worker logs are in `./scripts/deploy.sh logs celery_planner_worker`.
 - **Failed builds.** A failed build leaves the previous graph serving. `POST /api/planner/admin/builds/{id}/activate/` serves an earlier graph again (only the served one and the newest other one are kept).
-- **Deploys.** Do not deploy during the build window: `up -d` would start `otp` next to the build. If a worker dies mid-build anyway, the watchdog marks the build `build_interrupted` within ~15 minutes and restarts the active graph. A build that was only slow (heartbeat older than 15 minutes) and is still running stops itself at its next heartbeat.
+- **Deploys.** Do not deploy during the build window: `up -d` would start `otp` next to the build. If a worker dies mid-build anyway, the watchdog marks the build `build_interrupted` within ~15 minutes, restarts OTP on the active graph (also when OTP was left running on the interrupted build's graph) and deletes the build's leftover files. A build that was only slow (heartbeat older than 15 minutes) and is still running stops itself at its next heartbeat.
 - **New OSM.** `POST /api/planner/admin/osm/ {"url": …}` (Geofabrik publishes Poland daily). The planner worker downloads it next to the current file (at most `PLANNER_OSM_MAX_BYTES`, default 4 GiB), checks it is a PBF extract with osmium, and only then swaps it in; the next build rebuilds the street graph. A failed download keeps the current file. Builds and downloads exclude each other (`409` while the other runs; a scheduled build during a download retries every 10 minutes for up to an hour). Replacing the file by hand still works: write it under a temporary name, then `mv`.
 - **New OTP version.**
   1. Change `PLANNER_OTP_IMAGE` in `.env`.

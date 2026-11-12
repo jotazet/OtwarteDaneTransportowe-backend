@@ -153,6 +153,13 @@ def run_build(build_id: int) -> None:
         shutil.rmtree(workdir, ignore_errors=True)
         if build.otp_stopped_at and owns_row:
             _start_serving()
+        # A failed build's graph (~1.8 GB for Poland) is never served. A rollback's
+        # graph is an earlier build's: it served before and may be retried.
+        if (
+            not build.rollback_of_id
+            and not GraphBuild.objects.filter(pk=build.pk, is_active=True).exists()
+        ):
+            shutil.rmtree(graph_dir(build), ignore_errors=True)
     refresh_index()
 
 
@@ -224,10 +231,10 @@ def refresh_index() -> None:
 
 
 def ensure_serving() -> None:
-    """Bring the active graph back up unless a build is using the maintenance window.
+    """Serve the active graph and clean up, unless a build is using the maintenance window.
 
-    Covers a worker killed mid-build (deploy, reboot), after which nothing else
-    would restart the stopped OTP container.
+    Covers a worker killed mid-build or mid-activation (deploy, reboot), which
+    can leave OTP stopped or on a graph that never became active, and its files.
     """
     if GraphBuild.objects.filter(status=GraphBuild.STATUS_RUNNING).exists():
         return
@@ -235,9 +242,17 @@ def ensure_serving() -> None:
     active = GraphBuild.objects.filter(is_active=True).first()
     if active is None:
         return
-    _point_serving_at(graph_dir(active))
+    target = graph_dir(active)
+    if _serving_target() != target:
+        # Stop before repointing: interrupted after that, OTP is stopped (and
+        # started on the next run), never running on the wrong graph.
+        logger.warning('Serving does not point at the active graph; restarting OTP on it')
+        otp_runtime.stop_server()
+        _point_serving_at(target)
     if not otp_runtime.server_running():
         otp_runtime.start_server()
+    _remove_finished_build_dirs(data_path('builds'))
+    _remove_unused_graphs(current=target)
 
 
 def fail_stale_osm_downloads() -> int:
@@ -555,8 +570,7 @@ def _activate(build: GraphBuild, included_feed_ids: list[str], fresh: list[Candi
     target = graph_dir(build)
     if not os.path.exists(os.path.join(target, 'graph.obj')):
         raise BuildFailed('planner.graph_missing')
-    serving = data_path('serving')
-    previous_target = os.readlink(serving) if os.path.islink(serving) else None
+    previous_target = _serving_target()
     _point_serving_at(target)
     otp_runtime.start_server()
     try:
@@ -579,10 +593,10 @@ def _activate(build: GraphBuild, included_feed_ids: list[str], fresh: list[Candi
     except BuildFailed:
         otp_runtime.stop_server()
         if previous_target:
-            _point_serving_at(data_path(previous_target))
+            _point_serving_at(previous_target)
         else:
             # First build: nothing to go back to, so serve nothing rather than this graph.
-            os.remove(serving)
+            os.remove(data_path('serving'))
         raise
     for tmp, snapshot in staged:
         os.replace(tmp, snapshot)
@@ -611,6 +625,12 @@ def _start_serving() -> None:
             otp_runtime.start_server()
     except Exception:  # noqa: BLE001 - the watchdog retries every few minutes
         logger.exception('Could not start the serving OTP container')
+
+
+def _serving_target() -> str | None:
+    """The graph directory ``serving`` points at, or None when it is not a symlink."""
+    serving = data_path('serving')
+    return data_path(os.readlink(serving)) if os.path.islink(serving) else None
 
 
 def _point_serving_at(target: str) -> None:
@@ -671,10 +691,26 @@ def _remove_unused_graphs(current: str) -> None:
     )
     if previous:
         keep.add(graph_dir(previous))
-    root = data_path('graphs')
-    for name in os.listdir(root):
+    _remove_finished_build_dirs(data_path('graphs'), keep)
+
+
+def _remove_finished_build_dirs(root: str, keep: set[str] | frozenset[str] = frozenset()) -> None:
+    """Remove ``root/<id>`` of finished builds except ``keep``; leave anything else alone.
+
+    A queued or running build may be about to write its directory, and a name
+    that is no build's id is not ours to judge.
+    """
+    if not os.path.isdir(root):
+        return
+    names = [name for name in os.listdir(root) if name.isascii() and name.isdigit()]
+    finished = set(
+        GraphBuild.objects.filter(
+            pk__in=names, status__in=(GraphBuild.STATUS_SUCCEEDED, GraphBuild.STATUS_FAILED)
+        ).values_list('pk', flat=True)
+    )
+    for name in names:
         path = os.path.join(root, name)
-        if path not in keep:
+        if int(name) in finished and path not in keep:
             shutil.rmtree(path, ignore_errors=True)
 
 

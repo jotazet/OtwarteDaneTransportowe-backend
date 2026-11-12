@@ -10,6 +10,7 @@ Wywoływane wyłącznie przez Celery tasks (data_manager/tasks.py):
 Nie wywoływać bezpośrednio — logika harmonogramu należy do tasków.
 """
 
+import hashlib
 import logging
 import os
 from urllib.parse import urlparse
@@ -97,6 +98,11 @@ FETCH_PERMANENT = 'permanent'  # blocked URL / 4xx / invalid -> do not retry
 def _fetch_static_entry(entry: StaticFeedEntry) -> str:
     """Pobiera plik z URL i zapisuje jako cached_file. Błędy trafiają do FeedFetchError.
 
+    An upstream file identical to the cached copy (a ``304`` to a conditional
+    request, or the same SHA-256) is a successful fetch that keeps the copy and
+    queues no validation. Without stored validators (see
+    ``StaticFeedEntry.CACHE_VALIDATOR_FIELDS``) the file is always saved.
+
     Zwraca kod wyniku (``FETCH_OK`` / ``FETCH_TRANSIENT`` / ``FETCH_PERMANENT``),
     aby task mógł ponowić tylko błędy przejściowe.
     """
@@ -106,7 +112,16 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
 
     from data_manager.tasks import validate_gtfs_feed_task
 
-    headers = _build_auth_headers(entry.auth_type, entry.auth_value)
+    # Only a cached copy can stand in for the upstream file.
+    compare = bool(entry.cached_file)
+    conditional = {}
+    if compare and entry.cached_etag:
+        conditional['If-None-Match'] = entry.cached_etag
+    if compare and entry.cached_last_modified:
+        conditional['If-Modified-Since'] = entry.cached_last_modified
+    # Passed like the auth headers, so safe_download drops them on a redirect
+    # to another origin; the content hash below still catches those feeds.
+    headers = {**_build_auth_headers(entry.auth_type, entry.auth_value), **conditional}
     try:
         # safe_download streams the body to a spooled temp file. Buffering a
         # 200 MB feed in memory (twice, as bytes) used to spike every worker.
@@ -117,40 +132,73 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
             max_bytes=settings.MAX_FEED_FILE_SIZE_BYTES,
             total_timeout=settings.FEED_FETCH_TOTAL_TIMEOUT_SECONDS,
         ) as (response, body):
-            response.raise_for_status()
+            etag = response.headers.get('ETag', '')
+            last_modified = response.headers.get('Last-Modified', '')
+            unchanged = bool(conditional) and response.status_code == 304
+            if not unchanged:
+                response.raise_for_status()
 
-            # Reject garbage BEFORE touching the cache: a published feed keeps
-            # serving its last good copy when the upstream starts returning
-            # HTML error pages or truncated bodies. Only the head is read.
-            validate_static_feed_stream(entry.submission.data_type, body)
+                # Reject garbage BEFORE touching the cache: a published feed keeps
+                # serving its last good copy when the upstream starts returning
+                # HTML error pages or truncated bodies. Only the head is read.
+                validate_static_feed_stream(entry.submission.data_type, body)
 
-            parsed = urlparse(entry.url)
-            filename = os.path.basename(parsed.path) or 'feed.zip'
+                sha256 = hashlib.file_digest(body, 'sha256').hexdigest()
+                body.seek(0)
+                # Upstreams that ignore conditional requests: same bytes, same copy.
+                unchanged = compare and sha256 == entry.cached_sha256
 
             now = timezone.now()
-            # This path bypasses model signals (save=False + queryset.update),
-            # so reclaim a differently-named previous cache file explicitly.
-            old_cached_name = entry.cached_file.name if entry.cached_file else None
-            entry.cached_file.save(filename, File(body), save=False)
+            if unchanged:
+                # Validators the response leaves out still describe the kept copy.
+                fields = {
+                    'cached_etag': etag or entry.cached_etag,
+                    'cached_last_modified': last_modified or entry.cached_last_modified,
+                }
+            else:
+                parsed = urlparse(entry.url)
+                filename = os.path.basename(parsed.path) or 'feed.zip'
+
+                # This path bypasses model signals (save=False + queryset.update),
+                # so reclaim a differently-named previous cache file explicitly.
+                old_cached_name = entry.cached_file.name if entry.cached_file else None
+                entry.cached_file.save(filename, File(body), save=False)
+                # A new copy keeps only its own validators.
+                fields = {
+                    'cached_file': entry.cached_file.name,
+                    'cached_at': now,
+                    'cached_sha256': sha256,
+                    'cached_etag': etag,
+                    'cached_last_modified': last_modified,
+                }
 
         # Only while the entry still proxies the URL just downloaded: a source
         # change during the download drops the cache, and this copy of the
         # old URL must not come back.
         updated = StaticFeedEntry.objects.filter(
             pk=entry.pk, url=entry.url, hide_original=True
-        ).update(cached_file=entry.cached_file.name, cached_at=now)
+        ).update(**fields)
         if not updated:
             current = (
                 StaticFeedEntry.objects.filter(pk=entry.pk)
                 .values_list('cached_file', flat=True)
                 .first()
             )
-            if current != entry.cached_file.name:
+            if not unchanged and current != entry.cached_file.name:
                 entry.cached_file.storage.delete(entry.cached_file.name)
             logger.info('Discarded fetch of static entry=%d: source changed', entry.pk)
             return FETCH_PERMANENT
-        _delete_stale_cache_file(entry.cached_file, old_cached_name)
         entry.mark_fetch_success(now)
+        if unchanged:
+            logger.info('Static entry=%d unchanged upstream  url=%s', entry.pk, entry.url)
+            # A validation the validator could not finish is still retried daily.
+            if entry.validation_status in (
+                StaticFeedEntry.VALIDATION_PENDING,
+                StaticFeedEntry.VALIDATION_ERROR,
+            ):
+                validate_gtfs_feed_task.delay(entry.pk)
+            return FETCH_OK
+        _delete_stale_cache_file(entry.cached_file, old_cached_name)
         logger.info('Refreshed static entry=%d  url=%s', entry.pk, entry.url)
 
         validate_gtfs_feed_task.delay(entry.pk)

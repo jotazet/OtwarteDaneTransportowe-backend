@@ -23,7 +23,7 @@ The full submission lifecycle (stages, rejections, fetch errors and pauses) is d
 GET /api/data_manager/submissions/
 ```
 
-The endpoint requires JWT and returns, in a single response (not paginated), the logged-in user's own submissions: static (`feed-submissions`) and realtime (`realtime-submissions`). The optional query param `transport_organization` filters both types by organization.
+The endpoint requires JWT and returns, in a single response (not paginated), the logged-in user's own submissions: static (`feed-submissions`) and realtime (`realtime-submissions`). The optional query param `transport_organization` filters both types by organization (a non-integer value returns `400`, as for the lists below).
 
 ```json
 {
@@ -96,7 +96,7 @@ Base endpoint:
 **List query params:**
 
 - `data_type` - e.g. `gtfs`.
-- `transport_organization` - organization ID.
+- `transport_organization` - organization ID; a value that is not an integer returns `400` with `{"transport_organization": ["feeds.invalid_integer"]}`.
 
 **List:**
 
@@ -248,6 +248,8 @@ For a URL source, `hide_original=true` **does not require** authorization to be 
 
 Changing the source of a proxied static feed (to an uploaded file, to another URL, or `hide_original` to `false`) drops the server's copy of the old URL in the same `PATCH`: `cached_file` and `cached_at` become `null` and the file is deleted. Validation and the public download then use the new source. Changing only `license` or the download schedule keeps the copy.
 
+`cached_at` is when the current copy was downloaded. A scheduled fetch that finds the upstream file unchanged keeps the copy and its `cached_at` and only updates `last_fetch_success_at` (see [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds)).
+
 **Create - file upload:**
 
 ```http
@@ -313,7 +315,7 @@ Base endpoint:
 
 **List query params:**
 
-- `transport_organization` - organization ID.
+- `transport_organization` - organization ID; a value that is not an integer returns `400` with `{"transport_organization": ["feeds.invalid_integer"]}`.
 
 **Static submissions to which realtime can be added:**
 
