@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: truncated and trickling downloads
+
+Not breaking. A feed body cut off mid-transfer (shorter than its `Content-Length`, or a broken chunked encoding) was recorded as fetch error `invalid_content`; it is now `connection_error`, and in realtime validation `realtime.endpoint_unreachable` instead of `realtime.endpoint_fetch_failed`. A server that sends bytes slowly enough to stay inside the per-read timeout is now cut off at the total time budget as `timeout`. See [Fetch errors](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds) and [Realtime rejection reasons](feeds.md#realtime-rejection-reasons).
+
+---
+
 ## 2026-10-17: entity types of a realtime endpoint
 
 Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).

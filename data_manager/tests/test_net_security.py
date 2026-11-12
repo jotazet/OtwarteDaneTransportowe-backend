@@ -1,14 +1,20 @@
-"""Unit tests for the SSRF guard (data_manager.net_security). No real network:
-DNS is mocked via socket.getaddrinfo and HTTP via requests.get."""
+"""Unit tests for the SSRF guard (data_manager.net_security). DNS is mocked via
+socket.getaddrinfo and HTTP via requests.get, except the tests at the end, which
+use real HTTP on 127.0.0.1 (the ``local_server`` fixture)."""
 
+import gzip
 import socket
+import time
 
 import pytest
+import requests
 
 from data_manager.net_security import (
     OutboundURLBlocked,
+    ResponseTooLarge,
     assert_safe_outbound_url,
     resolve_public_ips,
+    safe_download,
     safe_get,
 )
 
@@ -559,3 +565,48 @@ def test_dns_pin_does_not_leak_into_other_threads(monkeypatch):
     worker.join(timeout=5)
 
     assert seen['ip'] == '8.8.4.4', 'the pin leaked into another thread'
+
+
+# ---------------------------------------------------------------------------
+# Real HTTP on 127.0.0.1: total deadline and decompression cap
+# ---------------------------------------------------------------------------
+
+
+def test_trickling_body_hits_the_total_timeout(local_server):
+    """1 byte every 0.2 s never trips the 2 s read timeout; only the budget does."""
+    url = local_server(100, [b'x'] * 100, delay=0.2)
+    started = time.monotonic()
+    with pytest.raises(requests.exceptions.Timeout, match='budget'):
+        with safe_download(url, timeout=2, max_bytes=1 << 20, total_timeout=1):
+            pass
+    assert time.monotonic() - started < 2
+
+
+def test_compressed_body_without_output_hits_the_total_timeout(local_server):
+    """A gzip header with an endless comment trickled in: the decoder never
+    produces output, so only the watchdog can end the read."""
+    gzip_header_with_comment = b'\x1f\x8b\x08\x10' + b'\x00' * 6
+    url = local_server(
+        1000,
+        [gzip_header_with_comment] + [b'a'] * 100,
+        headers={'Content-Encoding': 'gzip'},
+        delay=0.2,
+    )
+    started = time.monotonic()
+    with pytest.raises(requests.exceptions.Timeout, match='budget'):
+        with safe_download(url, timeout=2, max_bytes=1 << 20, total_timeout=1):
+            pass
+    assert time.monotonic() - started < 2
+
+
+def test_gzip_body_is_decoded_and_capped_after_decompression(local_server):
+    payload = b'\0' * 2_000_000
+    compressed = gzip.compress(payload)  # a few KB on the wire
+    url = local_server(len(compressed), [compressed], headers={'Content-Encoding': 'gzip'})
+
+    with safe_download(url, timeout=5, max_bytes=len(payload)) as (_response, body):
+        assert body.read() == payload
+
+    with pytest.raises(ResponseTooLarge):
+        with safe_download(url, timeout=5, max_bytes=len(payload) // 2):
+            pass

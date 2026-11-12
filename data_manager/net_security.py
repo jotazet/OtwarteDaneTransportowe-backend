@@ -6,7 +6,7 @@ import socket
 import tempfile
 import threading
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, suppress
 from ipaddress import ip_address
 from urllib.parse import urljoin, urlsplit
 
@@ -318,9 +318,32 @@ class _Deadline:
         if self._expires_at is not None and time.monotonic() > self._expires_at:
             raise requests.exceptions.Timeout('Total download time budget exceeded.')
 
+    def watchdog(self, interrupt) -> threading.Timer | None:
+        """Call ``interrupt`` from another thread once the budget has run out."""
+        if self._expires_at is None:
+            return None
+        timer = threading.Timer(max(0.0, self._expires_at - time.monotonic()), interrupt)
+        timer.daemon = True
+        timer.start()
+        return timer
+
+
+def _interrupt_read(response) -> None:
+    # Already closed or released to the pool: there is no read to interrupt.
+    with suppress(Exception):
+        response.raw.shutdown()
+
 
 def _drain(response, body, *, max_bytes: int, chunk_size: int, deadline: _Deadline) -> None:
-    """Stream a response body into ``body``, enforcing ``max_bytes``, and rewind it."""
+    """Stream a response body into ``body``, enforcing ``max_bytes``, and rewind it.
+
+    Checking the deadline between chunks is not enough: a read blocks until a
+    whole chunk (or decoder output) has arrived, which a server trickling bytes
+    within the read timeout never completes. A watchdog shuts the socket down
+    at the deadline, so the blocked read returns and the fetch fails as a
+    ``Timeout``.
+    """
+    watchdog = deadline.watchdog(lambda: _interrupt_read(response))
     try:
         total = 0
         for chunk in response.iter_content(chunk_size=chunk_size):
@@ -331,8 +354,19 @@ def _drain(response, body, *, max_bytes: int, chunk_size: int, deadline: _Deadli
             if total > max_bytes:
                 raise ResponseTooLarge(max_bytes)
             body.write(chunk)
+        # A shut-down socket can also look like a clean end of the body.
+        deadline.check()
         body.seek(0)
+    except requests.exceptions.ChunkedEncodingError as exc:
+        deadline.check()
+        # Cut off mid-transfer: a connection failure, not bad content.
+        raise requests.exceptions.ConnectionError(exc) from exc
+    except Exception:
+        deadline.check()
+        raise
     finally:
+        if watchdog:
+            watchdog.cancel()
         response.close()
 
 
