@@ -50,7 +50,7 @@ class Command(BaseCommand):
                 continue
             if sub.current_stage >= 4:
                 continue
-            if not (entry.file or entry.cached_file):
+            if not (entry.file or entry.cached_file or entry.url):
                 self.stderr.write(
                     f'Skip entry {entry.id} (submission {sub.id}): no file to validate.'
                 )

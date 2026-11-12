@@ -8,9 +8,11 @@ keep the stage, set ``validation_status=error`` with a code from
 ``manage.py retry_gtfs_validation``. Errors in the feed itself still reject.
 """
 
+import io
 import json
 import os
-from unittest.mock import patch
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import docker
 import pytest
@@ -287,9 +289,24 @@ def test_retry_command_requeues_named_submissions_whatever_their_status(org, use
     assert _retried(submission_ids=[entry.submission_id]) == [entry.id]
 
 
-def test_retry_command_recovers_an_infrastructure_error(org, user):
-    entry = _entry(org, user)
-    with patch('docker.from_env', _raise(docker.errors.DockerException('down'))):
+@pytest.mark.parametrize(
+    'source',
+    [{}, {'file': None, 'url': 'https://example.org/feed.zip', 'hide_original': False}],
+    ids=['file', 'url'],
+)
+def test_retry_command_recovers_an_infrastructure_error(org, user, source):
+    entry = _entry(org, user, **source)
+
+    @contextmanager
+    def download(*args, **kwargs):
+        yield MagicMock(), io.BytesIO(b'PK\x03\x04data')
+
+    with (
+        patch('data_manager.net_security.safe_download', download),
+        patch('docker.from_env', _raise(docker.errors.DockerException('down'))),
+    ):
         validate_gtfs_feed_task(entry.id)
+    entry.refresh_from_db()
+    assert entry.validation_status == StaticFeedEntry.VALIDATION_ERROR
 
     assert _retried() == [entry.id]
