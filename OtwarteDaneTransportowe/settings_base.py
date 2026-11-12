@@ -293,6 +293,11 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': crontab(minute='*/5'),
         'options': {'queue': 'default'},
     },
+    'retry-stuck-realtime-verifications': {
+        'task': 'data_manager.retry_stuck_realtime_verifications',
+        'schedule': crontab(minute='*/15'),
+        'options': {'queue': 'default'},
+    },
     # The graph build itself is scheduled from the admin panel (PeriodicTask
     # 'planner-graph-build', managed by planner.services), not here.
     'planner-watchdog': {

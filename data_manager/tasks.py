@@ -32,7 +32,9 @@ import random
 import time
 
 from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
 from celery.utils.log import get_task_logger
+from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
@@ -51,6 +53,19 @@ RT_BOOTSTRAP_JITTER_MAX_SECONDS = 2
 RT_ALIVE_TTL_BUFFER_SECONDS = 120
 # Ile minut wstecz dispatcher statyczny nadrabia zgubione tiki Beata.
 STATIC_DISPATCH_CATCHUP_MINUTES = 10
+# Realtime verification downloads each endpoint up to twice (link check, then
+# the first cache fetch when hide_original), each download capped at
+# REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS, and GBFS allows the most endpoints (9,
+# see RealtimeSubmission.allowed_endpoint_types). Under the global 90 s limit
+# nine unreachable endpoints (15 s connect timeout each) were already enough
+# to kill the task before it recorded a verdict.
+RT_VERIFICATION_SOFT_TIME_LIMIT = 9 * 2 * settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS + 60
+RT_VERIFICATION_TIME_LIMIT = RT_VERIFICATION_SOFT_TIME_LIMIT + 60
+# A verification at stage 2 for longer than this has no run in flight any more
+# (lost by the broker, a worker restart or a hard kill) and is re-queued by
+# retry_stuck_realtime_verifications. Longer than the hard limit plus a queue
+# backlog, so a run still in progress is not doubled.
+RT_VERIFICATION_STUCK_AFTER_SECONDS = RT_VERIFICATION_TIME_LIMIT + 600
 
 
 def enqueue(task, *args, **kwargs) -> bool:
@@ -854,8 +869,32 @@ def validate_gtfs_feed_task(self, entry_id: int):
         _cleanup_workdirs()
 
 
-@shared_task(name='data_manager.validate_realtime_submission')
+@shared_task(
+    name='data_manager.validate_realtime_submission',
+    soft_time_limit=RT_VERIFICATION_SOFT_TIME_LIMIT,
+    time_limit=RT_VERIFICATION_TIME_LIMIT,
+)
 def validate_realtime_submission_task(submission_id: int) -> dict:
+    try:
+        return _verify_realtime_submission(submission_id)
+    except SoftTimeLimitExceeded:
+        # An infrastructure error, not a verdict on the provider's data: every
+        # slow or dead endpoint already ends in its own coded reason
+        # (endpoint_timeout, endpoint_unreachable) well inside this limit, so
+        # running out of time means the time went elsewhere (a busy worker, the
+        # database, storage). Rejecting would send the owner to resubmit for a
+        # fault they cannot fix. The submission stays at stage 2 and
+        # retry_stuck_realtime_verifications re-queues it.
+        logger.error(
+            'Realtime verification of submission %s hit the soft time limit (%ss); '
+            'kept at stage 2 for a retry',
+            submission_id,
+            RT_VERIFICATION_SOFT_TIME_LIMIT,
+        )
+        return {'status': 'timed_out', 'id': submission_id}
+
+
+def _verify_realtime_submission(submission_id: int) -> dict:
     """
     Realtime verification (stage 2): link-check every endpoint, validate the
     response format, and do the first cache fetch for hide_original endpoints.
@@ -873,7 +912,6 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     validate_realtime_feed_content.
     """
     import requests
-    from django.conf import settings
 
     from data_manager import rejection_reasons as rr
     from data_manager.models import (
@@ -998,6 +1036,10 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                 )
             else:
                 entity_types = validate_realtime_feed_content(rts.protocol, resp.content)
+        except SoftTimeLimitExceeded:
+            # Not the endpoint's fault: let the task end with timed_out instead
+            # of recording endpoint_fetch_failed and running into the hard kill.
+            raise
         except Exception as exc:
             code = next(
                 (c for exc_type, c in exception_codes if isinstance(exc, exc_type)),
@@ -1037,3 +1079,54 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
 
     _advance(3)
     return {'status': 'ok', 'id': submission_id}
+
+
+@shared_task(name='data_manager.retry_stuck_realtime_verifications')
+def retry_stuck_realtime_verifications() -> dict:
+    """Re-queue realtime verifications that started (stage 2) and never ended.
+
+    Run by Beat. Picks submissions whose latest history entry is the task's own
+    advance to stage 2 (actor None) older than RT_VERIFICATION_STUCK_AFTER_SECONDS:
+    the run was lost or killed before a verdict, or ended timed_out. A stage 2
+    set by a reviewer (actor set) is their decision and is left alone.
+    """
+    from datetime import timedelta
+
+    from django.db.models import OuterRef, Subquery
+
+    from data_manager.models import RealtimeSubmissionHistory
+
+    cutoff = timezone.now() - timedelta(seconds=RT_VERIFICATION_STUCK_AFTER_SECONDS)
+    latest_entry = (
+        RealtimeSubmissionHistory.objects.filter(submission=OuterRef('submission'))
+        .order_by('-created_at', '-id')
+        .values('id')[:1]
+    )
+    submission_ids = list(
+        RealtimeSubmissionHistory.objects.filter(
+            id=Subquery(latest_entry),
+            stage_after=2,
+            actor__isnull=True,
+            created_at__lte=cutoff,
+        ).values_list('submission_id', flat=True)
+    )
+
+    queued = 0
+    for submission_id in submission_ids:
+        # Re-queuing does not move the stage-2 timestamp, so without this marker
+        # every sweep would queue another run while one is still in progress.
+        marker = f'rt-verification-requeued:{submission_id}'
+        if not cache.add(marker, '1', timeout=RT_VERIFICATION_STUCK_AFTER_SECONDS):
+            continue
+        if not enqueue(validate_realtime_submission_task, submission_id):
+            cache.delete(marker)
+            break
+        queued += 1
+
+    if submission_ids:
+        logger.warning(
+            'Re-queued %d of %d realtime verifications stuck at stage 2',
+            queued,
+            len(submission_ids),
+        )
+    return {'stuck': len(submission_ids), 'queued': queued}
