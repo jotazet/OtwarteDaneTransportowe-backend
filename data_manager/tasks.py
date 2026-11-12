@@ -58,6 +58,9 @@ STATIC_DISPATCH_CATCHUP_MINUTES = 10
 # REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS each, and the task runs on 'default'
 # next to the dispatchers, so the total is capped rather than sized to the sum.
 RT_VERIFICATION_BUDGET_SECONDS = 240
+# Less than this left counts as none: a download clipped to a second or two
+# would only time out and be recorded as a fetch failure of the endpoint.
+RT_VERIFICATION_MIN_DOWNLOAD_SECONDS = 5
 RT_VERIFICATION_SOFT_TIME_LIMIT = RT_VERIFICATION_BUDGET_SECONDS + 60
 RT_VERIFICATION_TIME_LIMIT = RT_VERIFICATION_SOFT_TIME_LIMIT + 60
 # Past the hard limit plus a queue backlog no run is in flight any more, so
@@ -1019,7 +1022,7 @@ def _verify_realtime_submission(submission_id: int) -> dict:
         entity_types = set()
         try:
             budget = _download_budget()
-            if budget <= 0:
+            if budget < RT_VERIFICATION_MIN_DOWNLOAD_SECONDS:
                 # The endpoints before this one used up the budget: too slow.
                 raise requests.exceptions.Timeout('verification budget used up')
             resp = safe_get(
@@ -1070,7 +1073,7 @@ def _verify_realtime_submission(submission_id: int) -> dict:
             if not ep.hide_original:
                 continue
             budget = _download_budget()
-            if budget <= 0:
+            if budget < RT_VERIFICATION_MIN_DOWNLOAD_SECONDS:
                 reasons.append(
                     rr.rejection_reason(rr.ENDPOINT_TIMEOUT, endpoint_type=ep.endpoint_type)
                 )
