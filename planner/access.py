@@ -330,11 +330,13 @@ def _log_request(request, response, started: float) -> None:
     ):
         return
     match = getattr(request, 'resolver_match', None)
+    # Not request.auth: that would authenticate now, after a refusal that must not look up keys.
+    auth = getattr(request, '_auth', None)
     PlannerRequestLog.objects.create(
         endpoint=(match.url_name if match else '') or '',
         status_code=response.status_code,
         latency_ms=int((time.monotonic() - started) * 1000),
         client_ip=ip,
-        api_key=request.auth if isinstance(request.auth, ApiKey) else None,
+        api_key=auth if isinstance(auth, ApiKey) else None,
         user_agent=request.headers.get('User-Agent', '')[:256],
     )

@@ -40,7 +40,7 @@ OtwarteDaneTransportowe/
 │   ├── settings_base.py       # DRF, JWT, apps, database, Celery beat schedule
 │   ├── settings_dev.py        # development overrides
 │   ├── settings_prod.py       # production hardening and startup checks
-│   ├── settings.py            # default module, imports settings_dev
+│   ├── settings.py            # pytest's module, imports settings_dev
 │   ├── urls.py                # main project URLs
 │   ├── auth_roles.py          # roles and permission classes
 │   ├── pagination.py          # default list pagination (50 / max 200)

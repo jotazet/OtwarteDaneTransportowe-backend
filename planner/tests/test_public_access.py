@@ -1,9 +1,12 @@
 """Public planner API access: kill switch, limits, keys, bans, maintenance, logs, CORS."""
 
 import io
+import logging
+import time
 from datetime import timedelta
 
 import pytest
+from django.core.cache import cache
 from django.core.management import call_command
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -307,6 +310,32 @@ def test_banned_client_sending_a_key_still_gets_banned(enabled):
     response = get(LOOKUP, ip='203.0.113.50', **{'X-API-Key': 'odt_anything'})
 
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize('refusal', ['banned', 'switched_off'])
+@pytest.mark.parametrize('raw', ['odt_one', 'odt_wrong'])
+def test_refused_request_with_a_key_is_logged_without_looking_the_key_up(
+    refusal, raw, enabled, caplog
+):
+    key = make_key('odt_one')
+    if refusal == 'banned':
+        IpBan.objects.create(network='203.0.113.50/32')
+    else:
+        PlannerSettings.objects.filter(pk=1).update(public_api_enabled=False)
+        access.forget_cached_access()
+
+    response = get(LOOKUP, ip='203.0.113.50', **{'X-API-Key': raw})
+
+    assert response.status_code == (403 if refusal == 'banned' else 503)
+    key.refresh_from_db()
+    assert key.last_used_at is None
+    minute = int(time.time() // 60)
+    assert cache.get(f'planner:bad-key:203.0.113.50:{minute}') is None
+    (row,) = PlannerRequestLog.objects.all()
+    assert (row.status_code, row.api_key) == (response.status_code, None)
+    assert not [
+        r for r in caplog.records if r.name == 'planner.access' and r.levelno >= logging.ERROR
+    ]
 
 
 def test_guessing_keys_is_cut_off_and_logged_once_a_minute(enabled):

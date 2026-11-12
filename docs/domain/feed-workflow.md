@@ -63,6 +63,8 @@ DataProvider
 
 The flows above are the normal path. Helper/Admin can override it: `PATCH {"stage": N}` sets any stage 1–4 from any state, so a reviewer can skip a stage (e.g. publish from stage 2) or move a submission back (e.g. 4 → 2, which unpublishes it). Every override is a history entry with the reviewer as `actor` (`completed` for stage 4, otherwise `stage_advanced`, also when moving back), so the audit trail shows who bypassed the workflow and when. See the reviewer override in the [Feeds API](../api/feeds.md#static-feeds-feedsubmission).
 
+The Django admin offers the same kind of change as the bulk action "Advance selected submissions to next stage" on the FeedSubmission list. It is available only to accounts that hold Django's `change` permission on FeedSubmission **and** a reviewer role (Helper or Admin group, or superuser), so `is_staff` and model permissions alone are not enough. The action locks each submission and re-reads its stage, and it skips rejected submissions and those already at stage 4.
+
 A stage transition through the API (a reviewer, an owner's resubmission) or a validation task locks the submission row and reads the stage from committed history before writing its history entry (`lock_submission()` in `data_manager/models.py`), so transitions of one submission happen one at a time. A request whose stage changed after it was read returns `409` `feeds.stage_changed` instead of acting on the old stage.
 
 ## Fetch errors and pauses of proxied feeds
@@ -145,6 +147,8 @@ Static and realtime feeds also return fetch health fields in their serializers (
 - `last_fetch_error_at`
 - `last_fetch_error_message`
 - `fetch_error_count_7d`
+
+`fetch_pause_reason`, `last_fetch_error_message` and the server logs show the source URL without userinfo (`user:pass@`), query string and fragment, where providers put credentials (`data_manager.net_security.redact_url`).
 
 After consecutive failed fetches the system automatically postpones the next attempts:
 

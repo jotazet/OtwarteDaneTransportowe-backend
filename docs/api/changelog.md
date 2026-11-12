@@ -8,6 +8,12 @@ Not breaking, but clients should handle the new status. `PUT`/`PATCH /api/data_m
 
 ---
 
+## 2026-11-12: source URLs in fetch error messages are redacted
+
+Not breaking. URLs inside `fetch_pause_reason`, `last_fetch_error_message` and the cause of an automatic rejection after a failed validation download keep only scheme, host, port and path; userinfo, the query string and the fragment are removed. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
 ## 2026-11-12: unchanged static feeds are not downloaded and validated again
 
 Not breaking. A scheduled fetch of a proxied static feed sends `If-None-Match` / `If-Modified-Since` and compares the SHA-256 of the body with the cached copy. When the upstream file has not changed, `last_fetch_success_at` is updated but `cached_at`, the copy and the validation report are not, and no GTFS validation runs. `cached_at` therefore moves only when a new copy is stored; `last_fetch_success_at` tells when the upstream was last checked. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).

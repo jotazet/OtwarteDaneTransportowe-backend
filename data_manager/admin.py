@@ -1,5 +1,6 @@
 from django import forms
 from django.contrib import admin
+from django.db import transaction
 from django.utils.html import format_html
 
 from data_manager.models import (
@@ -11,7 +12,7 @@ from data_manager.models import (
     RealtimeSubmissionHistory,
     StaticFeedEntry,
 )
-from OtwarteDaneTransportowe.auth_roles import is_admin
+from OtwarteDaneTransportowe.auth_roles import can_confirm_feeds, is_admin
 
 
 class _CredentialInlineForm(forms.ModelForm):
@@ -291,21 +292,40 @@ class FeedSubmissionAdmin(admin.ModelAdmin):
     def get_rejection_cause(self, obj):
         return obj.rejection_cause or '—'
 
-    @admin.action(description='Advance selected submissions to next stage')
+    def has_advance_stage_permission(self, request):
+        """Stage changes need Django's ``change`` permission AND a reviewer role.
+
+        The reviewer role (Helper/Admin) is the API's rule; ``is_staff`` and
+        model permissions alone grant no application role (``auth_roles.is_admin``).
+        Django ORs the entries of ``permissions=``, so both checks live here.
+        """
+        return self.has_change_permission(request) and can_confirm_feeds(request.user)
+
+    @admin.action(
+        description='Advance selected submissions to next stage',
+        permissions=['advance_stage'],
+    )
     def advance_to_next_stage(self, request, queryset):
         updated = 0
-        for submission in queryset:
-            current = submission.current_stage
-            if current < 4 and not submission.is_rejected:
+        for pk in list(queryset.values_list('pk', flat=True)):
+            with transaction.atomic():
+                # The stage is derived from the latest history row, so lock the
+                # submission and read the stage afresh: the selection may be
+                # stale (rejected or advanced since the list was rendered).
+                submission = FeedSubmission.objects.select_for_update().filter(pk=pk).first()
+                if submission is None or submission.is_rejected:
+                    continue
+                current = submission.current_stage
+                if current >= 4:
+                    continue
                 next_stage = current + 1
-                event_type = (
-                    FeedSubmissionHistory.EVENT_COMPLETED
-                    if next_stage == 4
-                    else FeedSubmissionHistory.EVENT_STAGE_ADVANCED
-                )
                 FeedSubmissionHistory.objects.create(
                     submission=submission,
-                    event_type=event_type,
+                    event_type=(
+                        FeedSubmissionHistory.EVENT_COMPLETED
+                        if next_stage == 4
+                        else FeedSubmissionHistory.EVENT_STAGE_ADVANCED
+                    ),
                     stage_before=current,
                     stage_after=next_stage,
                     actor=request.user,
