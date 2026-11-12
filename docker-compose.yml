@@ -260,7 +260,9 @@ services:
       --loglevel=info
       --queues=planner
       --concurrency=2
-    mem_limit: 1g
+    # osmium crops the OSM extract in this container: ~5 GB for all of Poland, while the
+    # serving OTP is stopped (docs/deployment.md, section 1).
+    mem_limit: ${CELERY_PLANNER_MEM_LIMIT:-6g}
     healthcheck: *worker-healthcheck
     depends_on:
       migrate:
