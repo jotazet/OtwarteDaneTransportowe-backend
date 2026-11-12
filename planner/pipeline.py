@@ -702,7 +702,7 @@ def _remove_finished_build_dirs(root: str, keep: set[str] | frozenset[str] = fro
     """
     if not os.path.isdir(root):
         return
-    names = [name for name in os.listdir(root) if name.isdigit()]
+    names = [name for name in os.listdir(root) if name.isascii() and name.isdigit()]
     finished = set(
         GraphBuild.objects.filter(
             pk__in=names, status__in=(GraphBuild.STATUS_SUCCEEDED, GraphBuild.STATUS_FAILED)

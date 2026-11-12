@@ -327,6 +327,8 @@ def test_build_declared_interrupted_during_activation_never_becomes_active(
     assert GraphBuild.objects.get(is_active=True) == first
     assert serving_target() == f'graphs/{first.id}'
     assert fake_otp.events == ['stop', 'start', 'stop']
+    assert not os.path.exists(pipeline.graph_dir(build))
+    assert os.path.exists(pipeline.graph_dir(first))
     feed.refresh_from_db()
     assert feed.last_good_sha256 == last_good
 
@@ -508,6 +510,7 @@ def test_ensure_serving_removes_only_files_of_finished_builds(make_feed, fake_ot
         planner_data / 'graphs' / str(queued.id),
         planner_data / 'graphs' / '99999',  # no such build
         planner_data / 'graphs' / 'notes',
+        planner_data / 'graphs' / '\u00b2',  # isdigit(), but not an id
     ]
     for path in leftovers + untouched:
         path.mkdir(parents=True)
