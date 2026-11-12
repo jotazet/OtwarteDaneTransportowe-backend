@@ -45,8 +45,8 @@ define the following services:
 | Service | Role | Port (host) |
 | --- | --- | --- |
 | `web` | Django (gunicorn in prod) | `127.0.0.1:8000` |
-| `postgres` | Database | `127.0.0.1:5420` (local only) |
-| `redis` | Celery broker + cache | `127.0.0.1:6379` (local only) |
+| `postgres` | Database | none in production; `127.0.0.1:5420` in development |
+| `redis` | Celery broker + cache | none in production; `127.0.0.1:6379` in development |
 | `celery_worker` | `default` queue | — |
 | `celery_validator_worker` | `feeds` queue + GTFS validator (via socket-proxy) | — |
 | `docker-socket-proxy` | Least-privilege access to the host's Docker API | — |
@@ -74,8 +74,9 @@ flowchart LR
 
 - A Linux VPS (e.g. Debian/Ubuntu) with a public IP and a domain pointing to this server.
 - Docker Engine + the `docker compose` plugin (v2).
-- Ports `80` and `443` open (for the reverse proxy). The database/redis/web ports should
-  **not** be exposed publicly (in compose they are bound to `127.0.0.1`).
+- Ports `80` and `443` open (for the reverse proxy). The web port is bound to `127.0.0.1`;
+  the production overlay publishes no port for the database and Redis
+  ([section 6](#6-postgresql)).
 - The host's Docker socket is mounted only by the `docker-socket-proxy` service (the GTFS
   validator uses it via `DOCKER_HOST`; nothing needs to be configured).
 
@@ -104,6 +105,9 @@ python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().
 #  docker compose run --rm web python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 
 # POSTGRES_PASSWORD (strong database password)
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# REDIS_PASSWORD (letters, digits, - and _ only: it goes into redis:// URLs)
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
@@ -144,13 +148,12 @@ DJANGO_ALLOWED_HOSTS=api.example.org
 POSTGRES_DB=otwarte_dane_transportowe
 POSTGRES_USER=odt
 POSTGRES_PASSWORD=<wklej-silne-haslo-bazy>
-# Port exposed on the host (127.0.0.1 only). Can be omitted in prod.
-POSTGRES_HOST_PORT=5420
+# POSTGRES_HOST_PORT / REDIS_HOST_PORT are for development: the production overlay
+# publishes no port for postgres or redis.
 
 # ───────────────────────── Redis (broker + cache) ─────────────────────────
-REDIS_HOST_PORT=6379
-# Shared cache (realtime lock + throttling). Do NOT change the host name:
-REDIS_CACHE_URL=redis://redis:6379/2
+# Compose builds the broker, result and cache URLs from it (see the table below).
+REDIS_PASSWORD=<wklej-haslo-redis>
 
 # ───────────────────────── CORS / CSRF ─────────────────────────
 # Frontend origins (scheme + host, no path), comma-separated:
@@ -239,15 +242,16 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `CORS_ALLOWED_ORIGINS` | Frontend browser origins (whitelist). |
 | `CSRF_TRUSTED_ORIGINS` | Required for POST behind a TLS proxy. |
 | `FEED_AUTH_ENCRYPTION_KEY` | At-rest encryption of feed credentials. |
-| `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). |
+| `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). Set by `docker-compose.yml` (database `2`), which overrides `.env`. |
+| `REDIS_PASSWORD` | Password of the Redis server; `docker-compose.yml` builds the broker, result backend and cache URLs from it (`redis://:${REDIS_PASSWORD}@redis:6379/<db>`). Required in production: the Docker bridge network is reachable from the host, so an unpublished Redis without a password is still open to local processes. Letters, digits, `-` and `_` only, because it goes into the URLs unencoded (`envfile.py` refuses anything else). Empty in development (no authentication). |
 | `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks, and the client IP is its rightmost address that is not inside them (entries to the left are whatever the client sent). List **every** proxy hop, including a CDN in front of nginx, or its address becomes the client IP of everyone behind it; keep the networks as narrow as possible, because any address inside them is treated as a proxy. DRF throttling (`THROTTLE_*`) counts requests per this client IP too. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit, and all visitors share one login, feed download and planner limit. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
 | `ALLOW_UNTRUSTED_PROXY_IPS` | Default `False`. Set to `True` only when the app is served directly to clients without a reverse proxy: it disables the startup check for an empty `TRUSTED_PROXY_CIDRS`, and the client IP is then taken from the socket address (`REMOTE_ADDR`). |
 | `PUBLIC_BASE_URL` | Currently unused (defined in settings, not read by any code). |
 | `UID` / `GID` | User the application containers run as, and the user of the GTFS validator container, so it can write its report into `uploaded_data/`. Default `1000`. |
 | `HOST_PROJECT_PATH` / `HOST_MEDIA_ROOT` | Host paths of the project and of `uploaded_data/`. The validator is started by the host's Docker daemon, so its bind mounts need host paths. Compose passes `${PWD}` and `${PWD}/uploaded_data` when unset; outside compose `HOST_MEDIA_ROOT` defaults to `HOST_PROJECT_PATH/uploaded_data`. |
 | `GTFS_VALIDATOR_MEM_LIMIT`, `GTFS_VALIDATOR_PIDS_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS` | Resource limits of the validator container. Defaults `2g`, `512` and no CPU cap (`1000000000` = one core). |
-| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis databases of the Celery broker and result backend. `docker-compose.yml` sets them to `redis://redis:6379/0` and `/1`, which overrides `.env`; the defaults (`redis://localhost:6379/0`, `/1`) are for running outside Docker. |
-| `POSTGRES_HOST` / `POSTGRES_PORT` | Database address. `docker-compose.yml` sets `postgres` and `5432`; the defaults `127.0.0.1` and `5420` (the port published on the host) are for running on the host. |
+| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis databases of the Celery broker and result backend. `docker-compose.yml` sets them (databases `0` and `1`), which overrides `.env`; the defaults (`redis://localhost:6379/0`, `/1`) are for running outside Docker. |
+| `POSTGRES_HOST` / `POSTGRES_PORT` | Database address. `docker-compose.yml` sets `postgres` and `5432`; the defaults `127.0.0.1` and `5420` (the port published on the host in development) are for running on the host. |
 | `DJANGO_MEDIA_ROOT` | Directory of uploaded and cached feed files and blog images inside the containers. Default `uploaded_data/` in the project directory; if you change it, `HOST_MEDIA_ROOT` must still point to the same directory on the host. |
 | `DJANGO_SECURE_REFERRER_POLICY` | `Referrer-Policy` header in `settings_prod`. Default `same-origin`. |
 | `DJANGO_SECURE_COOP` | `Cross-Origin-Opener-Policy` header in `settings_prod`. Default `same-origin`. |
@@ -260,9 +264,10 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 - On the Docker network the application connects via `POSTGRES_HOST=postgres:5432` (hard-coded
   in compose). The `POSTGRES_DB/USER/PASSWORD` variables are injected into both
   the database container and the application.
-- On the host the database is exposed only on `127.0.0.1:${POSTGRES_HOST_PORT:-5420}`
-  (not visible from the internet). In prod you can remove the port mapping entirely if you
-  do not need access from the host.
+- In development the database is published on `127.0.0.1:${POSTGRES_HOST_PORT:-5420}`
+  (for `uv run pytest` on the host). The production overlay publishes no port for it or for
+  Redis, because a `127.0.0.1` port is still open to every local user and process of a
+  shared host: use `./scripts/deploy.sh exec postgres psql ...` (or `pg_dump`) instead.
 - Data is kept in the `odt_pgdata` volume (it survives container restarts/recreation).
 
 ### Changing the password of an existing database
@@ -387,7 +392,8 @@ docker compose ps
 > **Passwords and keys in `.env`:** the values are loaded via `env_file`, so they may
 > contain the `$` character without double escaping. Avoid writing secrets as
 > `${POSTGRES_PASSWORD}` in compose files — this caused warnings such as
-> `The "o" variable is not set`.
+> `The "o" variable is not set`. `REDIS_PASSWORD` is the exception: Compose interpolates
+> it into the Redis URLs, which is why it is limited to letters, digits, `-` and `_`.
 
 The startup order is enforced by dependencies: `init_uploads` → `postgres`/`redis`
 (healthcheck) → `migrate` → `web`/workers.
@@ -607,6 +613,9 @@ git fetch --tags && git checkout --detach vX.Y.Z
 cp -p .env ~/odt.env && sh scripts/deploy/release.sh vX.Y.Z ~/odt.env && rm ~/odt.env   # keeps the current .env
 ```
 
+That `.env` must hold `REDIS_PASSWORD`: only the GitHub deployment refuses to run without
+it, and Compose starts Redis without a password when it is empty.
+
 The application services run the code built into the image, not the checkout, so code
 changes always need a build (`release.sh` does it; `./scripts/deploy.sh up -d --build` works too).
 
@@ -654,7 +663,9 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 - [ ] Reverse proxy forwards `X-Forwarded-Proto: https`
 - [ ] `TRUSTED_PROXY_CIDRS` set to the reverse proxy's addresses (production refuses to start without it)
 - [ ] Behind a CDN: Caddy trusts its ranges and sends `X-Forwarded-For {client_ip}` ([section 13](#client-ip-cdn-and-the-frontend))
-- [ ] `postgres`/`redis`/`web` ports not exposed publicly (`127.0.0.1` only)
+- [ ] `web` bound to `127.0.0.1` only; no host port for `postgres` and `redis`
+      (`./scripts/deploy.sh config` shows none)
+- [ ] `REDIS_PASSWORD` set
 - [ ] `docker-socket-proxy` running; rootless Docker / a separate validator microservice considered
 - [ ] `.env` with `600` permissions, outside the git repository
 - [ ] `python manage.py check --deploy` without `security.W*` warnings
@@ -917,7 +928,8 @@ deployment in *Actions*; the job's log shows `odt-deploy: <old> -> <new>` and
   `HOST_MEDIA_ROOT`, `COMPOSE_PROFILES`, `PLANNER_*`, ...). Optionally `DEPLOY_APP_USER`, the
   owner of the checkout that `odt-deploy` runs as (default `rocky`).
 - **Environment secrets:** `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`,
-  `FEED_AUTH_ENCRYPTION_KEY` and `PLANNER_INTERNAL_TOKEN` (with the planner).
+  `FEED_AUTH_ENCRYPTION_KEY`, `REDIS_PASSWORD` and `PLANNER_INTERNAL_TOKEN` (with the
+  planner).
 
 Also under *Settings → Actions → General → Fork pull request workflows from outside
 collaborators*, choose **Require approval for all outside collaborators**: a pull request can
@@ -995,7 +1007,7 @@ an empty directory that is not synced anywhere:
 
 ```bash
 scp rocky@<host>:OtwarteDaneTransportowe-backend/.env odt.env
-secrets='^(DJANGO_SECRET_KEY|POSTGRES_PASSWORD|FEED_AUTH_ENCRYPTION_KEY|PLANNER_INTERNAL_TOKEN)='
+secrets='^(DJANGO_SECRET_KEY|POSTGRES_PASSWORD|FEED_AUTH_ENCRYPTION_KEY|REDIS_PASSWORD|PLANNER_INTERNAL_TOKEN)='
 grep -E "$secrets" odt.env > secrets.env
 grep -vE "$secrets" odt.env | grep -vE '^\s*(#|$)' > variables.env
 gh secret set --env production -f secrets.env
@@ -1029,6 +1041,7 @@ Change it in the environment, then deploy: a new release, or *Re-run jobs* on th
 release's run (it uses the workflow of that tag and today's settings).
 
 - `DJANGO_SECRET_KEY` may change: every session and JWT becomes invalid.
+- `REDIS_PASSWORD` may change: Redis and all its clients are recreated with the new value.
 - `POSTGRES_PASSWORD`: first change it in the database
   ([section 6](#6-postgresql)), then in the server's `.env` by hand, then in GitHub, then
   deploy. The release refuses a password that differs from the server's `.env`.

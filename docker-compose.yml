@@ -4,11 +4,12 @@ x-app-env: &app-env
   HOME: /app
   POSTGRES_HOST: postgres
   POSTGRES_PORT: "5432"
-  CELERY_BROKER_URL: redis://redis:6379/0
-  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  # REDIS_PASSWORD goes into the URLs unencoded: letters, digits, - and _ only. Empty in dev.
+  CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
+  CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-}@redis:6379/1
   # Shared cache: required so the realtime self-scheduling lock and DRF throttling
   # work across web + worker processes (per-process LocMemCache would break them).
-  REDIS_CACHE_URL: redis://redis:6379/2
+  REDIS_CACHE_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/2
 
 x-app-service: &app-service
   build:
@@ -69,10 +70,14 @@ services:
     image: redis:7-alpine
     container_name: odt-redis
     restart: unless-stopped
+    # An empty REDIS_PASSWORD (development) leaves Redis without authentication.
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command: ["sh", "-c", 'exec redis-server --requirepass "$$REDIS_PASSWORD"']
     ports:
       - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", '[ -z "$$REDIS_PASSWORD" ] || export REDISCLI_AUTH="$$REDIS_PASSWORD"; [ "$$(redis-cli ping)" = PONG ]']
       interval: 5s
       timeout: 3s
       retries: 10
