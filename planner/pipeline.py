@@ -340,7 +340,7 @@ def _collect_candidates(build: GraphBuild, workdir: str) -> list[Candidate]:
             continue
         target = os.path.join(workdir, 'feeds', f'{feed.feed_id}.zip')
         try:
-            version_at = _fetch_feed(feed, target)
+            version_at = _fetch_feed(build, feed, target)
         except FeedUnavailable:
             candidates.append(_fall_back(feed, target, 'planner.feed_source_unavailable'))
             continue
@@ -356,7 +356,7 @@ def _collect_candidates(build: GraphBuild, workdir: str) -> list[Candidate]:
     return candidates
 
 
-def _fetch_feed(feed: PlannerFeed, target: str):
+def _fetch_feed(build: GraphBuild, feed: PlannerFeed, target: str):
     """Copy (or download) the feed's current file to ``target``; returns its version time.
 
     A proxied or uploaded file may be mid-rewrite (OverwriteStorage deletes and
@@ -367,6 +367,9 @@ def _fetch_feed(feed: PlannerFeed, target: str):
         raise FeedUnavailable
     for attempt in range(2):
         if attempt:
+            # Two downloads of up to FEED_FETCH_TOTAL_TIMEOUT_SECONDS each would
+            # outlast HEARTBEAT_STALE_AFTER without this.
+            _heartbeat(build)
             # The file may have been replaced (and renamed) by a fetch meanwhile.
             _sleep(FETCH_RETRY_DELAY_SECONDS)
             entry.refresh_from_db()

@@ -20,7 +20,7 @@ The planner graph (OTP) is built from the published GTFS feeds an admin selects,
   - Activation repoints the symlink, starts OTP, waits for `/otp/actuators/health` and checks that every included feed is served.
   - If anything fails, the previous graph is restored and started. The previous graph is kept on disk for a rollback from the panel.
 - **Recovery.** A watchdog (every 5 minutes) fails builds whose heartbeat stopped (worker killed by a deploy or reboot) and restarts the active graph.
-  - A running build refreshes its heartbeat per feed it collects and once a minute while osmium and the OTP containers run.
+  - A running build refreshes its heartbeat before each feed download and once a minute while osmium and the OTP containers run.
   - Every write of the build checks that its row is still `running`. A build the watchdog has failed stops at its next heartbeat: it removes its containers, never becomes active and leaves restarting OTP to the watchdog.
 - **Realtime sources.** OTP polls the same links the public catalogue shows, at the endpoint's ODT interval.
   - Proxied endpoints are read from ODT's cached copy over the internal network. The requests carry a shared token (`PLANNER_INTERNAL_TOKEN`) that exempts them from public throttling.

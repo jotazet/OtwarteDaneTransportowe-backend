@@ -417,11 +417,24 @@ def test_failed_first_activation_serves_nothing(make_feed, fake_otp):
 
 def test_feed_copy_is_retried_on_the_current_file(make_feed, fake_otp, monkeypatch):
     feed = make_feed('krk', content=b'PK\x03\x04 mid-rewrite')
-    monkeypatch.setattr(pipeline, '_sleep', lambda seconds: set_feed_content(feed, GTFS_ZIP))
+    beats = []
+    real_heartbeat = pipeline._heartbeat
+    monkeypatch.setattr(
+        pipeline, '_heartbeat', lambda build: (beats.append(1), real_heartbeat(build))
+    )
+
+    def retry(seconds):
+        beats.append('retry')
+        set_feed_content(feed, GTFS_ZIP)
+
+    monkeypatch.setattr(pipeline, '_sleep', retry)
 
     build = build_now()
 
     assert results(build)['krk']['outcome'] == 'fresh'
+    # One heartbeat for the feed, one more before the retry (a download may take
+    # the whole fetch timeout).
+    assert beats[: beats.index('retry')] == [1, 1]
 
 
 def test_last_good_version_is_retested_after_an_otp_upgrade(
