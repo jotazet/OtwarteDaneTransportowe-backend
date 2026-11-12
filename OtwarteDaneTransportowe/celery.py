@@ -2,7 +2,7 @@
 Celery application for OtwarteDaneTransportowe.
 
 Broker:  Redis  (CELERY_BROKER_URL)
-Backend: Redis  (CELERY_RESULT_BACKEND)
+Results: none   (CELERY_TASK_IGNORE_RESULT, no result backend)
 
 Scheduler: django-celery-beat keeps the schedule in the Django database, so the
            intervals of realtime endpoints change without restarting the worker.

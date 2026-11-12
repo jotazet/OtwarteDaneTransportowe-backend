@@ -9,7 +9,7 @@ ODT downloads proxied static feeds on a daily schedule, polls realtime endpoints
 
 ## Decision
 
-- **Celery** with **Redis** as broker and result backend. Redis also backs Django's cache, so locks and throttling are shared between web and worker processes.
+- **Celery** with **Redis** as broker and no result backend (`CELERY_TASK_IGNORE_RESULT`): every task records its outcome in the database and nothing reads task results, so storing one per realtime poll only filled Redis (issue #75). Redis also backs Django's cache, so locks and throttling are shared between web and worker processes.
 - **Beat** with `django-celery-beat`'s database scheduler: `refresh_static_feeds` every minute and `bootstrap_realtime_tasks` every 5 minutes, both on the `default` queue.
 - **Queues:** `default` for dispatching and realtime fetching; `feeds` for `fetch_static_entry` and `validate_gtfs_feed`, served by a dedicated validator worker.
 - Realtime fetching is a self-rescheduling task per endpoint, guarded by a Redis lock and a liveness marker. The marker holds a random **loop token**: each run passes a fresh token to the one message it queues, and a message whose token no longer matches the marker exits without fetching or rescheduling; a message that outlived its marker (queue lag, worker restart) re-claims it when no other loop has. A second seed after the marker expired (lagging queue), a Redis redelivery or a message left over from before a pause/resume therefore never forks the loop (issue #38).
