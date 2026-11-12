@@ -97,6 +97,12 @@ class EncryptedCharField(models.TextField):
         )
         return UndecryptableValue(value)
 
+    def value_to_string(self, obj):
+        # dumpdata: never export a placeholder that loaddata would store as the credential.
+        if isinstance(self.value_from_object(obj), UndecryptableValue):
+            raise CredentialUndecryptable
+        return super().value_to_string(obj)
+
     def to_python(self, value):
         # Model.full_clean() runs this on the attribute; a str() would replace the
         # stored token with its repr on the next save.

@@ -1,6 +1,7 @@
 """Stored feed credentials fail closed: no plaintext in production, no ciphertext
 sent upstream, no prefixed input stored as is, and the key can be rotated."""
 
+import io
 import logging
 from unittest.mock import patch
 
@@ -172,6 +173,14 @@ def test_wrong_key_reads_an_undecryptable_value_not_the_ciphertext(keys, org, us
     # Logged once per process, without the value.
     assert [r.levelno for r in caplog.records] == [logging.ERROR]
     assert stored not in caplog.text
+
+
+def test_dumpdata_refuses_an_undecryptable_value(keys, org, user):
+    _entry(org, user)
+    keys.FEED_AUTH_ENCRYPTION_KEY = KEY_1
+
+    with pytest.raises(CommandError, match=CREDENTIAL_UNDECRYPTABLE):
+        call_command('dumpdata', 'data_manager.StaticFeedEntry', stdout=io.StringIO())
 
 
 def test_no_key_reads_a_stored_token_as_undecryptable(keys, org, user):

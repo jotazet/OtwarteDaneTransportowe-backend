@@ -1363,8 +1363,9 @@ The current key encrypts; it and every key in `FEED_AUTH_ENCRYPTION_OLD_KEYS` de
    have the provider enter the credential again.
 4. Delete the secret `FEED_AUTH_ENCRYPTION_OLD_KEYS` and deploy again.
 
-Keep the old key in the vault as long as a backup taken before the rotation may be
-restored: such a dump holds credentials encrypted with it. After restoring one, set it in
+Do not roll back to a release older than this rotation support between steps 2 and 3: it
+ignores `FEED_AUTH_ENCRYPTION_OLD_KEYS`. Keep the old key in the vault as long as a backup
+taken before the rotation may be restored: such a dump holds credentials encrypted with it. After restoring one, set it in
 `FEED_AUTH_ENCRYPTION_OLD_KEYS` and run steps 3 and 4.
 
 Without the releases (a hand-written `.env`), do steps 2 and 4 in `.env` and restart the
