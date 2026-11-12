@@ -120,6 +120,27 @@ def test_check_pinned_secrets(tmp_path, old, expected):
     assert result.returncode == expected, result.stdout
 
 
+@pytest.mark.parametrize(
+    ('old_keys', 'expected'),
+    [
+        # The previous key moved to the decrypt-only list: a rotation.
+        ('f0', 0),
+        ('fx, f0', 0),
+        # Without it every stored credential would be undecryptable.
+        ('fx', 1),
+        ('', 1),
+    ],
+)
+def test_check_allows_a_feed_key_rotation(tmp_path, old_keys, expected):
+    secrets = {**SECRETS, 'FEED_AUTH_ENCRYPTION_OLD_KEYS': old_keys}
+    new, _ = write(tmp_path, {}, secrets)
+    (tmp_path / 'old.env').write_text('POSTGRES_PASSWORD=p1\nFEED_AUTH_ENCRYPTION_KEY=f0\n')
+
+    result = run('check', str(tmp_path / 'old.env'), str(new))
+
+    assert result.returncode == expected, result.stdout
+
+
 def test_check_passes_without_an_old_env(tmp_path):
     new, _ = write(tmp_path, {})
 

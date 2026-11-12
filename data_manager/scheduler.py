@@ -21,6 +21,7 @@ from django.conf import settings
 from django.core.files.base import File
 from django.utils import timezone
 
+from data_manager.fields import CredentialUndecryptable, UndecryptableValue
 from data_manager.models import (
     FeedFetchError,
     RealtimeEndpointRT,
@@ -44,7 +45,12 @@ logger = logging.getLogger(__name__)
 
 
 def _build_auth_headers(auth_type: str, auth_value: str | None) -> dict:
-    """Buduje nagłówki HTTP na podstawie wybranego typu autentykacji."""
+    """HTTP headers for the source's auth type.
+
+    Raises ``CredentialUndecryptable`` when the stored credential cannot be decrypted.
+    """
+    if auth_type and isinstance(auth_value, UndecryptableValue):
+        raise CredentialUndecryptable
     if auth_type == 'api_key' and auth_value:
         return {'X-API-Key': auth_value}
     if auth_type == 'bearer_token' and auth_value:
@@ -119,10 +125,10 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
         conditional['If-None-Match'] = entry.cached_etag
     if compare and entry.cached_last_modified:
         conditional['If-Modified-Since'] = entry.cached_last_modified
-    # Passed like the auth headers, so safe_download drops them on a redirect
-    # to another origin; the content hash below still catches those feeds.
-    headers = {**_build_auth_headers(entry.auth_type, entry.auth_value), **conditional}
     try:
+        # Passed like the auth headers, so safe_download drops them on a redirect
+        # to another origin; the content hash below still catches those feeds.
+        headers = {**_build_auth_headers(entry.auth_type, entry.auth_value), **conditional}
         # safe_download streams the body to a spooled temp file. Buffering a
         # 200 MB feed in memory (twice, as bytes) used to spike every worker.
         with safe_download(
@@ -204,6 +210,9 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
         validate_gtfs_feed_task.delay(entry.pk)
         return FETCH_OK
 
+    except CredentialUndecryptable as exc:
+        _log_static_error(entry, FeedFetchError.ERROR_AUTH, exc)
+        return FETCH_PERMANENT
     except (OutboundURLBlocked, InvalidFeedContent) as exc:
         _log_static_error(entry, FeedFetchError.ERROR_INVALID_CONTENT, exc)
         return FETCH_PERMANENT
@@ -254,11 +263,10 @@ def _fetch_realtime_endpoint_rt(
         )
         return FETCH_PERMANENT
 
-    headers = _build_auth_headers(endpoint.auth_type, endpoint.auth_value)
     try:
         with safe_download(
             endpoint.url,
-            headers=headers,
+            headers=_build_auth_headers(endpoint.auth_type, endpoint.auth_value),
             timeout=30,
             max_bytes=settings.MAX_REALTIME_FEED_BYTES,
             total_timeout=total_timeout or settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS,
@@ -287,6 +295,9 @@ def _fetch_realtime_endpoint_rt(
         # DEBUG: this runs on every poll, every few seconds. No URL: it may carry a token.
         logger.debug('Refreshed realtime endpoint_rt=%d', endpoint.pk)
         return FETCH_OK
+    except CredentialUndecryptable as exc:
+        _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_AUTH, exc)
+        return FETCH_PERMANENT
     except (OutboundURLBlocked, InvalidFeedContent) as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc)
         return FETCH_PERMANENT

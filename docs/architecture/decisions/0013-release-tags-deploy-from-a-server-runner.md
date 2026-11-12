@@ -43,7 +43,9 @@ OpenTripPlanner.
   user ids, host paths, images, Compose settings and interpolated values, resource limits,
   internal addresses and `DJANGO_SETTINGS_MODULE` are set there, not in GitHub.
   `FEED_AUTH_ENCRYPTION_KEY` and `POSTGRES_PASSWORD` cannot change through GitHub alone:
-  the server refuses a `.env` that changes them.
+  the server refuses a `.env` that changes them. (Since [ADR 0015](0015-feed-credential-keys-fail-closed-and-rotate.md)
+  a new `FEED_AUTH_ENCRYPTION_KEY` passes when the previous one is in
+  `FEED_AUTH_ENCRYPTION_OLD_KEYS`: a rotation.)
 - There is no approval step: creating the release is the deliberate act.
 
 ## Consequences

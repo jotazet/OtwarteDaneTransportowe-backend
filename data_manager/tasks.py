@@ -49,6 +49,7 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
+from data_manager.fields import CREDENTIAL_UNDECRYPTABLE, CredentialUndecryptable
 from data_manager.validators import REALTIME_MIN_INTERVAL_SECONDS
 
 logger = get_task_logger(__name__)
@@ -677,6 +678,10 @@ def validate_gtfs_feed_task(self, entry_id: int):
                     with open(container_file_path, 'wb') as fh:
                         shutil.copyfileobj(body, fh)
                 container_input_dir = validation_temp_dir
+            except CredentialUndecryptable:
+                # Our key configuration, not the provider's credential.
+                _record_infra_error(ve.CREDENTIAL_UNDECRYPTABLE, 'stored credential')
+                return
             except OutboundURLBlocked as exc:
                 # The provider's URL, not our infrastructure: rejected as before.
                 _reject_submission(str(exc))
@@ -995,6 +1000,15 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
             RT_VERIFICATION_SOFT_TIME_LIMIT,
         )
         return {'status': 'timed_out', 'id': submission_id}
+    except CredentialUndecryptable:
+        # The stored credential does not decrypt with the configured keys: ours
+        # to fix, not a rejection. Stays at stage 2 for retry_stuck_realtime_verifications.
+        logger.error(
+            'Realtime verification of submission %s: a stored credential cannot be '
+            'decrypted; kept at stage 2 for a retry',
+            submission_id,
+        )
+        return {'status': CREDENTIAL_UNDECRYPTABLE, 'id': submission_id}
 
 
 def _verify_realtime_submission(submission_id: int) -> dict:
@@ -1148,8 +1162,8 @@ def _verify_realtime_submission(submission_id: int) -> dict:
                 )
             else:
                 entity_types = validate_realtime_feed_content(rts.protocol, resp.content)
-        except SoftTimeLimitExceeded:
-            # Not the endpoint's fault: end the task as timed_out.
+        except (SoftTimeLimitExceeded, CredentialUndecryptable):
+            # Not the endpoint's fault: end the task, kept at stage 2.
             raise
         except Exception as exc:
             code = next(

@@ -199,6 +199,7 @@ In `static_entry`:
 | `gtfs_validation.validator_unavailable` | ODT could not start the validator (Docker unreachable). |
 | `gtfs_validation.validator_failed` | The validator stopped or produced no usable report (e.g. it ran out of memory). |
 | `gtfs_validation.timeout` | Validation did not finish within ODT's time limit. |
+| `gtfs_validation.credential_undecryptable` | ODT cannot decrypt the stored source credential (a key configuration problem on ODT's side), so it did not download the feed. |
 
 `realtime_submissions` lists the realtime submissions linked to this static feed. For a `DataProvider` it holds only the ones the feed's owner submitted; `GET .../download/realtime/{endpoint_pk}/` likewise returns `404` for an endpoint of another user's realtime submission.
 

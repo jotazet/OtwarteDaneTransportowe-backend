@@ -148,9 +148,11 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 > Note: `FEED_AUTH_ENCRYPTION_KEY` encrypts feed API keys/tokens "at rest".
-> If you do not set it, the credentials are stored in **plaintext** (dev mode). Once the
-> key is set, **do not change it** — existing encrypted values will no longer be
-> decryptable.
+> `settings_prod` **refuses to start** without it or with a value that is not a Fernet key.
+> In development without a key the credentials are stored in **plaintext** and a warning is
+> logged once. Never just replace the key: stored values encrypted with the old one could no
+> longer be decrypted. Change it only by
+> [rotating it](#rotating-feed_auth_encryption_key).
 
 ---
 
@@ -205,6 +207,8 @@ CSRF_TRUSTED_ORIGINS=https://api.example.org
 
 # ───────────────────────── Feed credential encryption ─────────────────────────
 FEED_AUTH_ENCRYPTION_KEY=<wklej-klucz-Fernet>
+# Only during a key rotation (section 20): the previous key(s), comma-separated, decrypt only.
+# FEED_AUTH_ENCRYPTION_OLD_KEYS=
 
 # ───────────────────────── GTFS validator ─────────────────────────
 # The Docker API goes through the docker-socket-proxy service (DOCKER_HOST in compose) —
@@ -286,7 +290,8 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `POSTGRES_PASSWORD` | Database password — strong, unique. |
 | `CORS_ALLOWED_ORIGINS` | Frontend browser origins (whitelist). |
 | `CSRF_TRUSTED_ORIGINS` | Required for POST behind a TLS proxy. |
-| `FEED_AUTH_ENCRYPTION_KEY` | At-rest encryption of feed credentials. |
+| `FEED_AUTH_ENCRYPTION_KEY` | At-rest encryption of feed credentials (Fernet key). `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty or not a Fernet key. A stored credential that no configured key decrypts is never used: its fetches fail with `auth_error` / `fetch.credential_undecryptable` ([section 18](#18-troubleshooting)). |
+| `FEED_AUTH_ENCRYPTION_OLD_KEYS` | Optional, comma-separated previous keys that still decrypt but never encrypt. Set only while [rotating the key](#rotating-feed_auth_encryption_key). |
 | `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). Set by `docker-compose.yml` (database `2`), which overrides `.env`. |
 | `REDIS_PASSWORD` | Password of the Redis server; `docker-compose.yml` builds the broker, result backend and cache URLs from it (`redis://:${REDIS_PASSWORD}@redis:6379/<db>`). Required in production: the Docker bridge network is reachable from the host, so an unpublished Redis without a password is still open to local processes. Letters, digits, `-` and `_` only, because it goes into the URLs unencoded (`envfile.py` refuses anything else). Empty in development (no authentication). |
 | `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks, and the client IP is its rightmost address that is not inside them (entries to the left are whatever the client sent). List **every** proxy hop, including a CDN in front of nginx, or its address becomes the client IP of everyone behind it; keep the networks as narrow as possible, because any address inside them is treated as a proxy. DRF throttling (`THROTTLE_*`) counts requests per this client IP too. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit, and all visitors share one login, feed download and planner limit. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
@@ -827,7 +832,8 @@ The count and the newest `updated_at` should match the backup's time.
 - [ ] `DJANGO_SECRET_KEY` — strong, unique (not a placeholder)
 - [ ] `DJANGO_ALLOWED_HOSTS` restricted to the real domain
 - [ ] `POSTGRES_PASSWORD` — strong, unique
-- [ ] `FEED_AUTH_ENCRYPTION_KEY` set and archived in a vault
+- [ ] `FEED_AUTH_ENCRYPTION_KEY` set and archived in a vault, with every previous key still
+      needed by a backup
 - [ ] `CSRF_TRUSTED_ORIGINS` + `CORS_ALLOWED_ORIGINS` narrowed to the frontend
 - [ ] Reverse proxy forwards `X-Forwarded-Proto: https`
 - [ ] `TRUSTED_PROXY_CIDRS` set to the reverse proxy's addresses (production refuses to start without it)
@@ -852,6 +858,20 @@ The count and the newest `updated_at` should match the backup's time.
 **The application does not start, `ImproperlyConfigured: TRUSTED_PROXY_CIDRS is empty...`**
 → Set `TRUSTED_PROXY_CIDRS` to the reverse proxy network(s). Only if the app is served
 directly to clients without a proxy, set `ALLOW_UNTRUSTED_PROXY_IPS=True` instead.
+
+**The application does not start, `ImproperlyConfigured: FEED_AUTH_ENCRYPTION_KEY...`**
+→ Set `FEED_AUTH_ENCRYPTION_KEY` to the Fernet key from the vault ([section 4](#4-generating-secrets));
+for `FEED_AUTH_ENCRYPTION_OLD_KEYS`, remove the entry that is not a Fernet key.
+
+**Fetch errors `auth_error` with the message `fetch.credential_undecryptable`**
+→ A stored credential is not decryptable with `FEED_AUTH_ENCRYPTION_KEY` or
+`FEED_AUTH_ENCRYPTION_OLD_KEYS` (the server log says so once per process, without the value):
+the key changed without a [rotation](#rotating-feed_auth_encryption_key), or a backup was
+restored with another key. ODT does not send such a credential: the fetch fails, the feed backs
+off and pauses as after any failed fetch, GTFS validation of a non-proxied URL ends with
+`gtfs_validation.credential_undecryptable` and realtime verification stays at stage 2. Put the
+key the credential was encrypted with into `FEED_AUTH_ENCRYPTION_OLD_KEYS` and deploy (then
+resume the paused feeds), or have the provider enter the credential again.
 
 **`DisallowedHost` / 400**
 → Add the public API domain to `DJANGO_ALLOWED_HOSTS` (without `https://`).
@@ -1120,8 +1140,9 @@ deployment in *Actions*; the job's log shows `odt-deploy: <old> -> <new>` and
   `DEPLOY_APP_USER`, the owner of the checkout that `odt-deploy` runs as (default `rocky`).
   Every other setting goes in the [host file](#the-host-file).
 - **Environment secrets:** `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`,
-  `FEED_AUTH_ENCRYPTION_KEY`, `REDIS_PASSWORD` and `PLANNER_INTERNAL_TOKEN` (with the
-  planner).
+  `FEED_AUTH_ENCRYPTION_KEY`, `REDIS_PASSWORD`, `PLANNER_INTERNAL_TOKEN` (with the
+  planner) and `FEED_AUTH_ENCRYPTION_OLD_KEYS` (only during a
+  [key rotation](#rotating-feed_auth_encryption_key)).
 
 Also under *Settings → Actions → General → Fork pull request workflows from outside
 collaborators*, choose **Require approval for all outside collaborators**: a pull request can
@@ -1316,8 +1337,38 @@ that tag and today's settings).
 - `POSTGRES_PASSWORD`: first change it in the database
   ([section 6](#6-postgresql)), then in the server's `.env` by hand, then in GitHub, then
   deploy. The release refuses a password that differs from the server's `.env`.
-- `FEED_AUTH_ENCRYPTION_KEY`: never. The release refuses a change; there is no tool that
-  re-encrypts stored credentials.
+- `FEED_AUTH_ENCRYPTION_KEY`: only by [rotating it](#rotating-feed_auth_encryption_key).
+  The release refuses a new key unless the previous one is in
+  `FEED_AUTH_ENCRYPTION_OLD_KEYS`.
+
+### Rotating `FEED_AUTH_ENCRYPTION_KEY`
+
+The current key encrypts; it and every key in `FEED_AUTH_ENCRYPTION_OLD_KEYS` decrypt.
+
+1. Generate a new key ([section 4](#4-generating-secrets)) and archive it in the vault next
+   to the current one.
+2. In the environment, set the secret `FEED_AUTH_ENCRYPTION_OLD_KEYS` to the **current** key
+   and `FEED_AUTH_ENCRYPTION_KEY` to the new one, then deploy. The release accepts the new
+   key because the previous one is in `FEED_AUTH_ENCRYPTION_OLD_KEYS`; from now on every
+   credential written is encrypted with the new key.
+3. Re-encrypt the stored credentials:
+
+   ```bash
+   ./scripts/deploy.sh exec web python manage.py rotate_feed_auth_key
+   ```
+
+   It prints how many credentials it re-encrypted (credentials stored as plaintext before
+   the key was set are encrypted too). If it lists credentials that no key decrypts, it
+   fails: keep `FEED_AUTH_ENCRYPTION_OLD_KEYS` and add the key they were encrypted with, or
+   have the provider enter the credential again.
+4. Delete the secret `FEED_AUTH_ENCRYPTION_OLD_KEYS` and deploy again.
+
+Keep the old key in the vault as long as a backup taken before the rotation may be
+restored: such a dump holds credentials encrypted with it. After restoring one, set it in
+`FEED_AUTH_ENCRYPTION_OLD_KEYS` and run steps 3 and 4.
+
+Without the releases (a hand-written `.env`), do steps 2 and 4 in `.env` and restart the
+application services (`./scripts/deploy.sh up -d`).
 
 ### Rolling back
 

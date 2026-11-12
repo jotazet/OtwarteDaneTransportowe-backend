@@ -5,6 +5,7 @@ from .settings_base import (  # noqa: F401
     INSECURE_SECRET_KEY_PLACEHOLDER,
     _env_bool,
     _env_list,
+    validate_feed_auth_encryption_keys,
     validate_production_secret_key,
 )
 
@@ -29,6 +30,10 @@ if DATABASES['default']['PASSWORD'] in {'change-me', 'postgres', ''}:  # noqa: F
         'POSTGRES_PASSWORD must be set to a strong, unique value in production. '
         'Refusing to start with an example/default database password.'
     )
+
+# Without the key feed credentials would be stored as plaintext; a malformed one
+# would only fail at the first credential read or write.
+validate_feed_auth_encryption_keys(FEED_AUTH_ENCRYPTION_KEY, FEED_AUTH_ENCRYPTION_OLD_KEYS)  # noqa: F405
 
 # Security hardening (minimal baseline)
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
