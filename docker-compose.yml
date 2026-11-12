@@ -135,9 +135,10 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  # Least-privilege gateway to the host Docker API for the GTFS validator
-  # worker. Only this container mounts /var/run/docker.sock; the worker talks
-  # to it over TCP with everything except the needed endpoints denied.
+  # Least-privilege gateway to the host Docker API for the GTFS validator and
+  # planner workers. Only this container mounts /var/run/docker.sock; those two
+  # workers talk to it over TCP with everything except the needed endpoints
+  # denied, on the internal 'docker-api' network that no other service joins.
   #
   # Honest caveat: the containers-create API still accepts bind mounts and the
   # privileged flag, so a compromised worker remains dangerous — the proxy
@@ -156,6 +157,7 @@ services:
       # Everything else (EXEC, VOLUMES, NETWORKS, SECRETS, SWARM, ...) stays denied.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [docker-api]
 
   celery_validator_worker:
     <<: *app-service
@@ -184,6 +186,7 @@ services:
       GID: "${GID:-1000}"
       HOST_PROJECT_PATH: "${HOST_PROJECT_PATH:-${PWD}}"
       HOST_MEDIA_ROOT: "${HOST_MEDIA_ROOT:-${PWD}/uploaded_data}"
+    networks: [default, docker-api]
 
   # NOTE: the gtfs-realtime-validator service was removed deliberately.
   #
@@ -223,7 +226,7 @@ services:
       GID: "${GID:-1000}"
       HOST_PROJECT_PATH: "${HOST_PROJECT_PATH:-${PWD}}"
       HOST_PLANNER_DATA_DIR: "${HOST_PLANNER_DATA_DIR:-${PWD}/planner_data}"
-    networks: [default, planner]
+    networks: [default, planner, docker-api]
 
   # The serving OpenTripPlanner. Private: no published port, only on the
   # 'planner' network with web and the planner worker (not with postgres, redis
@@ -257,6 +260,10 @@ services:
 networks:
   planner:
     name: odt-planner
+  # Only docker-socket-proxy and the two workers that start containers. Internal:
+  # no route out; image pulls are done by the Docker daemon, not the proxy.
+  docker-api:
+    internal: true
 
 volumes:
   odt_pgdata:
