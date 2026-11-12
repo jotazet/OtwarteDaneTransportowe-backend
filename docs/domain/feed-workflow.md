@@ -63,6 +63,8 @@ DataProvider
 
 The flows above are the normal path. Helper/Admin can override it: `PATCH {"stage": N}` sets any stage 1–4 from any state, so a reviewer can skip a stage (e.g. publish from stage 2) or move a submission back (e.g. 4 → 2, which unpublishes it). Every override is a history entry with the reviewer as `actor` (`completed` for stage 4, otherwise `stage_advanced`, also when moving back), so the audit trail shows who bypassed the workflow and when. See the reviewer override in the [Feeds API](../api/feeds.md#static-feeds-feedsubmission).
 
+The Django admin offers the same kind of change as the bulk action "Advance selected submissions to next stage" on the FeedSubmission list. It is available only to accounts that hold Django's `change` permission on FeedSubmission **and** a reviewer role (Helper or Admin group, or superuser), so `is_staff` and model permissions alone are not enough. The action locks each submission and re-reads its stage, and it skips rejected submissions and those already at stage 4.
+
 ## Fetch errors and pauses of proxied feeds
 
 The pause, retry and background cache mechanism applies **only to proxied feeds** (`hide_original=true`). A feed without proxying (`hide_original=false`) or an uploaded file is **not** periodically fetched or served from the server cache — the original URL (or the uploaded file) is what is publicly visible. For such feeds:
