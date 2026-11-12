@@ -14,6 +14,7 @@ from rest_framework.test import APIClient
 from cases.models import TransportOrganization
 from data_manager import tasks
 from data_manager.models import (
+    AUTO_PAUSE_RETRY_DELAY,
     FETCH_STATUS_ACTIVE,
     FETCH_STATUS_AUTO_PAUSED,
     FETCH_STATUS_DELAYED,
@@ -66,6 +67,11 @@ def helper_user():
 def org(settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
     return TransportOrganization.objects.create(region='R', transport_organization='Org')
+
+
+def _is_daily_retry(feed):
+    remaining = feed.next_fetch_after - timezone.now()
+    return AUTO_PAUSE_RETRY_DELAY - timedelta(minutes=1) < remaining <= AUTO_PAUSE_RETRY_DELAY
 
 
 def _published_static_entry(org, provider_user, **entry_kwargs):
@@ -155,7 +161,7 @@ def test_static_fetch_errors_apply_pause_sequence_and_success_resets(
     entry.refresh_from_db()
     assert entry.fetch_status == FETCH_STATUS_AUTO_PAUSED
     assert entry.fetch_failure_count == 4
-    assert 86300 <= (entry.next_fetch_after - timezone.now()).total_seconds() <= 86410
+    assert _is_daily_retry(entry)
     assert FeedFetchError.objects.filter(static_entry=entry).count() == 4
 
     class Response:
@@ -917,7 +923,7 @@ def test_auto_paused_static_entry_is_retried_daily(monkeypatch, org, provider_us
         assert entry.fetch_status == FETCH_STATUS_AUTO_PAUSED
         assert entry.fetch_failure_count == 5
         assert entry.fetch_pause_reason == 'timeout'
-        assert 86300 <= (entry.next_fetch_after - timezone.now()).total_seconds() <= 86410
+        assert _is_daily_retry(entry)
     else:
         assert entry.fetch_status == FETCH_STATUS_ACTIVE
         assert entry.fetch_failure_count == 0

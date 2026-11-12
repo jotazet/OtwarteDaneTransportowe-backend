@@ -477,19 +477,20 @@ def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> 
         }
         if endpoint.fetch_status == FETCH_STATUS_ACTIVE:
             countdown = max(endpoint.interval, REALTIME_MIN_INTERVAL_SECONDS)
-        else:
-            # Rounded up: a run before next_fetch_after would find it not due.
-            countdown = (
-                math.ceil((endpoint.next_fetch_after - timezone.now()).total_seconds())
-                if endpoint.fetch_status == FETCH_STATUS_DELAYED
-                else None
+        elif (
+            endpoint.fetch_status == FETCH_STATUS_DELAYED
+            and (
+                # Rounded up: a run before next_fetch_after would find it not due.
+                wait := math.ceil((endpoint.next_fetch_after - timezone.now()).total_seconds())
             )
-            if countdown is None or countdown >= RT_BOOTSTRAP_PERIOD_SECONDS:
-                # Never queue a long back-off: Redis redelivers ETAs past its
-                # 1 h visibility timeout. Bootstrap resumes the endpoint instead.
-                cache.delete(_rt_alive_key(endpoint_id))
-                return outcome
-            countdown = max(countdown, 1)
+            < RT_BOOTSTRAP_PERIOD_SECONDS
+        ):
+            countdown = max(wait, 1)
+        else:
+            # Never queue a long back-off: Redis redelivers ETAs past its 1 h
+            # visibility timeout. Bootstrap resumes the endpoint instead.
+            cache.delete(_rt_alive_key(endpoint_id))
+            return outcome
 
         next_token = uuid.uuid4().hex
         cache.set(

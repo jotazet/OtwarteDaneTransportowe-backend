@@ -22,6 +22,7 @@ from django.core.files.base import File
 from django.utils import timezone
 
 from data_manager.models import (
+    FETCH_RETRY_DELAYS,
     REALTIME_TRANSIENT_RETRY_DELAYS,
     FeedFetchError,
     RealtimeEndpointRT,
@@ -327,9 +328,8 @@ def _log_endpoint_rt_error(endpoint, error_type, exc, outcome, http_code=None) -
         message=str(exc),
         url_attempted=endpoint.url,
     )
-    if outcome == FETCH_TRANSIENT:
-        endpoint.mark_fetch_failure(str(exc), delays=REALTIME_TRANSIENT_RETRY_DELAYS)
-    else:
-        endpoint.mark_fetch_failure(str(exc))
+    transient = outcome == FETCH_TRANSIENT
+    delays = REALTIME_TRANSIENT_RETRY_DELAYS if transient else FETCH_RETRY_DELAYS
+    endpoint.mark_fetch_failure(str(exc), delays=delays)
     logger.warning('Fetch error endpoint_rt=%d type=%s: %s', endpoint.pk, error_type, exc)
     return outcome

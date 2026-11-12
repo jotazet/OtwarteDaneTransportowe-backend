@@ -8,6 +8,7 @@ import importlib
 from datetime import timedelta
 
 import pytest
+from celery.schedules import crontab
 from django.apps import apps
 from django.core.cache import cache
 from django.utils import timezone
@@ -386,3 +387,10 @@ def test_auto_paused_endpoint_is_retried_daily_through_bootstrap(
         assert result['fetch_status'] == FETCH_STATUS_ACTIVE
         assert result['next_in'] == published_gbfs_endpoint.interval
         assert len(queued()) == 2
+
+
+def test_bootstrap_period_matches_the_beat_schedule(settings):
+    """Steps shorter than RT_BOOTSTRAP_PERIOD_SECONDS are queued on the
+    assumption that bootstrap runs that often."""
+    schedule = settings.CELERY_BEAT_SCHEDULE['bootstrap-realtime-tasks']['schedule']
+    assert schedule == crontab(minute=f'*/{tasks.RT_BOOTSTRAP_PERIOD_SECONDS // 60}')
