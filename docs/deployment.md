@@ -1302,13 +1302,16 @@ sudo -u odt-runner docker ps          # permission denied
 sudo -u odt-runner sudo -n -u rocky id   # a password is required: refused
 ```
 
-**Another ODT repository** (the frontend): another directory under `/opt/actions-runner/`,
-registered to that repository with the same user and its own label, and its own deploy
-command in `/etc/sudoers.d/odt-runner`. The runners of one user can read and change each
-other's files, so code that reaches one runner also reaches the other repository's
-deployments and their secrets. The frontend's deploy command should take the same care as
-`odt-deploy` (only application settings from the job, host settings from a root-owned file);
-a separate user per repository keeps them apart. A project outside ODT gets its own user.
+**Another ODT repository**: another directory under `/opt/actions-runner/`, registered to
+that repository with the same user (the label `odt-production` may repeat: a repository's
+runner never takes another repository's jobs), and its own deploy command in its own
+sudoers file. The frontend does this with `/opt/actions-runner/odt-frontend`,
+`/usr/local/sbin/odt-deploy-frontend` and `/etc/sudoers.d/odt-runner-frontend` (its
+`docs/deployment.md`, section 6). The runners of one user can read and change each other's
+files, so code that reaches one runner also reaches the other repository's deployments and
+their secrets. The frontend's deploy command should take the same care as `odt-deploy`
+(only application settings from the job, host settings from a root-owned file); a separate
+user per repository keeps them apart. A project outside ODT gets its own user.
 
 ### Moving the current `.env` into GitHub (once)
 
