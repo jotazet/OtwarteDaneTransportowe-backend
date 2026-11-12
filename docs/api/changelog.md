@@ -2,6 +2,16 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: planner maintenance after a failed build, kept rollback graph, OTP outages in the stats
+
+Not breaking.
+
+- **Public planner API:** after a failed graph build, OTP-backed endpoints keep answering `503 planner.unavailable` with `details.reason: "maintenance"` and `Retry-After` until OTP is healthy on the previous graph again (at most 20 minutes), instead of `reason: "engine"` without `Retry-After` while it loads. See [Planner API](planner.md).
+- **Admin builds:** a failed build's `finished_at`, and `maintenance` in the status, now include that restart. After a rollback, the next build keeps the graph rolled back to for a further rollback (it used to keep the one rolled away from). See [Planner admin](planner-admin.md).
+- **Request log and statistics:** `503`s caused by OTP failing (`reason: "engine"`) or being busy (`planner.busy`) are now logged for every request, so `server_errors` counts OTP outages in full. `503`s while the API is switched off or in the build window are still logged once a minute per client, like `401`, `403` and `429`.
+
+---
+
 ## 2026-11-12: changing a realtime submission's protocol or static feed restarts verification
 
 Not breaking for the website. `PUT`/`PATCH /api/data_manager/realtime-submissions/{id}/` that changes `protocol` without sending `endpoints` now checks the stored endpoints against the new protocol and answers `400` with `{"protocol": ["realtime.endpoints_invalid_for_protocol"]}` when they do not fit (it used to save a submission whose endpoints were invalid for its protocol). Send the new `endpoints` together with the new `protocol`. A change of `protocol` or `static_submission` by the owner (stage 1 or after a rejection) now restarts verification like an endpoint change: an `uploaded` history entry is added and realtime validation runs again; an Admin's change re-runs validation without changing the stage. See [Realtime feeds](feeds.md#realtime-feeds-realtimesubmission).

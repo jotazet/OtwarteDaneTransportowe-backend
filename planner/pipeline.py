@@ -576,8 +576,10 @@ def _activate(build: GraphBuild, included_feed_ids: list[str], fresh: list[Candi
     try:
         if not _wait_until_healthy(build) or not _serves_feeds(included_feed_ids):
             raise BuildFailed('planner.activation_failed')
-        # Copies first (may fail), then the database, then atomic renames, so a
-        # snapshot never disagrees with the last_good_sha256 that describes it.
+        # Copies first (may fail), then the database, then atomic renames. A crash
+        # between the commit and the renames leaves a snapshot older than its
+        # last_good_sha256, with the right file still in its .tmp link;
+        # _stage_snapshot replaces it the next time that version is fetched.
         staged = [_stage_snapshot(candidate) for candidate in fresh]
         staged = [paths for paths in staged if paths]
         now = timezone.now()
@@ -619,12 +621,15 @@ def _stop_serving(build: GraphBuild) -> None:
         raise BuildFailed('planner.docker_unavailable', str(exc)) from exc
 
 
-def _start_serving() -> None:
+def _start_serving() -> bool:
+    """Start the serving OTP unless it runs; False if Docker refused."""
     try:
         if not otp_runtime.server_running():
             otp_runtime.start_server()
     except Exception:  # noqa: BLE001 - the watchdog retries every few minutes
         logger.exception('Could not start the serving OTP container')
+        return False
+    return True
 
 
 def _serving_target() -> str | None:
@@ -647,13 +652,22 @@ def _point_serving_at(target: str) -> None:
 
 
 def _wait_until_healthy(build: GraphBuild) -> bool:
+    """False after SERVER_START_TIMEOUT_SECONDS, or as soon as the container stopped."""
     deadline = timezone.now() + timedelta(seconds=SERVER_START_TIMEOUT_SECONDS)
     while not otp_runtime.is_healthy():
-        if timezone.now() >= deadline:
+        if timezone.now() >= deadline or _server_stopped():
             return False
         _heartbeat(build)
         _sleep(SERVER_POLL_SECONDS)
     return True
+
+
+def _server_stopped() -> bool:
+    """True once the serving container exited (e.g. it ran out of memory loading the graph)."""
+    try:
+        return not otp_runtime.server_running()
+    except Exception:  # noqa: BLE001 - docker errors vary; the health deadline still applies
+        return False
 
 
 def _sleep(seconds: int) -> None:
@@ -671,10 +685,15 @@ def _serves_feeds(feed_ids: list[str]) -> bool:
 def _stage_snapshot(candidate: Candidate) -> tuple[str, str] | None:
     """Link the new last good version next to its snapshot; None if it is unchanged."""
     snapshot = snapshot_path(candidate.feed)
-    if candidate.sha256 == candidate.feed.last_good_sha256 and os.path.exists(snapshot):
+    tmp = f'{snapshot}.tmp'
+    # A leftover .tmp means a crash may have kept the rename from replacing the snapshot.
+    if (
+        candidate.sha256 == candidate.feed.last_good_sha256
+        and os.path.exists(snapshot)
+        and not os.path.lexists(tmp)
+    ):
         return None
     os.makedirs(os.path.dirname(snapshot), exist_ok=True)
-    tmp = f'{snapshot}.tmp'
     if os.path.lexists(tmp):
         os.remove(tmp)
     os.link(candidate.path, tmp)
@@ -682,10 +701,15 @@ def _stage_snapshot(candidate: Candidate) -> tuple[str, str] | None:
 
 
 def _remove_unused_graphs(current: str) -> None:
-    """Keep the serving graph and the newest other one (for a rollback)."""
+    """Keep the serving graph and the one that served before it (for a rollback).
+
+    Builds run one at a time and every succeeded one, a rollback too, was active
+    until the next succeeded, so the newest inactive one served last; a rollback's
+    graph is its target's.
+    """
     keep = {current}
     previous = (
-        GraphBuild.objects.filter(status=GraphBuild.STATUS_SUCCEEDED, rollback_of__isnull=True)
+        GraphBuild.objects.filter(status=GraphBuild.STATUS_SUCCEEDED)
         .exclude(is_active=True)
         .first()
     )
@@ -731,8 +755,15 @@ def _update_running(build: GraphBuild, **fields) -> None:
 
 
 def _finish_failed(build: GraphBuild, code: str, log: str = '') -> bool:
-    """Fail the build; False if the watchdog already had (its code stays then)."""
+    """Serve the previous graph again, then fail the build; False if the watchdog already had.
+
+    The row stays RUNNING, and so the maintenance window open, until OTP is healthy
+    on the previous graph: until then the API answers 503 maintenance with
+    Retry-After instead of sending requests to an OTP that is still loading.
+    """
     try:
+        if build.otp_stopped_at:
+            _restore_serving(build)
         _update_running(
             build,
             status=GraphBuild.STATUS_FAILED,
@@ -745,6 +776,13 @@ def _finish_failed(build: GraphBuild, code: str, log: str = '') -> bool:
         return False
     logger.error('Graph build %s failed: %s', build.id, code)
     return True
+
+
+def _restore_serving(build: GraphBuild) -> None:
+    if _serving_target() is None:
+        return  # a failed first build: there is no graph to serve
+    if _start_serving() and not _wait_until_healthy(build):
+        logger.error('OTP is not healthy on the previous graph after build %s failed', build.id)
 
 
 def _build_error_code(result: otp_runtime.RunResult, default: str) -> str:
