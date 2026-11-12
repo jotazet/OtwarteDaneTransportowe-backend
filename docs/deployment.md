@@ -271,8 +271,9 @@ If you change `POSTGRES_PASSWORD` **after** the first startup, the environment v
 alone will not change the password in an already initialized volume. Run:
 
 ```bash
-docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -c "ALTER USER \"$POSTGRES_USER\" WITH PASSWORD 'NOWE_HASLO';"
+# Single quotes: the variables are expanded in the container, where .env sets them.
+./scripts/deploy.sh exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+# at the psql prompt: \password   (asks for the new password twice, keeps it out of the shell history)
 # then update .env and restart the application services
 ```
 
@@ -617,26 +618,134 @@ release-specific steps.
 
 ## 16. Backups and restore
 
-### Database
+`scripts/deploy/backup.sh` backs up what cannot be recreated, and `odt-backup.timer` runs it
+every day at 23:15 UTC (before FeedsODT's night jobs and the default planner build;
+[ADR 0014](architecture/decisions/0014-daily-backups-with-a-configurable-off-host-copy.md)):
+
+| Backed up | Not backed up (recreatable) |
+| --- | --- |
+| The database (`pg_dump -Fc`, checked with `pg_restore --list`) | Planner graphs, the street graph and the OSM extract (rebuilt or downloaded again) |
+| `uploaded_data/`: submitted and cached feed files, validation reports, blog images | `uploaded_data/*/dynamic/`: the realtime proxy cache, refetched from the source |
+| `planner_data/snapshots/`: the last good version of each planner feed | Redis: the cache and the queue; Celery beat queues the periodic tasks again |
+
+Each run writes `~/backups/scheduled/<UTC time>/` (`db.dump`, `uploaded_data/`,
+`planner_data/snapshots/`, mode `700`) and keeps the newest 7. Files unchanged since the
+previous backup are hard links to it, so a day costs the dump plus the changed files
+(`du -sh ~/backups/scheduled` counts each file once). A failed or empty dump, a failed copy or
+a failed off-host upload stops the run with a non-zero exit and `backup: ... FAILED` in the
+journal; an unfinished run leaves nothing that looks like a backup. The files are copied a few
+minutes after the dump, so a submission saved in between may be in one and not the other.
+The release backups (`~/backups/release-*`, [section 20](#20-releases-automatic-deployment-from-github))
+are separate.
+
+**Not in the backups: `.env`.** GitHub cannot show a secret again, so keep
+`FEED_AUTH_ENCRYPTION_KEY` (without it stored feed credentials cannot be decrypted after a
+restore) and the other secrets in a password vault.
+
+### Settings
+
+`odt-backup.service` reads `/etc/odt/backup.env` (root-owned; it may be empty or missing).
+Values are `KEY=value` lines:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `BACKUP_DIR` | `~/backups/scheduled` | Absolute path of the local backups. |
+| `BACKUP_KEEP` | `7` | How many local backups to keep. |
+| `BACKUP_REMOTE` | unset | Where each new backup is copied off the host, as `$BACKUP_REMOTE/<UTC time>/`. Unset: the backup exists on this disk only, and the journal says so every day. |
+| `BACKUP_REMOTE_TOOL` | `rsync` | `rsync` (`BACKUP_REMOTE` is `host:path` over SSH, or a mounted path) or `rclone` (`BACKUP_REMOTE` is `remote:path`, for object storage). |
+
+**Off-host copy.** A backup on the same disk does not survive the loss of the server; the
+destination is not chosen yet. Only the new backup is copied, and nothing is ever deleted
+there: remove old backups on the destination (a bucket lifecycle rule, a cron job on the
+backup machine), and give this server only the access it needs to add files, so an intruder
+here cannot delete them.
+
+- **rsync over SSH** (a storage box or another machine): as `rocky`, create a key without a
+  passphrase (`ssh-keygen -t ed25519 -f ~/.ssh/odt-backup -N ''`) and authorize it on the
+  destination; add a `Host odt-backup` entry with `HostName`, `User` and
+  `IdentityFile ~/.ssh/odt-backup` to `~/.ssh/config`; connect once by hand to accept the host
+  key; create the target directory; set `BACKUP_REMOTE=odt-backup:<directory>`. Unchanged files
+  are hard links there too, when the destination supports them.
+- **rclone** (object storage): install rclone, run `rclone config` as `rocky`, then set
+  `BACKUP_REMOTE_TOOL=rclone` and `BACKUP_REMOTE=<remote>:<bucket>/odt`. Every backup is
+  uploaded in full.
+
+### Installing the timer (once)
+
+On the server, in the checkout. The script itself runs from the checkout, so it changes with
+each release; reinstall the two unit files when they change.
 
 ```bash
-# Backup
-docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
-  | gzip > backup_$(date +%F).sql.gz
-
-# Restore
-gunzip -c backup_YYYY-MM-DD.sql.gz \
-  | docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+sudo install -d -o root -g root -m 755 /etc/odt
+sudoedit /etc/odt/backup.env && sudo chmod 600 /etc/odt/backup.env   # the settings above
+sudo install -o root -g root -m 644 scripts/deploy/odt-backup.service scripts/deploy/odt-backup.timer \
+  /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start odt-backup.service    # a first backup now
+journalctl -u odt-backup.service -n 20     # backup: ... complete
+sudo systemctl enable --now odt-backup.timer
+systemctl list-timers odt-backup.timer
 ```
 
-### Files (uploaded_data)
+The units name the user `rocky` and the checkout `/home/rocky/OtwarteDaneTransportowe-backend`;
+change both in `odt-backup.service` on another host. No alert is sent when a run fails: check
+`systemctl --failed` and `journalctl -u odt-backup.service`.
+
+### Backing up by hand
+
+`sudo systemctl start odt-backup.service` takes a backup with the settings above. A database
+dump alone:
 
 ```bash
-tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
+# Single quotes: the variables are expanded in the container, where .env sets them.
+./scripts/deploy.sh exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > db.dump
+./scripts/deploy.sh exec -T postgres pg_restore --list < db.dump > /dev/null && echo readable
 ```
 
-> Also secure `.env` (secrets) and the **`FEED_AUTH_ENCRYPTION_KEY` key** — without
-> it you will not be able to decrypt stored feed credentials after restoring the database.
+The command documented here before 2026-11-12 (`pg_dump -U "$POSTGRES_USER" ... | gzip`)
+expanded the variables in the host shell, where they are unset, and wrote an empty archive:
+do not rely on `.sql.gz` files made with it.
+
+### Restoring
+
+From the off-host copy, first fetch the backup into `~/backups/scheduled/` (`rsync -a
+odt-backup:<directory>/<time>/ ~/backups/scheduled/<time>/`, or `rclone copy
+<remote>:<bucket>/odt/<time> ~/backups/scheduled/<time>`). Then, in the checkout:
+
+```bash
+b=~/backups/scheduled/<time>
+# On a new server, start only the database first: ./scripts/deploy.sh up -d postgres
+./scripts/deploy.sh stop web celery_worker celery_beat celery_validator_worker celery_planner_worker
+./scripts/deploy.sh exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' \
+  < "$b/db.dump"
+rsync -a "$b/uploaded_data/" uploaded_data/
+rsync -a "$b/planner_data/snapshots/" planner_data/snapshots/
+./scripts/deploy.sh up -d
+```
+
+`.env` must hold the same `FEED_AUTH_ENCRYPTION_KEY` as when the backup was taken. Data
+written after the backup is lost. The planner rebuilds its graph at the next build.
+
+### Testing a restore
+
+Restore the newest backup into a scratch database next to the real one (the application keeps
+running; it needs free disk for one more copy of the database), at least after installing the
+timer, after changing its settings and every few months. Do it once from the off-host copy too.
+
+```bash
+b="$(ls -d ~/backups/scheduled/2* | tail -n 1)"
+./scripts/deploy.sh exec -T postgres sh -c 'createdb -U "$POSTGRES_USER" odt_restore_test'
+./scripts/deploy.sh exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d odt_restore_test --exit-on-error' \
+  < "$b/db.dump"
+./scripts/deploy.sh exec -T postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d odt_restore_test -c "SELECT count(*), max(updated_at) FROM data_manager_feedsubmission"'
+./scripts/deploy.sh exec -T postgres sh -c 'dropdb -U "$POSTGRES_USER" odt_restore_test'
+# The files: only what changed since the backup should differ.
+diff -rq --exclude=dynamic uploaded_data "$b/uploaded_data" | head
+diff -rq planner_data/snapshots "$b/planner_data/snapshots"
+```
+
+The count and the newest `updated_at` should match the backup's time.
 
 ---
 
@@ -657,7 +766,7 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 - [ ] `python manage.py check --deploy` without `security.W*` warnings
 - [ ] `/static/` files accessible (200) locally and through the proxy (see
       [section 12](#12-static-files-static))
-- [ ] Backup of the database and `uploaded_data/` configured
+- [ ] `odt-backup.timer` enabled, `BACKUP_REMOTE` set and a restore tested ([section 16](#16-backups-and-restore))
 
 ---
 
@@ -846,7 +955,7 @@ The first build also builds the street graph. Until then `otp` waits for a graph
   2. Run `up -d` so the serving container uses the new image too.
   3. Build now: the next build re-tests every feed and rebuilds the street graph, and graphs built with the old image can no longer be activated.
 - **Search index.** After each build the planner worker copies operators, lines, stops and which trips share a block from OTP into Postgres (~3 s for Małopolska with 85k block trips; all of Poland has ~93k stops and ~1.3M trips). If that fails, search keeps the previous data and the watchdog queues `planner.refresh_index` every 5 minutes until it succeeds; `GraphBuild.indexed_at` shows when it last did. The migration creates the `pg_trgm` extension, which needs `CREATE` on the database (the default `postgres` user has it).
-- **Backups.** Back up `planner_data/snapshots/` (the last good version of each feed cannot be recreated). Graphs, the street graph and the OSM extract can be rebuilt or downloaded again.
+- **Backups.** The daily backup ([section 16](#16-backups-and-restore)) includes `planner_data/snapshots/` (the last good version of each feed cannot be recreated). Graphs, the street graph and the OSM extract can be rebuilt or downloaded again.
 
 ---
 

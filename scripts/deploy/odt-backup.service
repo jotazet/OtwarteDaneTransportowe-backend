@@ -1,0 +1,18 @@
+# The daily backup (scripts/deploy/backup.sh); installed with odt-backup.timer, see
+# docs/deployment.md, section 16. User and path match the production checkout.
+[Unit]
+Description=ODT backup: database, uploaded_data/, planner snapshots
+Documentation=https://github.com/jotazet/OtwarteDaneTransportowe-backend/blob/main/docs/deployment.md#16-backups-and-restore
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rocky
+# Root-owned settings: BACKUP_DIR, BACKUP_KEEP, BACKUP_REMOTE, BACKUP_REMOTE_TOOL.
+EnvironmentFile=-/etc/odt/backup.env
+# Through /bin/sh: SELinux does not let systemd execute a file in a home directory.
+ExecStart=/bin/sh /home/rocky/OtwarteDaneTransportowe-backend/scripts/deploy/backup.sh
+Nice=10
+IOSchedulingClass=idle
