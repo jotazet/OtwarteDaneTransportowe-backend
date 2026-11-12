@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: deleting a planner feed removes its last good version
+
+Not breaking. `DELETE /api/planner/admin/feeds/{id}/`, and deleting the feed's submission, now also delete the feed's last good version (`planner_data/snapshots/<feed_id>.zip`); before, the file stayed on disk. Responses are unchanged. See [Planner admin](planner-admin.md).
+
+---
+
 ## 2026-11-12: owner edits of static submissions at stage 1 and full `PUT`
 
 Not breaking. `PUT`/`PATCH /api/data_manager/feed-submissions/{id}/`:

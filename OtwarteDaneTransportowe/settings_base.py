@@ -129,7 +129,7 @@ ROOT_URLCONF = 'OtwarteDaneTransportowe.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [str(BASE_DIR / 'Portal')],
+        'DIRS': [],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -396,13 +396,6 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = int(os.getenv('CELERY_WORKER_PREFETCH_MULTIP
 # during a rotation (docs/deployment.md, "Rotating FEED_AUTH_ENCRYPTION_KEY").
 FEED_AUTH_ENCRYPTION_KEY = os.getenv('FEED_AUTH_ENCRYPTION_KEY')
 FEED_AUTH_ENCRYPTION_OLD_KEYS = _env_list('FEED_AUTH_ENCRYPTION_OLD_KEYS')
-
-# Public base URL of this API (scheme://host, no trailing slash), e.g.
-# https://api.example.org. Used to hand the GTFS-RT validator a downloadable
-# URL for PROXIED static feeds (their cached copy is only reachable through
-# our /feed/ routes). Unset => semantic validation is skipped for proxied
-# feeds (link-checks still run).
-PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', '').rstrip('/')
 
 # Proxy settings (client IP for blog reaction limits and DRF throttling)
 TRUSTED_PROXY_CIDRS = _env_list('TRUSTED_PROXY_CIDRS', default=[])
