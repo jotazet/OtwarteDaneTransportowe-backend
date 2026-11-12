@@ -2,6 +2,19 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: logout and session revocation
+
+Not breaking for the ODT frontend, which ignores the body of `me/change-password/`; a client that reads its `detail` must stop. The frontend should adopt the first two points.
+
+- **`POST /api/auth/logout/`** (new, public) takes `{"refresh": "..."}`, blacklists that refresh token and returns `200 {}`. An invalid, expired or already blacklisted token returns `401` (`token_not_valid`). Access tokens stay valid until they expire. See [Logout](README.md#post-apiauthlogout).
+- **`POST /api/users/me/change-password/`** blacklists all refresh tokens of the user and now returns a fresh pair `{"access", "refresh"}` for the calling session instead of `{"detail": "Password updated."}`. A client that does not store the new pair is logged out at its next refresh.
+- **`POST /api/users/{id}/reset-password/`** blacklists all refresh tokens of that user. The response is unchanged.
+- `me/change-password/` and `me/change-email/` are rate-limited (`account_change`, 5/min per user by default, `THROTTLE_ACCOUNT_CHANGE`) and answer `429` beyond it.
+
+See [Ending all sessions of a user](README.md#ending-all-sessions-of-a-user).
+
+---
+
 ## 2026-11-12: realtime submissions link only to the caller's own static feed
 
 Not breaking for the website, which already offers only `eligible-static-submissions`. `POST /api/data_manager/realtime-submissions/` and `PUT`/`PATCH .../{id}/` by a `DataProvider` with a `static_submission` the caller did not submit now answer `400` on `static_submission` (code `realtime.static_submission_not_owned`; until the ADR 0006 exception handler lands, the body carries an English message, so match on status and field); `Admin` may still link any feed. In `GET /api/data_manager/feed-submissions/{id}/` a `DataProvider` sees in `realtime_submissions` only the feed owner's realtime submissions, and `download/realtime/{endpoint_pk}/` returns `404` for other users' endpoints. Helper/Admin responses are unchanged. See [Realtime validation rules](feeds.md#realtime-feeds-realtimesubmission).

@@ -1,9 +1,15 @@
+from datetime import timedelta
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 
+from accounts.tasks import flush_expired_tokens_task
 from OtwarteDaneTransportowe.auth_roles import ROLE_ADMIN, ROLE_DATA_PROVIDER
+from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairSerializer
 
 pytestmark = pytest.mark.django_db
 
@@ -88,17 +94,85 @@ def test_reset_password(api_client, admin_user, regular_user):
     assert regular_user.check_password(response.data['generated_password'])
 
 
-def test_change_password(api_client, regular_user):
-    api_client.force_authenticate(user=regular_user)
-    response = api_client.post(
+def _session(user):
+    """A refresh token of a new session of ``user``, as issued at login."""
+    return str(RolesInTokenObtainPairSerializer.get_token(user))
+
+
+def _refresh(refresh):
+    return APIClient().post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
+
+
+def _logout(refresh):
+    return APIClient().post('/api/auth/logout/', {'refresh': refresh}, format='json')
+
+
+def _change_password(client, current_password):
+    return client.post(
         '/api/users/me/change-password/',
-        {'current_password': 'regularpass', 'new_password': 'NewSecurePass9!'},
+        {'current_password': current_password, 'new_password': 'NewSecurePass9!'},
         format='json',
     )
-    assert response.status_code == 200
 
+
+def test_reset_password_ends_the_users_sessions(api_client, admin_user, regular_user):
+    rotated = _refresh(_session(regular_user)).data['refresh']
+    sessions = [_session(regular_user), rotated]
+    admin_session = _session(admin_user)
+    api_client.force_authenticate(user=admin_user)
+
+    assert api_client.post(f'/api/users/{regular_user.pk}/reset-password/').status_code == 200
+
+    assert [_refresh(r).status_code for r in sessions] == [401, 401]
+    assert _refresh(admin_session).status_code == 200
+
+
+def test_change_password_ends_other_sessions_and_returns_a_new_pair(api_client, regular_user):
+    old_session = _session(regular_user)
+    api_client.force_authenticate(user=regular_user)
+
+    response = _change_password(api_client, 'regularpass')
+
+    assert response.status_code == 200
     regular_user.refresh_from_db()
     assert regular_user.check_password('NewSecurePass9!')
+    assert _refresh(old_session).status_code == 401
+    assert _refresh(response.data['refresh']).status_code == 200
+    me = APIClient()
+    me.credentials(HTTP_AUTHORIZATION=f'Bearer {response.data["access"]}')
+    assert me.get('/api/users/me/').status_code == 200
+
+
+def test_wrong_current_password_keeps_the_sessions(api_client, regular_user):
+    session = _session(regular_user)
+    api_client.force_authenticate(user=regular_user)
+
+    assert _change_password(api_client, 'wrong').status_code == 400
+    assert _refresh(session).status_code == 200
+
+
+def test_logout_blacklists_the_refresh_token(make_user):
+    user = make_user(ROLE_DATA_PROVIDER)
+    session, other_session = _session(user), _session(user)
+
+    assert _logout(session).status_code == 200
+    assert _refresh(session).status_code == 401
+    assert _refresh(other_session).status_code == 200
+    # A second logout with the same token: 401, which the client treats as done.
+    assert _logout(session).status_code == 401
+
+
+def test_flush_expired_tokens_task_deletes_only_expired_tokens(make_user):
+    user = make_user(ROLE_DATA_PROVIDER)
+    _session(user)
+    expired = OutstandingToken.objects.create(
+        user=user, jti='expired', token='x', expires_at=timezone.now() - timedelta(days=1)
+    )
+
+    flush_expired_tokens_task()
+
+    assert not OutstandingToken.objects.filter(pk=expired.pk).exists()
+    assert OutstandingToken.objects.filter(user=user).count() == 1
 
 
 def test_change_email(api_client, regular_user):
