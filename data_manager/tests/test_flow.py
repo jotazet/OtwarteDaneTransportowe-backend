@@ -1093,6 +1093,22 @@ def test_validate_gtfs_task_uses_feeds_queue():
     assert settings.CELERY_TASK_ROUTES['data_manager.validate_gtfs_feed']['queue'] == 'feeds'
 
 
+@pytest.mark.parametrize(
+    ('task', 'queue'),
+    [
+        ('data_manager.fetch_realtime_endpoint', 'realtime'),
+        ('data_manager.validate_realtime_submission', 'realtime'),
+        ('data_manager.bootstrap_realtime_tasks', 'default'),
+        ('data_manager.refresh_static_feeds', 'default'),
+    ],
+)
+def test_realtime_fetches_do_not_share_the_dispatchers_queue(task, queue):
+    """Up to 90 s per realtime job must not delay the dispatchers (issue #47)."""
+    from OtwarteDaneTransportowe.celery import app
+
+    assert app.amqp.router.route({}, task)['queue'].name == queue
+
+
 def test_beat_dispatchers_do_not_wait_behind_feeds_jobs():
     # The feeds worker runs one long job at a time (validation/download up to
     # ~10 min); the static dispatcher only catches up 10 minutes, so it must

@@ -161,6 +161,22 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Realtime fetching and verification, kept apart from the dispatchers on
+  # 'default': a slow upstream holds a worker for up to 90 s per fetch.
+  celery_realtime_worker:
+    <<: *app-service
+    container_name: odt-celery-realtime-worker
+    command: >
+      celery -A OtwarteDaneTransportowe worker
+      --loglevel=info
+      --queues=realtime
+      --concurrency=${CELERY_REALTIME_CONCURRENCY:-2}
+    mem_limit: ${CELERY_REALTIME_MEM_LIMIT:-1g}
+    healthcheck: *worker-healthcheck
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   celery_beat:
     <<: *app-service
     container_name: odt-celery-beat
