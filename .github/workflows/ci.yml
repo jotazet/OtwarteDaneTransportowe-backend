@@ -167,7 +167,7 @@ jobs:
       - name: Deploy
         env:
           TAG: ${{ github.ref_name }}
-          APP_USER: ${{ vars.DEPLOY_APP_USER || 'rocky' }}
+          APP_USER: ${{ vars.DEPLOY_APP_USER || 'odt' }}
         run: sudo -n -u "$APP_USER" /usr/local/sbin/odt-deploy "$TAG" < "$RUNNER_TEMP/production.env"
       # The runner is not thrown away after the job: the secrets must not stay on its disk.
       - name: Remove the .env

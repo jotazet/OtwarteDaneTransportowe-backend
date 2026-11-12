@@ -9,11 +9,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=rocky
+User=odt
 # Root-owned settings (docs/deployment.md, section 16).
 EnvironmentFile=-/etc/odt/backup.env
 # Through /bin/sh, so the script needs no executable bit or SELinux label of its own.
-ExecStart=/bin/sh /home/rocky/odt-backend/scripts/deploy/backup.sh
+ExecStart=/bin/sh /srv/odt-backend/scripts/deploy/backup.sh
 # A hung copy fails the run instead of blocking every later one (oneshot has no default limit).
 TimeoutStartSec=6h
 Nice=10

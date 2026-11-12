@@ -19,7 +19,10 @@ directory, so the server kept a full working copy that nothing but releases may 
   it to GitHub's registry as `ghcr.io/jotazet/odt-backend`, with the workflow's own token.
 - **The package is public**, like the repository: the server pulls without credentials.
   The image holds code and dependencies only; settings and secrets come from `.env`.
-- **The server keeps a deployment directory, not a checkout:** `~/odt-backend` with `.env`,
+- **The server keeps a deployment directory, not a checkout:** `/srv/odt-backend`, owned by
+  the system user `odt` (no login, no sudo, in the `docker` group), which `odt-deploy` runs
+  as instead of the admin user; its home `/var/lib/odt` holds the release and daily
+  backups. The directory holds `.env`,
   `uploaded_data/`, `planner_data/`, and the Compose files and deploy scripts of the running
   release. `odt-deploy` asks GitHub's API for the tag's commit, refuses it unless `main`
   contains it, downloads that commit's archive and copies `docker-compose*.yml`,
@@ -43,6 +46,9 @@ directory, so the server kept a full working copy that nothing but releases may 
   workflows on `main` and tags have `packages: write`; pull requests do not.
 - The image of every `main` push is public too (as is the code it is built from).
 - The `image` job adds a few minutes before the deployment starts.
+- Membership of the `docker` group is as good as root on the host, so the user `odt` mainly
+  keeps deployments out of the admin's home (other projects' files, SSH keys, sudo), not out
+  of the host.
 - Moving production from the checkout to the deployment directory is a one-time step
   (docs/deployment.md, section 20).
 
