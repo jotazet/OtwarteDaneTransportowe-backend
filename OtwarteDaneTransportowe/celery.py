@@ -4,21 +4,22 @@ Celery application for OtwarteDaneTransportowe.
 Broker:  Redis  (CELERY_BROKER_URL)
 Backend: Redis  (CELERY_RESULT_BACKEND)
 
-Scheduler: django-celery-beat przechowuje harmonogram w bazie danych Django,
-           dzięki czemu interwały dla poszczególnych endpointów RT są dynamiczne
-           i nie wymagają restartu workera po zmianie.
+Scheduler: django-celery-beat keeps the schedule in the Django database, so the
+           intervals of realtime endpoints change without restarting the worker.
 """
 
 import os
 
 from celery import Celery
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'OtwarteDaneTransportowe.settings')
+# Without DJANGO_SETTINGS_MODULE it fails closed on the production settings; development
+# sets it (docker-compose.yml through .env.example, pytest through pytest.ini).
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'OtwarteDaneTransportowe.settings_prod')
 
 app = Celery('OtwarteDaneTransportowe')
 
-# Całą konfigurację czytamy z settings.py (klucze z prefiksem CELERY_)
+# All configuration comes from the Django settings (keys prefixed with CELERY_).
 app.config_from_object('django.conf:settings', namespace='CELERY')
 
-# Automatycznie wykrywaj tasks.py we wszystkich INSTALLED_APPS
+# Discover tasks.py in every INSTALLED_APPS entry.
 app.autodiscover_tasks()
