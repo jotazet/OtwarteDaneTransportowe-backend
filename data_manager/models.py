@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -9,7 +10,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from data_manager.fields import EncryptedCharField
-from data_manager.validators import validate_feed_file_size
+from data_manager.validators import validate_feed_file_size, validate_realtime_interval
 
 FETCH_STATUS_ACTIVE = 'active'
 FETCH_STATUS_DELAYED = 'delayed'
@@ -21,58 +22,94 @@ FETCH_STATUS_CHOICES = [
     (FETCH_STATUS_AUTO_PAUSED, 'Automatically paused'),
     (FETCH_STATUS_MANUAL_PAUSED, 'Manually paused'),
 ]
+# Back-off after consecutive failed fetches; one more failure auto-pauses the feed.
 FETCH_RETRY_DELAYS = [
     timedelta(minutes=5),
     timedelta(hours=1),
     timedelta(hours=6),
 ]
+# Realtime endpoints after a transient error (timeout, connection error,
+# truncated body, HTTP 5xx/429): data seconds old is worthless an hour later.
+REALTIME_TRANSIENT_RETRY_DELAYS = [
+    timedelta(seconds=30),
+    timedelta(minutes=2),
+    timedelta(minutes=10),
+    timedelta(hours=1),
+]
+# An auto-paused feed is still tried once a day; a success makes it active again.
+AUTO_PAUSE_RETRY_DELAY = timedelta(days=1)
+
+
+_FETCH_STATE_FIELDS = (
+    'fetch_status',
+    'fetch_failure_count',
+    'next_fetch_after',
+    'fetch_paused_at',
+    'fetch_pause_reason',
+)
+
+
+def fetch_retry_due(now):
+    """Filter for feeds whose back-off or daily auto-pause retry has come due."""
+    return models.Q(
+        fetch_status__in=(FETCH_STATUS_DELAYED, FETCH_STATUS_AUTO_PAUSED),
+        next_fetch_after__lte=now,
+    )
 
 
 class FetchControlMixin:
     """Shared state transitions for proxied static and realtime feed fetching."""
 
-    def mark_fetch_success(self, now=None) -> None:
-        now = now or timezone.now()
-        self.fetch_status = FETCH_STATUS_ACTIVE
-        self.fetch_failure_count = 0
-        self.next_fetch_after = None
-        self.fetch_paused_at = None
-        self.fetch_pause_reason = ''
-        self.last_fetch_success_at = now
-        self.save(
-            update_fields=[
-                'fetch_status',
-                'fetch_failure_count',
-                'next_fetch_after',
-                'fetch_paused_at',
-                'fetch_pause_reason',
-                'last_fetch_success_at',
-            ]
+    def _lock_fetch_state(self) -> None:
+        """Re-read the fetch state under a row lock (call inside a transaction).
+
+        The instance was loaded before the fetch, which can take minutes, so its
+        status may be stale: a Helper may have paused the feed in the meantime.
+        A manual pause outlives any fetch outcome; only resume_fetch() lifts it.
+        """
+        self.refresh_from_db(
+            fields=_FETCH_STATE_FIELDS,
+            from_queryset=type(self).objects.select_for_update(),
         )
 
-    def mark_fetch_failure(self, reason: str = '', now=None) -> None:
+    def mark_fetch_success(self, now=None) -> None:
         now = now or timezone.now()
-        self.fetch_failure_count = (self.fetch_failure_count or 0) + 1
-        self.last_fetch_error_at = now
-        self.fetch_pause_reason = (reason or '')[:500]
-        if self.fetch_failure_count <= len(FETCH_RETRY_DELAYS):
-            self.fetch_status = FETCH_STATUS_DELAYED
-            self.next_fetch_after = now + FETCH_RETRY_DELAYS[self.fetch_failure_count - 1]
-            self.fetch_paused_at = now
-        else:
-            self.fetch_status = FETCH_STATUS_AUTO_PAUSED
-            self.next_fetch_after = None
-            self.fetch_paused_at = now
-        self.save(
-            update_fields=[
-                'fetch_status',
-                'fetch_failure_count',
-                'next_fetch_after',
-                'fetch_paused_at',
-                'fetch_pause_reason',
-                'last_fetch_error_at',
-            ]
-        )
+        with transaction.atomic():
+            self._lock_fetch_state()
+            # Recorded even for a manually paused feed: the cache was refreshed.
+            self.last_fetch_success_at = now
+            if self.fetch_status != FETCH_STATUS_MANUAL_PAUSED:
+                self.fetch_status = FETCH_STATUS_ACTIVE
+                self.fetch_failure_count = 0
+                self.next_fetch_after = None
+                self.fetch_paused_at = None
+                self.fetch_pause_reason = ''
+            self.save(update_fields=[*_FETCH_STATE_FIELDS, 'last_fetch_success_at'])
+
+    def mark_fetch_failure(self, reason: str = '', now=None, delays=FETCH_RETRY_DELAYS) -> None:
+        """Count a failed fetch and schedule the next try on the ``delays`` ladder.
+
+        One count spans all ladders and the latest error picks one: a realtime
+        endpoint that timed out twice and then returns 404 waits 6 h, the third
+        step of FETCH_RETRY_DELAYS. Past the ladder the feed is auto-paused and
+        tried again once a day.
+        """
+        now = now or timezone.now()
+        with transaction.atomic():
+            self._lock_fetch_state()
+            # Recorded even for a manually paused feed: the FeedFetchError is logged too.
+            self.last_fetch_error_at = now
+            if self.fetch_status != FETCH_STATUS_MANUAL_PAUSED:
+                self.fetch_failure_count += 1
+                self.fetch_pause_reason = (reason or '')[:500]
+                self.fetch_paused_at = now
+                if self.fetch_failure_count <= len(delays):
+                    self.fetch_status = FETCH_STATUS_DELAYED
+                    self.next_fetch_after = now + delays[self.fetch_failure_count - 1]
+                else:
+                    self.fetch_status = FETCH_STATUS_AUTO_PAUSED
+                    self.next_fetch_after = now + AUTO_PAUSE_RETRY_DELAY
+            self.save(update_fields=[*_FETCH_STATE_FIELDS, 'last_fetch_error_at'])
 
     def pause_fetch(self, reason: str = '', now=None) -> None:
         now = now or timezone.now()
@@ -110,21 +147,35 @@ class FetchControlMixin:
         now = now or timezone.now()
         if self.fetch_status == FETCH_STATUS_ACTIVE:
             return True
-        if self.fetch_status == FETCH_STATUS_DELAYED:
+        if self.fetch_status in (FETCH_STATUS_DELAYED, FETCH_STATUS_AUTO_PAUSED):
             return self.next_fetch_after is not None and self.next_fetch_after <= now
         return False
 
 
 class OverwriteStorage(FileSystemStorage):
-    """Saves a new version of a file under the same name, rewriting it in place.
+    """Saves a new version of a file under the same name, replacing it atomically.
 
-    Django's own overwrite (truncate on open) instead of deleting the old file
-    first: two saves of one file at once (e.g. overlapping validations writing
-    report.json) made the second delete fail or remove the first's new file.
+    Each save writes its own temporary file next to the target and renames it
+    over the target with ``os.replace``, so a reader (a download being served,
+    OTP polling a realtime feed) sees the complete old or the complete new file,
+    never a truncated one. Two overlapping saves of one name (e.g. validations
+    writing report.json) both succeed and the last rename wins; delete-then-save
+    made the second delete fail or remove the first's new file.
     """
 
     def __init__(self, **kwargs):
         super().__init__(allow_overwrite=True, **kwargs)
+
+    def _save(self, name, content):
+        directory, basename = os.path.split(name)
+        tmp_name = os.path.join(directory, f'.{basename}.{secrets.token_hex(8)}.tmp')
+        try:
+            tmp_name = super()._save(tmp_name, content)
+            os.replace(self.path(tmp_name), self.path(name))
+        except BaseException:  # also on worker shutdown, so no temp file is left
+            self.delete(tmp_name)
+            raise
+        return name.replace('\\', '/')
 
 
 def feed_file_path(instance, filename):
@@ -166,6 +217,12 @@ def realtime_feed_cached_file_path(instance, filename):
     submission_id = getattr(getattr(instance, 'submission', None), 'id', 'unknown')
     endpoint_type = getattr(instance, 'endpoint_type', None) or 'endpoint'
     return f'{submission_id}/dynamic/cached/{endpoint_type}/{filename}'
+
+
+def _coded(code: str, field: str | None = None) -> ValidationError:
+    """A ``clean()`` error whose message is its API error code (ADR 0006)."""
+    error = ValidationError(code, code=code)
+    return ValidationError({field: error}) if field else error
 
 
 def validation_file_path(instance, filename):
@@ -376,6 +433,8 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         ('basic_auth', 'Basic Auth (user:pass)'),
     ]
 
+    CACHE_VALIDATOR_FIELDS = ('cached_etag', 'cached_last_modified', 'cached_sha256')
+
     VALIDATION_PENDING = 'pending'
     VALIDATION_VALID = 'valid'
     VALIDATION_INVALID = 'invalid'
@@ -429,6 +488,11 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         blank=True,
         help_text='When the cached copy was last downloaded by the server.',
     )
+    # Describe the cached copy, so an unchanged upstream file is neither saved
+    # nor validated again (CACHE_VALIDATOR_FIELDS). Cleared with the cache.
+    cached_etag = models.TextField(blank=True, default='')
+    cached_last_modified = models.TextField(blank=True, default='')
+    cached_sha256 = models.CharField(max_length=64, blank=True, default='')
     fetch_status = models.CharField(
         max_length=20,
         choices=FETCH_STATUS_CHOICES,
@@ -504,33 +568,22 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         has_url = bool(self.url)
         has_file = bool(self.file)
 
-        # User chooses exactly one input source: url XOR file.
+        # User chooses exactly one input source: url XOR file. Messages are API
+        # error codes (ADR 0006): the feed API passes them through.
         if has_url and has_file:
-            raise ValidationError('Provide either a URL or a file upload, not both.')
+            raise _coded('feeds.static_source_url_and_file')
         if not has_url and not has_file:
-            raise ValidationError('Either a URL or a file upload must be provided.')
+            raise _coded('feeds.static_source_missing')
 
         # download_time_1 required if url, forbidden if file
         if has_url:
             if self.download_time_1 is None:
-                raise ValidationError(
-                    {'download_time_1': 'This field is required when a URL is provided.'}
-                )
-            if self.download_time_2 is not None and self.download_time_1 is None:
-                raise ValidationError(
-                    {
-                        'download_time_2': 'download_time_2 can only be set if download_time_1 is set.'
-                    }
-                )
+                raise _coded('feeds.download_time_required', 'download_time_1')
         if has_file:
             if self.download_time_1 is not None:
-                raise ValidationError(
-                    {'download_time_1': 'This field must be empty when a file is provided.'}
-                )
+                raise _coded('feeds.download_time_with_file', 'download_time_1')
             if self.download_time_2 is not None:
-                raise ValidationError(
-                    {'download_time_2': 'This field must be empty when a file is provided.'}
-                )
+                raise _coded('feeds.download_time_with_file', 'download_time_2')
 
         # Auto-set hide_original when auth_type is set
         if self.auth_type:
@@ -540,17 +593,9 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         if not has_url:
             # file upload – URL-only fields must not be filled
             if self.hide_original:
-                raise ValidationError(
-                    '"Hide original" is only applicable when a URL is provided, not a file upload.'
-                )
-            if self.download_time_1 or self.download_time_2:
-                raise ValidationError(
-                    'Download schedule is only applicable when a URL is provided, not a file upload.'
-                )
+                raise _coded('feeds.hide_original_with_file', 'hide_original')
             if self.cached_file or self.cached_at:
-                raise ValidationError(
-                    'Server-downloaded static file fields cannot be used for a manual file upload.'
-                )
+                raise _coded('feeds.cached_file_with_upload')
 
     @property
     def validation_source_file(self):
@@ -947,7 +992,11 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
     url = models.URLField()
     hide_original = models.BooleanField(default=False)
     is_original = models.BooleanField(default=False)
-    interval = models.PositiveIntegerField(help_text='Refresh interval in seconds.', default=60)
+    interval = models.PositiveIntegerField(
+        help_text='Refresh interval in seconds.',
+        default=60,
+        validators=[validate_realtime_interval],
+    )
     auth_type = models.CharField(max_length=20, choices=AUTH_TYPE_CHOICES, blank=True)
     auth_value = EncryptedCharField(blank=True, null=True)
     cached_file = models.FileField(
@@ -996,10 +1045,7 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
         if self.submission_id:
             allowed = self.submission.allowed_endpoint_types()
             if self.endpoint_type not in allowed:
-                raise ValidationError(
-                    f"Endpoint type '{self.endpoint_type}' is not valid for "
-                    f"protocol '{self.submission.protocol}'. Allowed: {sorted(allowed)}."
-                )
+                raise _coded('realtime.endpoints_invalid_for_protocol', 'endpoint_type')
 
     @property
     def is_proxy_managed(self) -> bool:
@@ -1100,3 +1146,13 @@ def _compute_completed_realtime_submission_ids() -> list[int]:
         .filter(current_stage_val=4)
         .values_list('id', flat=True)
     )
+
+
+def lock_submission(model, pk):
+    """Lock a FeedSubmission or RealtimeSubmission row and return it with its history.
+
+    API stage transitions (reviewer, owner resubmission) and the validation tasks
+    call this first inside ``transaction.atomic()``, so transitions of one
+    submission run one at a time and ``current_stage`` is read from committed history.
+    """
+    return model.objects.select_for_update().prefetch_related('history').get(pk=pk)

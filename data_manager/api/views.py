@@ -3,16 +3,16 @@ from datetime import timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import CharField, F, OuterRef, Prefetch, Q, Subquery, Value
+from django.db.models import CharField, F, Prefetch, Q, Value
 from django.db.models.functions import Coalesce, Concat
 from django.http import FileResponse, Http404
-from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
 
 # DRF's ValidationError renders as HTTP 400; Django's would bubble up as 500.
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.generics import get_object_or_404
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -38,6 +38,7 @@ from data_manager.api.serializers import (
     UserFeedSubmissionListSerializer,
     UserRealtimeSubmissionSerializer,
     annotate_fetch_health,
+    field_error,
     raise_as_drf_validation_error,
 )
 from data_manager.models import (
@@ -50,7 +51,9 @@ from data_manager.models import (
     StaticFeedEntry,
     completed_realtime_submission_ids,
     completed_submission_ids,
+    lock_submission,
 )
+from OtwarteDaneTransportowe.api_errors import CodedError
 from OtwarteDaneTransportowe.auth_roles import (
     IsFeedParticipant,
     can_add_feeds,
@@ -59,6 +62,7 @@ from OtwarteDaneTransportowe.auth_roles import (
     can_edit_static_feed_source,
     is_admin,
     is_helper_reviewer,
+    is_submitter_or_reviewer,
     patch_request_includes_submission_content,
 )
 from OtwarteDaneTransportowe.internal_requests import has_internal_token
@@ -94,6 +98,23 @@ def _days_since(request, default: int = 7):
         days = default
     days = max(1, min(days, 365))
     return timezone.now() - timedelta(days=days)
+
+
+def _int_query_param(request, name):
+    """Integer query filter, or ``None`` when absent.
+
+    A non-integer value is a 400 with the code as the field message (ADR 0006)
+    instead of a ``ValueError`` from the ORM lookup.
+    """
+    raw = request.query_params.get(name)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValidationError(
+            {name: ['feeds.invalid_integer']}, code='feeds.invalid_integer'
+        ) from None
 
 
 def _filter_fetch_errors(request, qs):
@@ -134,46 +155,34 @@ class ProxyManagedFeedListView(APIView):
     # manually in get() below.
 
     @staticmethod
-    def _ordered(qs):
-        """Order in SQL by the same key the response is sorted on.
+    def _sort_keys(qs, source):
+        """``(id, source)`` plus the sort key of every row, for the SQL union.
 
         ``feed_name`` is the computed ``"#<id> <name>"`` label, so the sort key
-        has to be built with Concat to keep the ordering identical to the old
-        in-Python sort (a plain id sort would put '#10' after '#9').
+        is built with Concat (a plain id sort would put '#10' after '#9').
         """
-        return qs.annotate(
-            sort_region=Coalesce(F('submission__transport_organization__region'), Value('')),
-            sort_org=Coalesce(
-                F('submission__transport_organization__transport_organization'), Value('')
-            ),
-            sort_feed=Concat(
-                Value('#'),
-                'submission_id',
-                Value(' '),
-                Coalesce('submission__name', Value('')),
-                output_field=CharField(),
-            ),
-        ).order_by('sort_region', 'sort_org', 'sort_feed', 'id')
+        return (
+            qs.annotate(
+                source=Value(source, output_field=CharField()),
+                sort_region=Coalesce(F('submission__transport_organization__region'), Value('')),
+                sort_org=Coalesce(
+                    F('submission__transport_organization__transport_organization'), Value('')
+                ),
+                sort_feed=Concat(
+                    Value('#'),
+                    'submission_id',
+                    Value(' '),
+                    Coalesce('submission__name', Value('')),
+                    output_field=CharField(),
+                ),
+            )
+            .values('id', 'source', 'sort_region', 'sort_org', 'sort_feed')
+            .order_by()
+        )
 
     def get(self, request):
-        static_qs = self._ordered(
-            annotate_fetch_health(
-                StaticFeedEntry.objects.filter(hide_original=True)
-                .exclude(url='')
-                .select_related(
-                    'submission', 'submission__transport_organization', 'submission__submitted_by'
-                ),
-                'static_entry',
-            )
-        )
-        rt_qs = self._ordered(
-            annotate_fetch_health(
-                RealtimeEndpointRT.objects.filter(hide_original=True).select_related(
-                    'submission', 'submission__transport_organization', 'submission__submitted_by'
-                ),
-                'endpoint_rt',
-            )
-        )
+        static_qs = StaticFeedEntry.objects.filter(hide_original=True).exclude(url='')
+        rt_qs = RealtimeEndpointRT.objects.filter(hide_original=True)
         if not can_confirm_feeds(request.user):
             static_qs = static_qs.filter(submission__submitted_by=request.user)
             rt_qs = rt_qs.filter(submission__submitted_by=request.user)
@@ -184,41 +193,51 @@ class ProxyManagedFeedListView(APIView):
             page_number = max(1, int(request.query_params.get(paginator.page_query_param, 1)))
         except (TypeError, ValueError):
             page_number = 1
-        cutoff = page_number * page_size
+        offset = (page_number - 1) * page_size
 
-        # The two sources have to be merged and sorted in Python (they are
-        # different models), but only the rows that could still land on the
-        # requested page are materialised. Loading BOTH tables in full — with
-        # select_related and a fetch-health subquery per row — then sorting and
-        # throwing away all but one page was unbounded work on every request.
-        items = [
-            ProxyManagedFeedListSerializer.from_static_entry(entry) for entry in static_qs[:cutoff]
-        ]
-        items.extend(
-            ProxyManagedFeedListSerializer.from_realtime_endpoint(endpoint)
-            for endpoint in rt_qs[:cutoff]
+        # The two sources are different models, so they are merged with one
+        # UNION ALL that PostgreSQL orders and slices. Sorting in SQL and in
+        # Python must never be mixed: the database collation orders Polish
+        # letters and case differently from Python's code-point order, which
+        # duplicated and dropped rows across pages.
+        sources = {
+            'static': (static_qs, 'static_entry', ProxyManagedFeedListSerializer.from_static_entry),
+            'realtime': (
+                rt_qs,
+                'endpoint_rt',
+                ProxyManagedFeedListSerializer.from_realtime_endpoint,
+            ),
+        }
+        static_keys, rt_keys = (self._sort_keys(qs, source) for source, (qs, *_) in sources.items())
+        page_keys = list(
+            static_keys.union(rt_keys, all=True).order_by(
+                'sort_region', 'sort_org', 'sort_feed', 'source', 'id'
+            )[offset : offset + page_size]
         )
-        items.sort(
-            key=lambda row: (
-                row['region'] or '',
-                row['organization'] or '',
-                row['feed_name'] or '',
-                row['source'],
-                row['id'],
+
+        # Only the rows of the requested page are built, with select_related
+        # and the fetch-health annotations.
+        rows = {}
+        for source, (qs, label, build) in sources.items():
+            ids = [key['id'] for key in page_keys if key['source'] == source]
+            page_qs = qs.filter(id__in=ids).select_related(
+                'submission', 'submission__transport_organization', 'submission__submitted_by'
             )
-        )
+            rows.update(
+                ((source, obj.id), build(obj)) for obj in annotate_fetch_health(page_qs, label)
+            )
+        # A row deleted between the two queries is skipped, not a 500.
+        window = [row for key in page_keys if (row := rows.get((key['source'], key['id'])))]
 
         # Counting is a COUNT(*) per source; no rows are built for it.
         total = static_qs.count() + rt_qs.count()
-        offset = (page_number - 1) * page_size
-        window = items[offset : offset + page_size]
-
+        has_next = offset + page_size < total
         serializer = ProxyManagedFeedListSerializer(window, many=True)
         return Response(
             OrderedDict(
                 [
                     ('count', total),
-                    ('next', _page_url(request, page_number + 1) if cutoff < total else None),
+                    ('next', _page_url(request, page_number + 1) if has_next else None),
                     ('previous', _page_url(request, page_number - 1) if page_number > 1 else None),
                     ('results', serializer.data),
                 ]
@@ -262,24 +281,43 @@ def _validate_stage_value(raw):
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        raise ValidationError({'stage': 'Stage must be an integer.'}) from None
-    if value < 1 or value > 4:
-        raise ValidationError({'stage': 'Stage must be between 1 and 4.'})
+        value = 0
+    if not 1 <= value <= 4:
+        raise field_error('stage', 'feeds.invalid_stage')
     return value
 
 
 def _require_proxy_managed(source):
-    """400 with an error code (ADR 0006) when a feed source is not proxied.
+    """Raise a 400 with an error code (ADR 0006) when a feed source is not proxied.
 
     Pause/resume only applies to sources the server fetches and caches
     (hide_original=true).
     """
-    if source.is_proxy_managed:
-        return None
-    return Response(
-        {'code': 'feeds.not_proxy_managed', 'details': {}},
-        status=status.HTTP_400_BAD_REQUEST,
-    )
+    if not source.is_proxy_managed:
+        raise CodedError('feeds.not_proxy_managed')
+
+
+class StageChanged(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = {'code': 'feeds.stage_changed', 'details': {}}
+
+
+def _lock_unchanged_stage(submission):
+    """Lock the submission; 409 when its stage changed since ``get_object()`` read it.
+
+    The role checks, the editing restrictions and the transition were decided from
+    that read (the prefetched history), and a validation task or another reviewer
+    may have written history since. Call first inside ``transaction.atomic()``.
+    """
+    try:
+        fresh = lock_submission(type(submission), submission.pk)
+    except type(submission).DoesNotExist:
+        raise Http404 from None  # deleted by an Admin since get_object()
+    if (fresh.current_stage, fresh.is_rejected) != (
+        submission.current_stage,
+        submission.is_rejected,
+    ):
+        raise StageChanged()
 
 
 def _apply_stage_transition(request, submission, *, history_model, on_publish=None):
@@ -289,6 +327,8 @@ def _apply_stage_transition(request, submission, *, history_model, on_publish=No
     moves the submission (4 records EVENT_COMPLETED and fires ``on_publish``).
     Note: EVENT_STAGE_ADVANCED is also recorded for demotions — the direction
     lives in stage_before/stage_after; there is no separate 'reverted' event.
+    Reads the stage from ``submission``'s prefetched history: call it only after
+    ``_lock_unchanged_stage`` proved that equals the locked, committed stage.
     """
     rejection_cause = (request.data.get('rejection_cause') or '').strip()
     desired_stage = _validate_stage_value(request.data.get('stage'))
@@ -357,7 +397,7 @@ class PublicFeedDownloadView(APIView):
 
     def get(self, request, pk=None, filename=None):
         if pk is None:
-            return Response({"detail": "Specify a feed ID."}, status=status.HTTP_400_BAD_REQUEST)
+            raise CodedError('feeds.feed_id_required')
 
         submission = self._get_submission_or_404(pk)
 
@@ -407,9 +447,7 @@ class RealtimePublicFeedDownloadView(APIView):
 
     def get(self, request, pk=None, endpoint_type=None, filename=None):
         if pk is None:
-            return Response(
-                {"detail": "Specify a realtime feed ID."}, status=status.HTTP_400_BAD_REQUEST
-            )
+            raise CodedError('feeds.feed_id_required')
 
         if pk not in completed_realtime_submission_ids():
             raise Http404("Realtime feed not found or not published.")
@@ -453,14 +491,11 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [AllowAny]
 
     def get_queryset(self):
+        # Published means the latest history row is stage 4; a rejection always
+        # records stage_after=1, so no rejected submission is in this list.
         approved_ids = completed_submission_ids()
-        latest_history = FeedSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by(
-            '-created_at', '-id'
-        )
         feeds_qs = (
             FeedSubmission.objects.filter(pk__in=approved_ids)
-            .annotate(latest_event=Subquery(latest_history.values('event_type')[:1]))
-            .exclude(latest_event=FeedSubmissionHistory.EVENT_REJECTED)
             .select_related('transport_organization', 'submitted_by', 'static_entry')
             # published_at resolves from the prefetch cache (see model properties).
             .prefetch_related('history')
@@ -476,8 +511,6 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
             .order_by('id')
         )
         org_qs = TransportOrganization.objects.prefetch_related(
-            'data_providers',
-            'case_status',
             Prefetch('feed_submissions', queryset=feeds_qs, to_attr='feeds'),
             Prefetch('realtime_submissions', queryset=gbfs_qs, to_attr='published_gbfs_feeds'),
         ).order_by('region', 'transport_organization')
@@ -540,19 +573,12 @@ class UserSubmissionsView(APIView):
     def get(self, request):
         user = request.user
         if not (can_add_feeds(user) or can_confirm_feeds(user)):
-            return Response(
-                {'detail': 'You do not have permission to view submissions.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            raise CodedError('feeds.submissions_forbidden', status.HTTP_403_FORBIDDEN)
 
         static_qs = (
             FeedSubmission.objects.filter(submitted_by=user)
             .select_related('transport_organization', 'submitted_by', 'static_entry')
-            .prefetch_related(
-                'history',
-                'realtime_submissions__endpoints',
-                'realtime_submissions__history',
-            )
+            .prefetch_related('history')
             .order_by('-created_at')
         )
         realtime_qs = (
@@ -562,8 +588,8 @@ class UserSubmissionsView(APIView):
             .order_by('-created_at')
         )
 
-        transport_org = request.query_params.get('transport_organization')
-        if transport_org:
+        transport_org = _int_query_param(request, 'transport_organization')
+        if transport_org is not None:
             static_qs = static_qs.filter(transport_organization_id=transport_org)
             realtime_qs = realtime_qs.filter(transport_organization_id=transport_org)
 
@@ -590,22 +616,23 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
     queryset = (
         FeedSubmission.objects.all()
         .select_related('transport_organization', 'submitted_by', 'static_entry')
-        .prefetch_related(
-            'history',
-            'realtime_submissions__endpoints',
-            'realtime_submissions__history',
-        )
+        .prefetch_related('history')
     )
 
     def get_queryset(self):
         qs = super().get_queryset()
+        if self.action != 'list':
+            # Only the detail serializers embed realtime submissions.
+            qs = qs.prefetch_related(
+                'realtime_submissions__endpoints', 'realtime_submissions__history'
+            )
         if not can_confirm_feeds(self.request.user):
             qs = qs.filter(submitted_by=self.request.user)
         data_type = self.request.query_params.get('data_type')
         if data_type:
             qs = qs.filter(data_type=data_type)
-        transport_org = self.request.query_params.get('transport_organization')
-        if transport_org:
+        transport_org = _int_query_param(self.request, 'transport_organization')
+        if transport_org is not None:
             qs = qs.filter(transport_organization_id=transport_org)
         return qs
 
@@ -652,29 +679,19 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
 
         if not can_confirm_feeds(request.user):
             if request.data.get('stage') is not None or request.data.get('rejection_cause'):
-                return Response(
-                    {'detail': 'Only Admin or Helper can confirm or reject submissions.'},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                raise CodedError('feeds.review_forbidden', status.HTTP_403_FORBIDDEN)
 
         if is_helper_reviewer(request.user) and patch_request_includes_submission_content(request):
-            return Response(
-                {
-                    'detail': (
-                        'Helper may only confirm or reject submissions '
-                        '(fields: stage, rejection_cause).'
-                    ),
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            raise CodedError('feeds.helper_content_edit_forbidden', status.HTTP_403_FORBIDDEN)
 
         # Validate the stage transition input up front: content must not be
         # saved before a malformed 'stage' 400s.
         _validate_stage_value(request.data.get('stage'))
 
-        was_rejected = instance.is_rejected
         restricted_static_edit = not can_edit_static_feed_source(request.user, instance)
-        is_owner_resubmission = was_rejected and not can_confirm_feeds(request.user)
+        # Stage 1 covers both a rejection and a reviewer demotion without a cause:
+        # either way a source change by the owner restarts verification.
+        is_owner_resubmission = instance.current_stage == 1 and not can_confirm_feeds(request.user)
         context = self.get_serializer_context()
         context['restricted_static_edit'] = restricted_static_edit
         # For resubmissions the view schedules the source refresh itself (below),
@@ -686,6 +703,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         with transaction.atomic():
+            _lock_unchanged_stage(instance)
             submission = serializer.save()
 
             if is_owner_resubmission and _request_changes_static_source(request):
@@ -731,12 +749,9 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         # branch was unreachable: submissions are born at stage 2.)
         if is_admin(request.user):
             return super().destroy(request, *args, **kwargs)
-        return Response(
-            {'detail': 'Only Admin can delete submissions.'},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        raise CodedError('feeds.delete_forbidden', status.HTTP_403_FORBIDDEN)
 
-    @action(detail=True, methods=['get'], url_path='download/static/(?P<endpoint_pk>[^/.]+)')
+    @action(detail=True, methods=['get'], url_path='download/static/(?P<endpoint_pk>[0-9]+)')
     def download_static(self, request, pk=None, endpoint_pk=None):
         submission = self.get_object()
         entry = get_object_or_404(StaticFeedEntry, pk=endpoint_pk, submission=submission)
@@ -750,15 +765,17 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
             filename=feed_file.name.split('/')[-1],
         )
 
-    @action(detail=True, methods=['get'], url_path='download/realtime/(?P<endpoint_pk>[^/.]+)')
+    @action(detail=True, methods=['get'], url_path='download/realtime/(?P<endpoint_pk>[0-9]+)')
     def download_realtime(self, request, pk=None, endpoint_pk=None):
-        """Pobierz plik cache endpointu RT (RealtimeSubmission powiązany ze static submission pk)."""
+        """Download the cached file of a realtime endpoint linked to static submission pk."""
         submission = self.get_object()
         endpoint = get_object_or_404(
             RealtimeEndpointRT.objects.select_related('submission'),
             pk=endpoint_pk,
             submission__static_submission_id=submission.pk,
         )
+        if not is_submitter_or_reviewer(request.user, endpoint.submission):
+            raise Http404
         if not endpoint.cached_file:
             raise Http404
 
@@ -802,9 +819,9 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
         if not can_confirm_feeds(self.request.user):
             qs = qs.filter(submitted_by=self.request.user)
-        p = self.request.query_params.get('transport_organization')
-        if p:
-            qs = qs.filter(transport_organization_id=p)
+        transport_org = _int_query_param(self.request, 'transport_organization')
+        if transport_org is not None:
+            qs = qs.filter(transport_organization_id=transport_org)
         return qs
 
     def get_serializer_class(self):
@@ -817,7 +834,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
     @action(
         detail=False,
         methods=['get'],
-        url_path=r'eligible-static-submissions/(?P<transport_org>[^/.]+)(?:/(?P<data_type>gtfs|netex|other))?',
+        url_path=r'eligible-static-submissions/(?P<transport_org>[0-9]+)(?:/(?P<data_type>gtfs|netex|other))?',
     )
     def eligible_static_submissions(self, request, transport_org=None, data_type=None):
         get_object_or_404(TransportOrganization, pk=transport_org)
@@ -905,23 +922,12 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         if not can_confirm_feeds(request.user):
             if request.data.get('stage') is not None or request.data.get('rejection_cause'):
-                return Response(
-                    {'detail': 'Only Admin or Helper can confirm or reject submissions.'},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                raise CodedError('feeds.review_forbidden', status.HTTP_403_FORBIDDEN)
         # Early input check: content must not be saved before a bad 'stage' 400s.
         _validate_stage_value(request.data.get('stage'))
 
         if is_helper_reviewer(request.user) and patch_request_includes_submission_content(request):
-            return Response(
-                {
-                    'detail': (
-                        'Helper may only confirm or reject submissions '
-                        '(fields: stage, rejection_cause).'
-                    ),
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            raise CodedError('feeds.helper_content_edit_forbidden', status.HTTP_403_FORBIDDEN)
 
         restricted_realtime = not can_edit_realtime_submission_content(request.user, instance)
         ctx = self.get_serializer_context()
@@ -930,7 +936,15 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = {k: v for k, v in serializer.validated_data.items()}
         endpoints_data = data.pop('endpoints', None)
+        # Restricted edits only change intervals, which need no re-verification.
+        revalidate = not restricted_realtime and (
+            endpoints_data is not None
+            or data.get('protocol', instance.protocol) != instance.protocol
+            or data.get('static_submission', instance.static_submission)
+            != instance.static_submission
+        )
         with transaction.atomic():
+            _lock_unchanged_stage(instance)
             for attr, val in data.items():
                 setattr(instance, attr, val)
             if data:
@@ -943,14 +957,9 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                         try:
                             obj = instance.endpoints.get(endpoint_type=ep['endpoint_type'])
                         except RealtimeEndpointRT.DoesNotExist:
-                            raise ValidationError(
-                                {
-                                    'endpoints': (
-                                        f"Unknown endpoint_type '{ep['endpoint_type']}' for this "
-                                        'submission; only interval changes to existing endpoints '
-                                        'are allowed after stage 1.'
-                                    ),
-                                }
+                            # Only intervals of existing endpoints can change.
+                            raise field_error(
+                                'endpoints', 'realtime.endpoint_type_unknown'
                             ) from None
                         if obj.interval != ep['interval']:
                             obj.interval = ep['interval']
@@ -970,40 +979,39 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                         except DjangoValidationError as exc:
                             raise_as_drf_validation_error(exc, field='endpoints')
                         o.save()
-                    if not can_confirm_feeds(request.user):
-                        # Owner resubmission (stage 1 / rejected): restart the
-                        # verification flow from stage 1.
-                        RealtimeSubmissionHistory.objects.create(
-                            submission=instance,
-                            event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
-                            stage_before=instance.current_stage,
-                            stage_after=1,
-                            actor=request.user,
-                        )
-                    # Admin edits keep the current stage — a published feed must
-                    # not be silently unpublished by an endpoint tweak. The
-                    # re-validation rejects (with an audit trail) a submission
-                    # that is not published yet if the new endpoints are broken.
-                    enqueue_on_commit(validate_realtime_submission_task, instance.id)
-                    if instance.current_stage == 4:
-                        # Endpoints were replaced (old fetch loops died with their
-                        # rows); re-seed the self-scheduling loops for the new ones
-                        # without waiting for the periodic bootstrap.
-                        transaction.on_commit(
-                            lambda: schedule_realtime_endpoint_fetches(instance.id)
-                        )
-        if can_confirm_feeds(request.user):
-            _apply_stage_transition(
-                request,
-                instance,
-                history_model=RealtimeSubmissionHistory,
-                # Publish side-effect (drift vs static made explicit): seed the
-                # realtime fetch loops after commit; static feeds rely on the
-                # Beat schedule.
-                on_publish=lambda rts: transaction.on_commit(
-                    lambda: schedule_realtime_endpoint_fetches(rts.id)
-                ),
-            )
+            if revalidate:
+                if not can_confirm_feeds(request.user):
+                    # Owner resubmission (stage 1 / rejected): restart the
+                    # verification flow from stage 1.
+                    RealtimeSubmissionHistory.objects.create(
+                        submission=instance,
+                        event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+                        stage_before=instance.current_stage,
+                        stage_after=1,
+                        actor=request.user,
+                    )
+                # Admin edits keep the current stage — a published feed must
+                # not be silently unpublished by an endpoint tweak. The
+                # re-validation rejects (with an audit trail) a submission
+                # that is not published yet if the new content is broken.
+                enqueue_on_commit(validate_realtime_submission_task, instance.id)
+                if endpoints_data is not None and instance.current_stage == 4:
+                    # Endpoints were replaced (old fetch loops died with their
+                    # rows); re-seed the self-scheduling loops for the new ones
+                    # without waiting for the periodic bootstrap.
+                    transaction.on_commit(lambda: schedule_realtime_endpoint_fetches(instance.id))
+            if can_confirm_feeds(request.user):
+                _apply_stage_transition(
+                    request,
+                    instance,
+                    history_model=RealtimeSubmissionHistory,
+                    # Publish side-effect (drift vs static made explicit): seed the
+                    # realtime fetch loops after commit; static feeds rely on the
+                    # Beat schedule.
+                    on_publish=lambda rts: transaction.on_commit(
+                        lambda: schedule_realtime_endpoint_fetches(rts.id)
+                    ),
+                )
         # Re-read: the prefetched history predates the rows written above.
         # get_object() already authorized access, so the unfiltered queryset is fine.
         instance = self.queryset.get(pk=instance.pk)
@@ -1019,10 +1027,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         # (uploaded submissions belong to the review audit trail).
         if is_admin(request.user):
             return super().destroy(request, *args, **kwargs)
-        return Response(
-            {'detail': 'Only Admin can delete submissions.'},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        raise CodedError('feeds.delete_forbidden', status.HTTP_403_FORBIDDEN)
 
     @action(detail=True, methods=['get'], url_path='fetch-errors')
     def fetch_errors(self, request, pk=None):
@@ -1052,34 +1057,22 @@ class StaticFeedEntryViewSet(viewsets.ReadOnlyModelViewSet):
 
     def _require_operator(self, request):
         if not can_confirm_feeds(request.user):
-            return Response(
-                {'detail': 'Only Admin or Helper can pause or resume feed fetching.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        return None
+            raise CodedError('feeds.fetch_control_forbidden', status.HTTP_403_FORBIDDEN)
 
     @action(detail=True, methods=['post'], url_path='pause-fetch')
     def pause_fetch(self, request, pk=None):
-        denied = self._require_operator(request)
-        if denied:
-            return denied
+        self._require_operator(request)
         entry = self.get_object()
-        denied = _require_proxy_managed(entry)
-        if denied:
-            return denied
+        _require_proxy_managed(entry)
         reason = (request.data.get('reason') or '').strip()
         entry.pause_fetch(reason=reason)
         return Response(self.get_serializer(entry).data)
 
     @action(detail=True, methods=['post'], url_path='resume-fetch')
     def resume_fetch(self, request, pk=None):
-        denied = self._require_operator(request)
-        if denied:
-            return denied
+        self._require_operator(request)
         entry = self.get_object()
-        denied = _require_proxy_managed(entry)
-        if denied:
-            return denied
+        _require_proxy_managed(entry)
         entry.resume_fetch()
         return Response(self.get_serializer(entry).data)
 
@@ -1101,21 +1094,13 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
 
     def _require_operator(self, request):
         if not can_confirm_feeds(request.user):
-            return Response(
-                {'detail': 'Only Admin or Helper can pause or resume feed fetching.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        return None
+            raise CodedError('feeds.fetch_control_forbidden', status.HTTP_403_FORBIDDEN)
 
     @action(detail=True, methods=['post'], url_path='pause-fetch')
     def pause_fetch(self, request, pk=None):
-        denied = self._require_operator(request)
-        if denied:
-            return denied
+        self._require_operator(request)
         endpoint = self.get_object()
-        denied = _require_proxy_managed(endpoint)
-        if denied:
-            return denied
+        _require_proxy_managed(endpoint)
         reason = (request.data.get('reason') or '').strip()
         endpoint.pause_fetch(reason=reason)
         from django.core.cache import cache
@@ -1127,13 +1112,9 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='resume-fetch')
     def resume_fetch(self, request, pk=None):
-        denied = self._require_operator(request)
-        if denied:
-            return denied
+        self._require_operator(request)
         endpoint = self.get_object()
-        denied = _require_proxy_managed(endpoint)
-        if denied:
-            return denied
+        _require_proxy_managed(endpoint)
         endpoint.resume_fetch()
         from django.core.cache import cache
 

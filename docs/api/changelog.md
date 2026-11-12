@@ -2,6 +2,239 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: error codes instead of prose in feeds, users and blog
+
+**Breaking.** The remaining English error messages of `data_manager`, `accounts` and `blog` are now error codes ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). Status codes and field keys are unchanged; only the text changes. Request errors that were `{"detail": "..."}` (or a bare `["..."]` list) are now `{"code": "...", "details": {}}`; field errors keep DRF's field dictionary with the code as the message. Every code is listed in [error codes](README.md#error-codes).
+
+| Old message | New code | Shape |
+|---|---|---|
+| `Specify a feed ID.`, `Specify a realtime feed ID.` | `feeds.feed_id_required` | request |
+| `You do not have permission to view submissions.` | `feeds.submissions_forbidden` | request |
+| `Only Admin or Helper can confirm or reject submissions.` | `feeds.review_forbidden` | request |
+| `Helper may only confirm or reject submissions (fields: stage, rejection_cause).` | `feeds.helper_content_edit_forbidden` | request |
+| `Only Admin can delete submissions.` | `feeds.delete_forbidden` | request |
+| `Only Admin or Helper can pause or resume feed fetching.` | `feeds.fetch_control_forbidden` | request |
+| `Stage must be an integer.`, `Stage must be between 1 and 4.` | `feeds.invalid_stage` | field `stage` |
+| `Cannot change name after stage 1.`, `Cannot change organization after stage 1.`, `Cannot change data type after stage 1.`, `Cannot change this field after stage 1.`, `Cannot change '<field>' after stage 1.`, `Cannot change auth credentials after validation.` | `feeds.field_locked` | field |
+| `After stage 1, only license and download schedule times (UTC) can be changed (disallowed: ...).` on `static_entry` | `feeds.field_locked` on each disallowed `static_entry.<field>` | field |
+| the outbound URL check's text, e.g. `URL resolves to a non-public IP address.` | `feeds.url_blocked` (the reason is no longer disclosed) | field `url` |
+| `Provide a URL or file for the static feed entry.`, `Provide a URL or file when adding a static feed entry to this submission.`, `Either a URL or a file upload must be provided.` | `feeds.static_source_missing` | field `static_entry` |
+| `Provide either a URL or a file upload, not both.` | `feeds.static_source_url_and_file` | field `static_entry` |
+| `This field is required when a URL is provided.` | `feeds.download_time_required` | field `static_entry.download_time_1` |
+| `This field must be empty when a file is provided.` | `feeds.download_time_with_file` | field `static_entry.download_time_1` / `download_time_2` |
+| `"Hide original" is only applicable when a URL is provided, not a file upload.` | `feeds.hide_original_with_file` (now on `static_entry.hide_original`) | field |
+| `Server-downloaded static file fields cannot be used for a manual file upload.` | `feeds.cached_file_with_upload` | field `static_entry` |
+| `Uploaded GTFS file is not a ZIP archive.` | `feeds.gtfs_not_zip` | field `static_entry.file` |
+| `File is too large (...). Maximum allowed is ... bytes.` | `feeds.file_too_large` | field `static_entry.file` |
+| `At least one endpoint is required.` | `realtime.endpoints_required` | field `endpoints` |
+| `Cannot add or remove endpoints after validation.` | `realtime.endpoints_locked` | field `endpoints` |
+| `Unknown endpoint type '...'.`, `Unknown endpoint_type '...' for this submission; ...` | `realtime.endpoint_type_unknown` | field `endpoints` |
+| `Duplicate endpoint_type '...'.` | `realtime.endpoint_type_duplicate` | field `endpoints` |
+| `Invalid endpoint_type '...' for protocol '...'. ...`, `Endpoint type '...' is not valid for protocol '...'. ...` | `realtime.endpoints_invalid_for_protocol` | field `endpoints` |
+| `This field is required for GTFS-RT and SIRI.` | `realtime.static_submission_required` | field `static_submission` |
+| `GBFS must not reference a static submission.` | `realtime.static_submission_not_allowed` | field `static_submission` |
+| `Static submission must belong to the same organization.` | `realtime.static_submission_other_organization` | field `static_submission` |
+| `Protocol '...' cannot be linked to static feed type '...'. ...` | `realtime.static_submission_type_mismatch` | field `static_submission` |
+| `Static feed must be published (completed) before adding realtime.` | `realtime.static_submission_not_published` | field `static_submission` |
+| `Static submission must be your own.` | `realtime.static_submission_not_owned` (the code is now the message) | field `static_submission` |
+| `You cannot delete your own account.` | `users.cannot_delete_self` | request |
+| `Cannot delete the last user with the Admin role.`, `Cannot remove the Admin role from, or deactivate, the last admin user.` | `users.last_admin` | request |
+| `Unknown roles: [...]. Allowed: [...]` | `users.unknown_role` | field `roles` |
+| `Current password is incorrect.` | `users.wrong_password` | field `current_password` |
+| Django's password validator texts | `users.password_too_short`, `users.password_too_similar`, `users.password_too_common`, `users.password_entirely_numeric` | field `new_password` |
+| `Unable to determine client IP.` | `blog.client_ip_unknown` | request |
+| `post_id is required in the URL.` | `blog.post_id_required` | request |
+| `Daily limit reached. You can add maximum 10 reactions per day.` | `blog.reaction_daily_limit` | request |
+| `There is limit to 5 tags.` | `blog.too_many_tags` | field `tags` |
+| `Image is too large (...). Maximum allowed is ... bytes.` | `blog.image_too_large` | field `image` |
+
+Messages produced by DRF and Django themselves (`This field is required.`, `Not found.`, a permission class's default `403`, throttling) are unchanged.
+
+**Frontend:** translate every code above in all four dictionaries and stop relying on the old text; read a code from a field dictionary as well as from `{code, details}`.
+
+---
+
+## 2026-11-12: deleting a planner feed removes its last good version
+
+Not breaking. `DELETE /api/planner/admin/feeds/{id}/`, and deleting the feed's submission, now also delete the feed's last good version (`planner_data/snapshots/<feed_id>.zip`); before, the file stayed on disk. Responses are unchanged. See [Planner admin](planner-admin.md).
+
+---
+
+## 2026-11-12: owner edits of static submissions at stage 1 and full `PUT`
+
+Not breaking. `PUT`/`PATCH /api/data_manager/feed-submissions/{id}/`:
+
+- a submission a reviewer moved back to stage 1 without a `rejection_cause` now moves to stage 2 and is verified again when its owner changes the source, as after a rejection; before, it stayed at stage 1 (NeTEx/other) or depended on the file name or URL changing (GTFS);
+- after stage 1, an owner's body may contain `transport_organization` and `data_type` with their current values, so a full `PUT` succeeds; a different value still returns `400` with the same error as before.
+
+See [Static feeds](feeds.md#static-feeds-feedsubmission) and the [feed workflow](../domain/feed-workflow.md).
+
+---
+
+## 2026-11-12: planner maintenance after a failed build, kept rollback graph, OTP outages in the stats
+
+Not breaking.
+
+- **Public planner API:** after a failed graph build, OTP-backed endpoints keep answering `503 planner.unavailable` with `details.reason: "maintenance"` and `Retry-After` until OTP is healthy on the previous graph again (at most 20 minutes), instead of `reason: "engine"` without `Retry-After` while it loads. See [Planner API](planner.md).
+- **Admin builds:** a failed build's `finished_at`, and `maintenance` in the status, now include that restart. After a rollback, the next build keeps the graph rolled back to for a further rollback (it used to keep the one rolled away from). See [Planner admin](planner-admin.md).
+- **Request log and statistics:** `503`s caused by OTP failing (`reason: "engine"`) or being busy (`planner.busy`) are now logged for every request, so `server_errors` counts OTP outages in full. `503`s while the API is switched off or in the build window are still logged once a minute per client, like `401`, `403` and `429`.
+
+---
+
+## 2026-11-12: changing a realtime submission's protocol or static feed restarts verification
+
+Not breaking for the website. `PUT`/`PATCH /api/data_manager/realtime-submissions/{id}/` that changes `protocol` without sending `endpoints` now checks the stored endpoints against the new protocol and answers `400` with `{"protocol": ["realtime.endpoints_invalid_for_protocol"]}` when they do not fit (it used to save a submission whose endpoints were invalid for its protocol). Send the new `endpoints` together with the new `protocol`. A change of `protocol` or `static_submission` by the owner (stage 1 or after a rejection) now restarts verification like an endpoint change: an `uploaded` history entry is added and realtime validation runs again; an Admin's change re-runs validation without changing the stage. See [Realtime feeds](feeds.md#realtime-feeds-realtimesubmission).
+
+**Frontend:** translate `realtime.endpoints_invalid_for_protocol` on the `protocol` field.
+
+---
+
+## 2026-11-12: coded errors for a source credential ODT cannot decrypt
+
+Not breaking. When ODT cannot decrypt a stored `auth_value` (a key configuration problem on ODT's side), the download is not attempted and the failure is reported as a code:
+
+- a fetch of a proxied feed fails with a `FeedFetchError` of `error_type` `auth_error` (defined before, written now) and `message` `fetch.credential_undecryptable`; `fetch_pause_reason` and `last_fetch_error_message` are that code too, and the usual backoff and auto-pause apply;
+- GTFS validation of a non-proxied URL ends with `validation_status` `error` and the new code `gtfs_validation.credential_undecryptable` (no rejection);
+- realtime verification stays at stage 2 instead of rejecting, and is retried.
+
+Input that starts with `fernet$` is now encrypted like any other value. See [Static feeds](feeds.md#static-feeds-feedsubmission) and [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+**Frontend:** translate `gtfs_validation.credential_undecryptable` for `validation_status: "error"`, and `fetch.credential_undecryptable` where fetch errors are shown.
+
+---
+
+## 2026-11-12: faster realtime retries, daily retry of auto-paused feeds
+
+Not breaking. A proxied realtime endpoint that fails with a transient error (timeout, connection error, truncated body, HTTP 5xx or 429) is now retried after 30 s, 2 min, 10 min and 1 h before it is auto-paused (`fetch_status=delayed` with `next_fetch_after` set as before). Static feeds and permanent errors keep 5 min, 1 h, 6 h. An `auto_paused` feed now has `next_fetch_after` set 24 hours ahead (it used to be `null`) and is tried again then; a success returns it to `active`, a failure moves `next_fetch_after` another day ahead. Feeds auto-paused before this change are retried once right after the deploy. `manual_paused` feeds keep `next_fetch_after: null` and are never retried automatically. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
+## 2026-11-12: `vehicles/coverage/` answers `planner.busy` while an operator's first count runs
+
+Not breaking for clients that handle `planner.busy`, which every planner endpoint can answer. `GET /api/planner/v1/vehicles/coverage/` recounts an operator's trips under way in one request at a time. A request that cannot recount an operator now (another request is recounting it, or the server is busy recounting others) gets its previous count (at most 10 minutes old), as before; when there is no previous count yet (after new timetables, or 10 minutes without requests for that operator) it now answers `503` with `{"code": "planner.busy", "details": {}}` and `Retry-After`, instead of recounting in parallel. The limit of 20 operators per request is unchanged. See [Planner API](planner.md#get-apiplannerv1vehiclescoverage).
+
+---
+
+## 2026-11-12: `409 feeds.stage_changed` when a submission's stage changes mid-request
+
+Not breaking, but clients should handle the new status. `PUT`/`PATCH /api/data_manager/feed-submissions/{id}/` and `realtime-submissions/{id}/` now lock the submission and return `409` with `{"code": "feeds.stage_changed", "details": {}}` when its stage or rejection changed after the request read it (a validation run or another reviewer wrote history in between). Nothing is saved; reload and retry. A reviewer's publish no longer races a validation rejection, so a just-published feed is never rejected automatically, and history rows always record the real `stage_before`. See [Static feeds](feeds.md#static-feeds-feedsubmission).
+
+---
+
+## 2026-11-12: source URLs in fetch error messages are redacted
+
+Not breaking. URLs inside `fetch_pause_reason`, `last_fetch_error_message` and the cause of an automatic rejection after a failed validation download keep only scheme, host, port and path; userinfo, the query string and the fragment are removed. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
+## 2026-11-12: unchanged static feeds are not downloaded and validated again
+
+Not breaking. A scheduled fetch of a proxied static feed sends `If-None-Match` / `If-Modified-Since` and compares the SHA-256 of the body with the cached copy. When the upstream file has not changed, `last_fetch_success_at` is updated but `cached_at`, the copy and the validation report are not, and no GTFS validation runs. `cached_at` therefore moves only when a new copy is stored; `last_fetch_success_at` tells when the upstream was last checked. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
+## 2026-11-12: non-numeric ids and filters no longer return `500`
+
+Not breaking. The `transport_organization` query filter of `GET /api/data_manager/submissions/`, `feed-submissions/` and `realtime-submissions/` returns `400` with `{"transport_organization": ["feeds.invalid_integer"]}` for a value that is not an integer (it used to be a `500`). A non-numeric id in `realtime-submissions/eligible-static-submissions/{id}/` and `feed-submissions/{pk}/download/static|realtime/{endpoint_pk}/` returns `404`. See [Feeds API](feeds.md).
+
+---
+
+## 2026-11-12: simultaneous first reactions no longer return 500
+
+Not breaking. Two simultaneous first `POST /api/blog/reactions/{post_id}/` requests from one IP (a double click) used to make one of them fail with `500`. The request that loses the race now updates the row the other created and answers `200`. See [Blog API](blog.md).
+
+---
+
+## 2026-11-12: realtime refresh interval of at least 5 seconds
+
+Not breaking for clients that send sensible intervals. A realtime endpoint's `interval` in `POST`/`PUT`/`PATCH /api/data_manager/realtime-submissions/` must now be at least **5** seconds; `0` to `4` return `400` with `["realtime.interval_too_short"]` as the messages of `endpoints.{index}.interval` (it used to be accepted, and `0` made ODT fetch the provider in a tight loop). Endpoints stored with an interval below 5 were raised to 5 by a migration, so the published `interval` in the catalogue is never below 5 either. See [Realtime validation rules](feeds.md).
+
+---
+
+## 2026-11-12: realtime verification time budget
+
+Not breaking. All downloads of one realtime verification now share a 4-minute budget, so `realtime.endpoint_timeout` is also given to endpoints the verification did not reach in time. A verification that runs out of time for another reason no longer ends in a rejection or hangs: the submission stays at stage 2 (`current_stage: 2`) and is verified again automatically within about 30 minutes. See [Realtime rejection reasons](feeds.md#realtime-rejection-reasons).
+
+---
+
+## 2026-11-12: truncated and trickling downloads
+
+Not breaking. A feed body cut off mid-transfer (shorter than its `Content-Length`, or a broken chunked encoding) was recorded as fetch error `invalid_content`; it is now `connection_error`, and in realtime validation `realtime.endpoint_unreachable` instead of `realtime.endpoint_fetch_failed`. A server that sends bytes slowly enough to stay inside the per-read timeout is now cut off at the total time budget as `timeout`. See [Fetch errors](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds) and [Realtime rejection reasons](feeds.md#realtime-rejection-reasons).
+
+---
+
+## 2026-11-12: switching a proxied static feed to another source
+
+Not breaking. A `PATCH` that switches a proxied static submission (`hide_original=true`) to an uploaded file used to answer `400` because of the server's cached copy, also for an Admin; it now succeeds. Any source change of a proxied feed (to a file, to another URL, `hide_original` to `false`) sets `cached_file` and `cached_at` to `null` and deletes the copy, so validation and `/feed/{id}/` no longer use the old URL's file. See [Feeds API](feeds.md).
+
+---
+
+## 2026-11-12: GTFS validation that could not run no longer rejects
+
+Not breaking: no field is added or removed.
+
+- When GTFS validation cannot run (Docker unreachable, the validator container fails or runs out of memory, no usable `report.json`, the time limit, the feed file missing on ODT's storage), the submission is **no longer rejected** to stage 1 with English exception text as `rejection_cause`. It keeps its stage, `static_entry.validation_status` is `error` and `static_entry.validation_message` is a code: `gtfs_validation.file_missing`, `gtfs_validation.validator_unavailable`, `gtfs_validation.validator_failed` or `gtfs_validation.timeout`. The ODT team re-runs it (`manage.py retry_gtfs_validation`); a proxied feed is also re-validated at its next fetch. See [Static feeds](feeds.md#static-feeds-feedsubmission).
+- `validation_message` is empty while `validation_status` is `pending` (it was `"Validation in progress"`).
+- Errors in the feed itself are unchanged: rejection to stage 1, `validation_status` `invalid`, the validator codes in `rejection_cause` and `validation_message`. A failed download of the provider's non-proxied URL also still rejects, now with `validation_status` `invalid` instead of `error`.
+
+**Frontend:** translate the four codes when showing `validation_message` for `validation_status: "error"`; never show `validation_message` as text in that case.
+
+---
+
+## 2026-11-12: proxy-feeds pages without duplicates
+
+Not breaking. `GET /api/data_manager/proxy-feeds/` repeated some feeds and left out others across pages once there were more than `page_size` of them: the static and realtime rows were cut to a page in the database and merged in Python, and the two order Polish letters and upper/lower case differently. The whole list is now ordered and paged in the database, so every feed is on exactly one page. The visible order follows the database collation: `Łódzkie` and `śląskie` sit next to `L` and `S` instead of after `z`, and case no longer puts `Mazowieckie` before `lubelskie`. Response shape and envelope are unchanged. See [Fetch errors and pauses of proxied feeds](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
+## 2026-11-12: admin login shares the login limit
+
+Not breaking. `POST /admin/login/` (the Django admin login form) now counts against the `login` limit (`THROTTLE_LOGIN`, 10/min per client IP by default) and answers `429` with `Retry-After` when it is used up. The budget is shared with `POST /api/auth/token/` and `POST /api/auth/token/refresh/`, so attempts on either path count together. Opening the form (`GET`) is not limited.
+
+---
+
+## 2026-11-12: logout and session revocation
+
+Not breaking for the ODT frontend, which ignores the body of `me/change-password/`; a client that reads its `detail` must stop. The frontend should adopt the first two points.
+
+- **`POST /api/auth/logout/`** (new, public) takes `{"refresh": "..."}`, blacklists that refresh token and returns `200 {}`. An invalid, expired or already blacklisted token returns `401` (`token_not_valid`). Access tokens stay valid until they expire. See [Logout](README.md#post-apiauthlogout).
+- **`POST /api/users/me/change-password/`** blacklists all refresh tokens of the user and now returns a fresh pair `{"access", "refresh"}` for the calling session instead of `{"detail": "Password updated."}`. A client that does not store the new pair is logged out at its next refresh.
+- **`POST /api/users/{id}/reset-password/`** blacklists all refresh tokens of that user. The response is unchanged.
+- `me/change-password/` and `me/change-email/` are rate-limited (`account_change`, 5/min per user by default, `THROTTLE_ACCOUNT_CHANGE`) and answer `429` beyond it.
+
+See [Ending all sessions of a user](README.md#ending-all-sessions-of-a-user).
+
+---
+
+## 2026-11-12: realtime submissions link only to the caller's own static feed
+
+Not breaking for the website, which already offers only `eligible-static-submissions`. `POST /api/data_manager/realtime-submissions/` and `PUT`/`PATCH .../{id}/` by a `DataProvider` with a `static_submission` the caller did not submit now answer `400` on `static_submission` (code `realtime.static_submission_not_owned`; until the ADR 0006 exception handler lands, the body carries an English message, so match on status and field); `Admin` may still link any feed. In `GET /api/data_manager/feed-submissions/{id}/` a `DataProvider` sees in `realtime_submissions` only the feed owner's realtime submissions, and `download/realtime/{endpoint_pk}/` returns `404` for other users' endpoints. Helper/Admin responses are unchanged. See [Realtime validation rules](feeds.md#realtime-feeds-realtimesubmission).
+
+---
+
+## 2026-11-12: protected accounts in user management
+
+Not breaking for regular accounts.
+
+- User objects (`/api/users/`, `/api/users/{id}/`, `/api/users/me/`) gain read-only **`is_staff`** and **`is_superuser`**.
+- An account with either flag is a protected account: `PUT`, `PATCH`, `DELETE` `/api/users/{id}/` and `POST /api/users/{id}/reset-password/` on it need a caller who is a superuser as well as in the `Admin` group. Anyone else gets `403` with `{"code": "users.protected_account", "details": {}}` and nothing changes. The frontend can hide those actions when the target has either flag and the logged-in user (`/api/users/me/`) has `is_superuser: false`.
+
+See [Users](README.md#users-djangocontribauthmodelsuser).
+
+---
+
+## 2026-11-12: planner skips provider URLs with `${`
+
+Not breaking. A realtime or GBFS endpoint polled from the provider's URL whose URL contains `${` is left out of the planner's OTP configuration, because OTP would read it as a placeholder for an environment variable. It is reported with the new error code **`planner.rt_url_unsupported`** in `feed_results[].realtime_skipped` of a build and in a rental source's `active_result`. Proxied endpoints are unaffected. See [Graph builds](planner-admin.md#graph-builds).
+
+---
+
+## 2026-11-12: only Admin deletes transport organizations
+
+**Breaking** for `Helper` accounts. `DELETE /api/cases/transport-organizations/{id}/` now needs the `Admin` role; a `Helper` gets `403`. Creating and updating organizations stays open to `Helper` and `Admin`. Deleting an organization also deletes all its feed submissions, and deleting a submission was already `Admin` only. Clients should offer the delete action to `Admin` only. See [TransportOrganization](cases.md#transportorganization).
+
+---
+
 ## 2026-10-17: entity types of a realtime endpoint
 
 Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).

@@ -4,6 +4,7 @@ Answered by OTP, so with realtime data where operators publish it, and
 unavailable while OTP is stopped for a graph build.
 """
 
+import time
 from datetime import timedelta
 from functools import partial
 
@@ -619,13 +620,17 @@ class VehicleCoverageView(LookupListView):
 
         try:
             reporting = {row['trip_id'] for row in vehicles.snapshot(query)}
+            wait_until = time.monotonic() + vehicles.RECOUNT_WAIT_SECONDS
+            running_by_agency = [
+                vehicles.running_trips(agency_id, graph['id'], running_query, wait_until)
+                for agency_id in agency_ids
+            ]
         except otp_runtime.OtpBusy:
             raise PlannerError(
                 'planner.busy', 503, retry_after=OTP_BUSY_RETRY_AFTER_SECONDS
             ) from None
         rows = []
-        for agency_id in agency_ids:
-            running = vehicles.running_trips(agency_id, graph['id'], running_query)
+        for agency_id, running in zip(agency_ids, running_by_agency, strict=True):
             if running is None:
                 continue  # not an operator of the served graph
             positions = agency_id.split(':', 1)[0] in with_positions

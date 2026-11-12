@@ -96,6 +96,7 @@ def test_proxied_gbfs_is_read_from_this_app(make_rental, settings):
             'planner.rental_source_requires_auth',
         ),
         ({'url': 'https://intranet.example.org/gbfs.json'}, 'planner.rt_url_blocked'),
+        ({'url': 'https://gbfs.example.org/${includeFile:x.json}'}, 'planner.rt_url_unsupported'),
     ],
 )
 def test_unusable_sources_are_skipped_with_a_code(make_rental, fake_dns, kwargs, code):

@@ -9,6 +9,7 @@ This documentation describes the REST API of the OtwarteDaneTransportowe (Open T
 - [JWT authentication](#jwt-authentication)
 - [Endpoint map](#endpoint-map)
 - [Notes for client developers](#notes-for-client-developers)
+- [Error codes](#error-codes)
 - [Blog API](blog.md)
 - [Organizations and cases API](cases.md)
 - [Feeds API and public file downloads](feeds.md)
@@ -35,6 +36,7 @@ API authentication uses JWT:
 ```http
 POST /api/auth/token/
 POST /api/auth/token/refresh/
+POST /api/auth/logout/
 ```
 
 For requests that require login, the client sends:
@@ -67,7 +69,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 | `Blogger` | Creating blog posts; editing and deleting **only their own** posts. |
 | `Editor` | Editing and deleting **any** blog posts (including other users' posts). |
 | `DataProvider` | Adding static and realtime feeds and managing their own submissions before review. |
-| `Helper` | Feed queue: **only** confirming/rejecting (`stage`, `rejection_cause`); cases (data providers, organizations, statuses). **No** editing of the URL/file or the submission content. |
+| `Helper` | Feed queue: **only** confirming/rejecting (`stage`, `rejection_cause`); cases (data providers, organizations, statuses), except deleting an organization. **No** editing of the URL/file or the submission content. |
 | Anonymous | Public reads, blog reactions, downloading published feeds. |
 
 ### Access matrix
@@ -78,7 +80,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 | Blog reactions | Yes, `POST` without login | Anyone, limited per IP |
 | Data providers | Yes | `Helper` or `Admin` |
 | Case statuses | Yes | `Helper` or `Admin` |
-| Transport organizations | Yes | `Helper` or `Admin` |
+| Transport organizations | Yes | `Helper` or `Admin`; delete: `Admin` |
 | Static feed submissions | No | `DataProvider` creates; `Helper`/`Admin` confirms |
 | Realtime submissions | No | `DataProvider` creates; `Helper`/`Admin` confirms |
 | Published feeds catalog | Yes | No writes through the public API |
@@ -149,6 +151,30 @@ Refreshes the access token using the refresh token.
 
 Refresh tokens rotate (`ROTATE_REFRESH_TOKENS`, `BLACKLIST_AFTER_ROTATION`): every successful refresh returns a **new** `refresh` and blacklists the one that was sent. The client must store the new `refresh` and use it next time; sending the old one again returns `401` (`{"detail": "Token is blacklisted", "code": "token_not_valid"}`).
 
+### `POST /api/auth/logout/`
+
+Ends a session: blacklists the given refresh token, so it can no longer be refreshed. Other sessions of the same user are not affected.
+
+**Permissions:** public, requires a valid `refresh` (no access token needed, so logout works after the access token has expired).
+
+**Request:**
+
+```json
+{
+  "refresh": "eyJ..."
+}
+```
+
+**Response 200:** `{}`
+
+A refresh token that is invalid, expired or already blacklisted returns `401` with `"code": "token_not_valid"`; the session is over either way, so the client clears its tokens in both cases.
+
+The access token of that session is not revoked: access tokens are stateless and stay valid until they expire (`JWT_ACCESS_MINUTES`, 15 minutes by default). The client discards it.
+
+### Ending all sessions of a user
+
+A password change (`POST /api/users/me/change-password/`) and an admin password reset (`POST /api/users/{id}/reset-password/`) blacklist **all** refresh tokens of that user, so every session must log in again once its access token expires. A self-service change returns a fresh pair for the session that made it (see the [endpoint map](#users-djangocontribauthmodelsuser)). Expired tokens are deleted daily by the beat task `accounts.flush_expired_tokens` (03:15 UTC).
+
 ### `/api-auth/`
 
 DRF browsable API session login/logout. Useful for development; a production client should use JWT.
@@ -175,6 +201,7 @@ page (max 50); fetch errors and `proxy-feeds` 25 per page (max 100).
 | `GET` | `/admin/` | Django staff/admin | Django admin panel |
 | `POST` | `/api/auth/token/` | public | Obtain JWT `access` and `refresh` |
 | `POST` | `/api/auth/token/refresh/` | public | Refresh JWT `access`; returns a new `refresh` as well |
+| `POST` | `/api/auth/logout/` | public | Blacklist the given `refresh` (end the session) |
 | `GET` | `/api/schema/` | public when `DEBUG`, otherwise `Admin` (group) only | OpenAPI schema |
 | `GET` | `/api/schema/swagger-ui/` | public when `DEBUG`, otherwise `Admin` (group) only | Swagger UI |
 | `GET` | `/api/schema/redoc/` | public when `DEBUG`, otherwise `Admin` (group) only | ReDoc |
@@ -189,15 +216,17 @@ Requires the Django group **`Admin`** (`has_admin_role`) — `is_staff` / `is_su
 | `GET` | `/api/users/` | `Admin` (group) | List of all users |
 | `POST` | `/api/users/` | `Admin` (group) | Create an account; the server generates the password — returned in `generated_password` |
 | `GET` | `/api/users/{id}/` | `Admin` (group) | User details |
-| `PUT` | `/api/users/{id}/` | `Admin` (group) | Same fields and rules as `PATCH`; none is required, and with a JSON body omitted fields keep their values |
-| `PATCH` | `/api/users/{id}/` | `Admin` (group) | Edit `email`, `first_name`, `last_name`, `is_active`, `roles` |
-| `DELETE` | `/api/users/{id}/` | `Admin` (group) | Permanent deletion (you cannot delete yourself or the last `Admin`) |
-| `POST` | `/api/users/{id}/reset-password/` | `Admin` (group) | New random password in `generated_password` |
+| `PUT` | `/api/users/{id}/` | `Admin` (group)¹ | Same fields and rules as `PATCH`; none is required, and with a JSON body omitted fields keep their values |
+| `PATCH` | `/api/users/{id}/` | `Admin` (group)¹ | Edit `email`, `first_name`, `last_name`, `is_active`, `roles` |
+| `DELETE` | `/api/users/{id}/` | `Admin` (group)¹ | Permanent deletion; not yourself (`users.cannot_delete_self`) nor the last `Admin` (`users.last_admin`) |
+| `POST` | `/api/users/{id}/reset-password/` | `Admin` (group)¹ | New random password in `generated_password`; ends all sessions of that user |
 | `GET` | `/api/users/me/` | logged in | Current user's profile |
-| `POST` | `/api/users/me/change-email/` | logged in | `current_password`, `new_email` |
-| `POST` | `/api/users/me/change-password/` | logged in | `current_password`, `new_password` |
+| `POST` | `/api/users/me/change-email/` | logged in | `current_password`, `new_email`; rate limit `account_change` |
+| `POST` | `/api/users/me/change-password/` | logged in | `current_password`, `new_password`; ends all sessions of the user and returns a fresh `{"access", "refresh"}` pair for this one; rate limit `account_change` |
 
-Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PUT`/`PATCH` fully replace the list of groups).
+¹ A **protected account** (`is_superuser` or `is_staff` true; both are read-only fields of every user object) can be edited, deleted or have its password reset only by a caller who is a superuser as well as in the `Admin` group. Anyone else gets `403` with `{"code": "users.protected_account", "details": {}}`. Reading such an account (`GET`) is not restricted. The flags themselves are set only through Django (`createsuperuser`, the admin site), never through this API.
+
+Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PUT`/`PATCH` fully replace the list of groups); any other value returns `400` with `{"roles": ["users.unknown_role"]}`. Removing the `Admin` role from, or deactivating, the last active admin returns `400` with `{"code": "users.last_admin", "details": {}}`. `change-email` and `change-password` return `{"current_password": ["users.wrong_password"]}` for a wrong current password, and `change-password` returns `users.password_*` codes on `new_password` for a password Django's validators refuse ([error codes](#error-codes)).
 
 For `POST /api/users/` the body does **not** contain a password — example `201` response:
 
@@ -209,6 +238,8 @@ For `POST /api/users/` the body does **not** contain a password — example `201
   "first_name": "Jan",
   "last_name": "Kowalski",
   "is_active": true,
+  "is_staff": false,
+  "is_superuser": false,
   "roles": ["DataProvider"],
   "generated_password": "xK9mP2vL8nQwR4sT1uY0zA"
 }
@@ -261,12 +292,12 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `DELETE` | `/api/data_manager/feed-submissions/{id}/` | `Admin` only (submissions are part of the audit trail) | Delete a submission |
 | `GET` | `/api/data_manager/feed-submissions/{id}/fetch-errors/?days=7` | owner or `Helper`/`Admin` | Fetch error history of a static feed for the last N days |
 | `GET` | `/api/data_manager/feed-submissions/{id}/download/static/{endpoint_pk}/` | owner or `Helper`/`Admin` | Download the private static file of the given submission |
-| `GET` | `/api/data_manager/feed-submissions/{id}/download/realtime/{endpoint_pk}/` | owner or `Helper`/`Admin` | Download the private cache of an RT endpoint linked to the static submission |
+| `GET` | `/api/data_manager/feed-submissions/{id}/download/realtime/{endpoint_pk}/` | owner or `Helper`/`Admin` | Download the private cache of an RT endpoint linked to the static submission (owner: only of its own realtime submissions) |
 | `GET` | `/api/data_manager/static-feed-entries/` | owner or `Helper`/`Admin` | List of static feeds with their fetch status |
 | `GET` | `/api/data_manager/static-feed-entries/{id}/` | owner or `Helper`/`Admin` | Details of a single static feed with its fetch status |
 | `POST` | `/api/data_manager/static-feed-entries/{id}/pause-fetch/` | `Helper`/`Admin` | Manually pause fetching of a static feed |
 | `POST` | `/api/data_manager/static-feed-entries/{id}/resume-fetch/` | `Helper`/`Admin` | Resume fetching of a static feed and cancel the retry block; proxied feeds only (`400` otherwise, as `pause-fetch`) |
-| `GET` | `/api/data_manager/proxy-feeds/` | logged in | A single, paginated list of proxied feeds (static + realtime): a provider sees their own, helper/admin see all. Pausing/resuming (`pause-fetch`/`resume-fetch`) is `Helper`/`Admin` only |
+| `GET` | `/api/data_manager/proxy-feeds/` | logged in | A single, paginated list of proxied feeds (static + realtime), sorted by region, organization and feed name ([order](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds)): a provider sees their own, helper/admin see all. Pausing/resuming (`pause-fetch`/`resume-fetch`) is `Helper`/`Admin` only |
 | `GET` | `/api/data_manager/fetch-errors/?days=7` | logged in | Global, paginated list of fetch errors: a provider sees their own feeds, helper/admin see all |
 | `GET` | `/api/data_manager/submissions/` | `DataProvider`/`Helper`/`Admin` | Combined list of the logged-in user's own static and realtime submissions (not paginated) |
 | `GET` | `/api/data_manager/realtime-submissions/` | `DataProvider`/`Helper`/`Admin` | List of realtime submissions: a provider sees their own, helper/admin see all |
@@ -347,7 +378,7 @@ Details: [Journey planner: admin API](planner-admin.md).
 
 | Method | Endpoint | Permissions | Description |
 |--------|----------|-------------|------|
-| `GET` | `/feed/` | public | Returns a 400 error; a feed ID is required |
+| `GET` | `/feed/` | public | Returns `400` with `{"code": "feeds.feed_id_required", "details": {}}`; a feed ID is required |
 | `GET` | `/feed/{feed_submission_id}/` | public | Returns a link to the published static file |
 | `GET` | `/feed/{feed_submission_id}/{filename}` | public | Downloads the published static file |
 | `GET` | `/feed/rt/{realtime_submission_id}/` | public | Returns links to the published realtime files (per `endpoint_type`) |
@@ -362,6 +393,8 @@ Details: [Journey planner: admin API](planner-admin.md).
 
 - Keep `access` short-lived and refresh it via `/api/auth/token/refresh/`. Replace the stored `refresh` with the one from each refresh response; the old one stops working.
 - After a `401`, try a refresh first and only then log the user out.
+- On logout, send the stored `refresh` to `POST /api/auth/logout/`, then clear the tokens whatever the response.
+- After `POST /api/users/me/change-password/`, store the `access` and `refresh` from the response: the old `refresh` no longer works.
 - Public endpoints do not need a token.
 
 ### Role-based UI
@@ -374,7 +407,7 @@ Recommended UI logic:
 - `DataProvider`/`Admin` - show the feed submission forms.
 - `Helper`/`Admin` - show the queue of feeds awaiting confirmation and the case/organization panel.
 
-In edit forms for `DataProvider`, **from stage 2 onwards** (static and realtime, without a rejection): lock the **name**, the feed source (URL/file or endpoint URL), **is_original**, **hide_original**, **auth_type** and **auth_value**. Static: `note`, `license` and fetch times (`download_time_1/2`, UTC) are allowed. Realtime: `note`, `license`, `interval` are allowed. After a **rejection**, restore the full edit form.
+In edit forms for `DataProvider`, **from stage 2 onwards** (static and realtime, without a rejection): lock the **name**, the feed source (URL/file or endpoint URL), **is_original**, **hide_original**, **auth_type** and **auth_value**. Static: `note`, `license` and fetch times (`download_time_1/2`, UTC) are allowed. Realtime: `note`, `license`, `interval` (at least 5 s) are allowed. After a **rejection**, restore the full edit form.
 
 ### HTTP status codes
 
@@ -389,7 +422,75 @@ Most common responses:
 | `401` | Missing or invalid token |
 | `403` | Valid token, but the required role/permission is missing |
 | `404` | Object does not exist or is not publicly available |
-| `429` | Rate limit: DRF throttling of login, feed downloads and blog reaction changes (`login`, `feed_download`, `reaction`; rates set by the `THROTTLE_*` settings; counted per client IP), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
+| `409` | Conflict with the current state, e.g. a feed submission's stage changed while the request ran (`feeds.stage_changed`, see [Feeds API](feeds.md)) or a planner job already runs |
+| `429` | Rate limit: DRF throttling of login (`/api/auth/token/`, `/api/auth/token/refresh/` and the Django admin login form share one budget), feed downloads and blog reaction changes (`login`, `feed_download`, `reaction`; rates set by the `THROTTLE_*` settings; counted per client IP), of password and email changes (`account_change`, counted per user), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
+
+### Error codes
+
+Errors that the backend itself decides carry a stable code instead of prose ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). Codes are `<area>.<snake_case_reason>` and never change once released; the frontend translates them and never shows backend text. They come in two shapes:
+
+- **Request errors** (the whole request is refused): `{"code": "users.last_admin", "details": {}}`. `details` is an object, empty unless stated.
+- **Field errors**: DRF's field dictionary, with the code as the message, e.g. `{"stage": ["feeds.invalid_stage"]}` or `{"static_entry": {"url": ["feeds.url_blocked"]}}`. A field error of a nested object that is not tied to one of its fields is under `__all__`, e.g. `{"static_entry": {"__all__": ["feeds.static_source_url_and_file"]}}`.
+
+Errors produced by DRF or Django themselves (`This field is required.`, an invalid choice, `401`, a permission class's default `403`, `404`, throttling's `429`) are still English prose; match on the status and the field name for those.
+
+Request errors:
+
+| Status | Code | Where | Meaning |
+|---|---|---|---|
+| `400` | `feeds.feed_id_required` | `GET /feed/` | The download URL has no feed ID. |
+| `400` | `feeds.not_proxy_managed` | `pause-fetch`, `resume-fetch` | The feed is not proxied, so its fetching cannot be paused. |
+| `403` | `feeds.submissions_forbidden` | `GET /api/data_manager/submissions/` | The user has none of the `DataProvider`, `Helper`, `Admin` roles. |
+| `403` | `feeds.review_forbidden` | `PUT`/`PATCH` of a static or realtime submission | Only `Helper`/`Admin` may send `stage` or `rejection_cause`. |
+| `403` | `feeds.helper_content_edit_forbidden` | `PUT`/`PATCH` of a static or realtime submission | A `Helper` may send only `stage` and `rejection_cause`. |
+| `403` | `feeds.delete_forbidden` | `DELETE` of a static or realtime submission | Only `Admin` deletes submissions. |
+| `403` | `feeds.fetch_control_forbidden` | `pause-fetch`, `resume-fetch` | Only `Helper`/`Admin` pause or resume fetching. |
+| `409` | `feeds.stage_changed` | `PUT`/`PATCH` of a static or realtime submission | The stage changed while the request ran; reload and retry. |
+| `400` | `users.cannot_delete_self` | `DELETE /api/users/{id}/` | An admin cannot delete their own account. |
+| `400` | `users.last_admin` | `DELETE`, `PUT`/`PATCH /api/users/{id}/` | The change would delete, deactivate or remove the `Admin` role from the last active admin. |
+| `403` | `users.protected_account` | `PUT`/`PATCH`/`DELETE /api/users/{id}/`, `reset-password` | The account is a superuser or staff account. |
+| `400` | `blog.client_ip_unknown` | `POST /api/blog/reactions/{post_id}/` | The server could not determine the client's IP address. |
+| `400` | `blog.post_id_required` | `POST /api/blog/reactions/{post_id}/` | The URL has no post ID. |
+| `429` | `blog.reaction_daily_limit` | `POST /api/blog/reactions/{post_id}/` | The IP has added 10 reactions in the last 24 hours. |
+
+Field errors:
+
+| Code | Field | Meaning |
+|---|---|---|
+| `feeds.invalid_integer` | list query params, e.g. `transport_organization` | The value is not an integer. |
+| `feeds.invalid_stage` | `stage` | The stage is not an integer from 1 to 4. |
+| `feeds.field_locked` | `name`, `transport_organization`, `data_type`, `static_entry.<field>`, `protocol`, `static_submission`, `endpoints` | The owner cannot change this field while the submission is in review or published (stages 2–4 without a rejection). |
+| `feeds.url_blocked` | `static_entry.url`, an endpoint's `url` | The URL is refused by ODT's outbound security rules: not http(s), no host name, the host does not resolve, or it resolves to a non-public address. |
+| `feeds.static_source_missing` | `static_entry`, `static_entry.__all__` | Neither a URL nor a file was given. |
+| `feeds.static_source_url_and_file` | `static_entry.__all__` | Both a URL and a file were given. |
+| `feeds.download_time_required` | `static_entry.download_time_1` | A URL source needs `download_time_1`. |
+| `feeds.download_time_with_file` | `static_entry.download_time_1`, `static_entry.download_time_2` | An uploaded file has no download schedule. |
+| `feeds.hide_original_with_file` | `static_entry.hide_original` | `hide_original` (or `auth_type`) applies only to a URL source. |
+| `feeds.cached_file_with_upload` | `static_entry.__all__` | A server-downloaded copy exists for an uploaded file; not expected from clients. |
+| `feeds.gtfs_not_zip` | `static_entry.file` | The uploaded GTFS file is not a ZIP archive. |
+| `feeds.file_too_large` | `static_entry.file` | The uploaded file exceeds `MAX_FEED_FILE_SIZE_BYTES`. |
+| `realtime.endpoints_required` | `endpoints` | A realtime submission needs at least one endpoint. |
+| `realtime.endpoints_locked` | `endpoints` | Endpoints cannot be added or removed in review or after publication. |
+| `realtime.endpoint_type_unknown` | `endpoints` | In review or after publication, an endpoint type the submission does not have. |
+| `realtime.endpoint_type_duplicate` | `endpoints` | Two endpoints of the same type. |
+| `realtime.endpoints_invalid_for_protocol` | `endpoints`, `endpoints.endpoint_type`, `protocol` | An endpoint type does not fit the protocol. |
+| `realtime.interval_too_short` | an endpoint's `interval` | The interval is under 5 seconds. |
+| `realtime.static_submission_required` | `static_submission` | GTFS-RT and SIRI need a static submission. |
+| `realtime.static_submission_not_allowed` | `static_submission` | GBFS cannot link a static submission. |
+| `realtime.static_submission_other_organization` | `static_submission` | The static submission belongs to another organization. |
+| `realtime.static_submission_type_mismatch` | `static_submission` | The static feed type does not fit the protocol (GTFS-RT needs GTFS, SIRI needs NeTEx). |
+| `realtime.static_submission_not_published` | `static_submission` | The static submission is not published yet. |
+| `realtime.static_submission_not_owned` | `static_submission` | A `DataProvider` may link only a static feed it submitted. |
+| `users.unknown_role` | `roles` | A role is not one of `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper`. |
+| `users.wrong_password` | `current_password` | The current password is wrong. |
+| `users.password_too_short` | `new_password` | Shorter than 8 characters. |
+| `users.password_too_similar` | `new_password` | Too similar to the username, name or email. |
+| `users.password_too_common` | `new_password` | On the list of common passwords. |
+| `users.password_entirely_numeric` | `new_password` | Only digits. |
+| `blog.too_many_tags` | `tags` | More than 5 tags (DRF's own `max_length` message comes with it). |
+| `blog.image_too_large` | `image` | The image exceeds `MAX_IMAGE_FILE_SIZE_BYTES`. |
+
+The planner has its own codes ([planner.md](planner.md), [planner-admin.md](planner-admin.md)), and stored causes have theirs: [realtime rejection reasons](feeds.md#realtime-rejection-reasons) and GTFS validation codes in [static feeds](feeds.md#static-feeds-feedsubmission).
 
 ### Multipart nested fields
 
@@ -408,7 +509,7 @@ static_entry.license
 
 ### Empty text fields
 
-Text fields (`name`, `note`, `license`, `url`, `description`, `website`, `contact_email`, `phone_number`, `auth_type`, `cause`, `reaction`, ...) have one empty value: `""`. Responses never contain `null` for them, and a request that sends `null` gets `400` with DRF's default field error, e.g. `{"name": ["This field may not be null."]}`; send `""` or omit the field. The body carries no machine-readable error code: codes will come with the custom exception handler proposed in [ADR 0006](../architecture/decisions/0006-api-error-codes.md), so match on the status and the field name, not on the message. Computed fields and fields that are not text keep `null` for "none", e.g. `rejection_cause`, `published_at`, `download_time_2`, `file`, `download_url`.
+Text fields (`name`, `note`, `license`, `url`, `description`, `website`, `contact_email`, `phone_number`, `auth_type`, `cause`, `reaction`, ...) have one empty value: `""`. Responses never contain `null` for them, and a request that sends `null` gets `400` with DRF's default field error, e.g. `{"name": ["This field may not be null."]}`; send `""` or omit the field. This is DRF's own message, not a code (see [error codes](#error-codes)), so match on the status and the field name, not on the message. Computed fields and fields that are not text keep `null` for "none", e.g. `rejection_cause`, `published_at`, `download_time_2`, `file`, `download_url`.
 
 ### Important constraints
 

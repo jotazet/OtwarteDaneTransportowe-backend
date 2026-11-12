@@ -6,10 +6,12 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Count, OuterRef, Q, Subquery
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 from rest_framework.settings import api_settings
 
 from cases.models import TransportOrganization
+from data_manager.fields import UndecryptableValue
 from data_manager.models import (
     FeedFetchError,
     FeedSubmission,
@@ -21,6 +23,7 @@ from data_manager.models import (
 )
 from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url
 from data_manager.validators import validate_uploaded_gtfs_zip
+from OtwarteDaneTransportowe.auth_roles import is_submitter_or_reviewer
 
 # ---------------------------------------------------------------------------
 # FeedSubmissionHistory
@@ -110,6 +113,26 @@ def raise_as_drf_validation_error(exc: DjangoValidationError, *, field: str | No
         else {api_settings.NON_FIELD_ERRORS_KEY: list(exc.messages)}
     )
     raise serializers.ValidationError({field: detail} if field else detail)
+
+
+# Error codes (ADR 0006): each is also the field message, so it reaches the client.
+FIELD_LOCKED = 'feeds.field_locked'
+URL_BLOCKED = 'feeds.url_blocked'
+
+
+def field_error(field: str, code: str) -> serializers.ValidationError:
+    return serializers.ValidationError({field: [code]}, code=code)
+
+
+def _locked(field: str) -> serializers.ValidationError:
+    """A field that cannot change while the submission is in review or published."""
+    return field_error(field, FIELD_LOCKED)
+
+
+def _locked_static_entry_fields(fields) -> serializers.ValidationError:
+    return serializers.ValidationError(
+        {'static_entry': {name: [FIELD_LOCKED] for name in sorted(fields)}}, code=FIELD_LOCKED
+    )
 
 
 def _url_origin(url) -> tuple[str, str]:
@@ -411,8 +434,9 @@ class StaticFeedEntrySerializer(FetchHealthSerializerMixin, serializers.ModelSer
             return value
         try:
             assert_safe_outbound_url(value)
-        except OutboundURLBlocked as exc:
-            raise serializers.ValidationError(str(exc)) from exc
+        except OutboundURLBlocked:
+            # The reason (resolved host or address) stays out of the response.
+            raise serializers.ValidationError(URL_BLOCKED, code=URL_BLOCKED) from None
         return value
 
 
@@ -489,7 +513,22 @@ class RealtimeEndpointRTSerializer(FetchHealthSerializerMixin, serializers.Model
         return data
 
 
+class _CredentialField(serializers.CharField):
+    """Lets a kept credential that cannot be decrypted through, to be stored unchanged."""
+
+    def to_internal_value(self, data):
+        if isinstance(data, UndecryptableValue):
+            return data
+        return super().to_internal_value(data)
+
+
 class RealtimeEndpointRTWriteSerializer(serializers.ModelSerializer):
+    # to_internal_value of the submission serializer copies the stored value in
+    # when the client does not retype it.
+    auth_value = _CredentialField(
+        write_only=True, required=False, allow_blank=True, allow_null=True
+    )
+
     class Meta:
         model = RealtimeEndpointRT
         fields = [
@@ -502,15 +541,15 @@ class RealtimeEndpointRTWriteSerializer(serializers.ModelSerializer):
             'interval',
         ]
         extra_kwargs = {
-            'auth_value': {'write_only': True, 'required': False},
             'auth_type': {'required': False},
         }
 
     def validate_url(self, value: str):
         try:
             assert_safe_outbound_url(value)
-        except OutboundURLBlocked as exc:
-            raise serializers.ValidationError(str(exc)) from exc
+        except OutboundURLBlocked:
+            # The reason (resolved host or address) stays out of the response.
+            raise serializers.ValidationError(URL_BLOCKED, code=URL_BLOCKED) from None
         return value
 
 
@@ -644,108 +683,66 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
                 old_n = inst.name or ''
                 new_n = data.get('name') or ''
                 if old_n != new_n:
-                    raise serializers.ValidationError(
-                        {
-                            'name': 'Cannot change name after stage 1.',
-                        }
-                    )
+                    raise _locked('name')
             if 'transport_organization' in data:
                 if data['transport_organization'].pk != inst.transport_organization_id:
-                    raise serializers.ValidationError(
-                        {
-                            'transport_organization': ('Cannot change this field after stage 1.'),
-                        }
-                    )
+                    raise _locked('transport_organization')
             if 'static_submission' in data:
                 new_ss = data['static_submission']
                 new_id = new_ss.pk if new_ss else None
                 if new_id != inst.static_submission_id:
-                    raise serializers.ValidationError(
-                        {
-                            'static_submission': ('Cannot change this field after stage 1.'),
-                        }
-                    )
+                    raise _locked('static_submission')
             if 'protocol' in data and data['protocol'] != inst.protocol:
-                raise serializers.ValidationError(
-                    {
-                        'protocol': 'Cannot change this field after stage 1.',
-                    }
-                )
+                raise _locked('protocol')
 
         protocol = data.get('protocol', inst.protocol if inst else '')
         org = data.get('transport_organization', inst.transport_organization if inst else None)
         ss = data.get('static_submission', inst.static_submission if inst else None)
         endpoints = data.get('endpoints')
-        if endpoints is not None and not endpoints:
-            raise serializers.ValidationError({'endpoints': 'At least one endpoint is required.'})
-        if endpoints is None and inst is None:
-            raise serializers.ValidationError({'endpoints': 'At least one endpoint is required.'})
+        if (endpoints is not None and not endpoints) or (endpoints is None and inst is None):
+            raise field_error('endpoints', 'realtime.endpoints_required')
 
         if restricted and inst is not None and endpoints is not None:
             existing_by = {e.endpoint_type: e for e in inst.endpoints.all()}
             if len(endpoints) != len(existing_by):
-                raise serializers.ValidationError(
-                    {
-                        'endpoints': 'Cannot add or remove endpoints after validation.',
-                    }
-                )
+                raise field_error('endpoints', 'realtime.endpoints_locked')
             for ep in endpoints:
                 t = ep['endpoint_type']
                 ex = existing_by.get(t)
                 if ex is None:
-                    raise serializers.ValidationError(
-                        {
-                            'endpoints': f"Unknown endpoint type '{t}'.",
-                        }
-                    )
+                    raise field_error('endpoints', 'realtime.endpoint_type_unknown')
                 for field in ('url', 'auth_type', 'hide_original', 'is_original'):
                     if ep.get(field) != getattr(ex, field):
-                        raise serializers.ValidationError(
-                            {
-                                'endpoints': f"Cannot change {field!r} after stage 1.",
-                            }
-                        )
+                        raise _locked('endpoints')
                 av_ep = ep.get('auth_value') or None
                 av_ex = ex.auth_value or None
                 if av_ep != av_ex:
-                    raise serializers.ValidationError(
-                        {
-                            'endpoints': 'Cannot change auth credentials after validation.',
-                        }
-                    )
+                    raise _locked('endpoints')
 
         if protocol == RealtimeSubmission.PROTOCOL_GBFS:
             if ss is not None:
-                raise serializers.ValidationError(
-                    {'static_submission': 'GBFS must not reference a static submission.'}
-                )
+                raise field_error('static_submission', 'realtime.static_submission_not_allowed')
         elif protocol in (RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI):
             if ss is None:
-                raise serializers.ValidationError(
-                    {'static_submission': 'This field is required for GTFS-RT and SIRI.'}
-                )
+                raise field_error('static_submission', 'realtime.static_submission_required')
             if org and ss.transport_organization_id != org.id:
-                raise serializers.ValidationError(
-                    {'static_submission': 'Static submission must belong to the same organization.'}
+                raise field_error(
+                    'static_submission', 'realtime.static_submission_other_organization'
                 )
             allowed_protocols = RealtimeSubmission.allowed_protocols_for_static_data_type(
                 ss.data_type
             )
             if protocol not in allowed_protocols:
-                raise serializers.ValidationError(
-                    {
-                        'static_submission': (
-                            f"Protocol '{protocol}' cannot be linked to static feed type "
-                            f"'{ss.data_type}'. Allowed: {sorted(allowed_protocols)}."
-                        )
-                    }
-                )
+                raise field_error('static_submission', 'realtime.static_submission_type_mismatch')
             if ss.id not in completed_submission_ids():
-                raise serializers.ValidationError(
-                    {
-                        'static_submission': 'Static feed must be published (completed) before adding realtime.'
-                    }
-                )
+                raise field_error('static_submission', 'realtime.static_submission_not_published')
+            # Matches eligible-static-submissions: a provider links realtime only
+            # to its own static feed; the (static_submission, protocol) slot is
+            # unique, so another provider's link would block the owner's.
+            if (inst is None or ss.pk != inst.static_submission_id) and not (
+                is_submitter_or_reviewer(self.context['request'].user, ss)
+            ):
+                raise field_error('static_submission', 'realtime.static_submission_not_owned')
         tmp = RealtimeSubmission(protocol=protocol)
         allowed = tmp.allowed_endpoint_types()
         if endpoints is not None:
@@ -753,16 +750,15 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
             for ep in endpoints:
                 t = ep.get('endpoint_type', '')
                 if t not in allowed:
-                    raise serializers.ValidationError(
-                        {
-                            'endpoints': f"Invalid endpoint_type '{t}' for protocol '{protocol}'. Allowed: {sorted(allowed)}."
-                        }
-                    )
+                    raise field_error('endpoints', 'realtime.endpoints_invalid_for_protocol')
                 if t in seen:
-                    raise serializers.ValidationError(
-                        {'endpoints': f"Duplicate endpoint_type '{t}'."}
-                    )
+                    raise field_error('endpoints', 'realtime.endpoint_type_duplicate')
                 seen.add(t)
+        elif inst is not None and protocol != inst.protocol:
+            # A protocol change without new endpoints keeps the stored ones,
+            # so they must fit the new protocol too.
+            if any(e.endpoint_type not in allowed for e in inst.endpoints.all()):
+                raise field_error('protocol', 'realtime.endpoints_invalid_for_protocol')
 
         return data
 
@@ -839,7 +835,7 @@ class UserFeedSubmissionListSerializer(FeedSubmissionListSerializer):
 
 class FeedSubmissionSerializer(serializers.ModelSerializer):
     static_entry = StaticFeedEntrySerializer(read_only=True)
-    realtime_submissions = RealtimeSubmissionSerializer(many=True, read_only=True)
+    realtime_submissions = serializers.SerializerMethodField()
     current_stage = serializers.IntegerField(read_only=True)
     current_stage_label = serializers.CharField(read_only=True)
     is_rejected = serializers.BooleanField(read_only=True)
@@ -879,6 +875,15 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
             'published_at',
             'history',
         ]
+
+    @extend_schema_field(RealtimeSubmissionSerializer(many=True))
+    def get_realtime_submissions(self, obj):
+        # Another user's realtime on this feed may carry hidden (hide_original) URLs.
+        user = self.context['request'].user
+        visible = [
+            rt for rt in obj.realtime_submissions.all() if is_submitter_or_reviewer(user, rt)
+        ]
+        return RealtimeSubmissionSerializer(visible, many=True, context=self.context).data
 
 
 # ---------------------------------------------------------------------------
@@ -953,47 +958,24 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                 old_n = (self.instance.name or '') if self.instance else ''
                 new_n = attrs.get('name') or ''
                 if old_n != new_n:
-                    raise serializers.ValidationError(
-                        {
-                            'name': 'Cannot change name after stage 1.',
-                        }
-                    )
-            if 'transport_organization' in attrs:
-                raise serializers.ValidationError(
-                    {
-                        'transport_organization': ('Cannot change organization after stage 1.'),
-                    }
-                )
-            if 'data_type' in attrs:
-                raise serializers.ValidationError(
-                    {
-                        'data_type': ('Cannot change data type after stage 1.'),
-                    }
-                )
+                    raise _locked('name')
+            if (
+                'transport_organization' in attrs
+                and attrs['transport_organization'].pk != self.instance.transport_organization_id
+            ):
+                raise _locked('transport_organization')
+            if 'data_type' in attrs and attrs['data_type'] != self.instance.data_type:
+                raise _locked('data_type')
             allowed = {'license', 'download_time_1', 'download_time_2'}
             sent_keys = _static_entry_keys_in_request(self.initial_data)
             bad_sent = sent_keys - allowed
             if bad_sent:
-                raise serializers.ValidationError(
-                    {
-                        'static_entry': (
-                            'After stage 1, only license and download schedule times (UTC) can be changed '
-                            f'(disallowed: {", ".join(sorted(bad_sent))}).'
-                        ),
-                    }
-                )
+                raise _locked_static_entry_fields(bad_sent)
             static_entry = attrs.get('static_entry')
             if static_entry is not None:
                 bad = set(static_entry.keys()) - allowed
                 if bad:
-                    raise serializers.ValidationError(
-                        {
-                            'static_entry': (
-                                'After stage 1, only license and download schedule times (UTC) can be changed '
-                                f'(disallowed: {", ".join(sorted(bad))}).'
-                            ),
-                        }
-                    )
+                    raise _locked_static_entry_fields(bad)
                 if self.instance is not None:
                     try:
                         entry = self.instance.static_entry
@@ -1009,21 +991,9 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                                 old_name = getattr(old_val, 'name', None) if old_val else None
                                 new_name = getattr(new_val, 'name', None)
                                 if new_name != old_name:
-                                    raise serializers.ValidationError(
-                                        {
-                                            'static_entry': {
-                                                field_name: 'Cannot change this field after stage 1.',
-                                            },
-                                        }
-                                    )
+                                    raise _locked_static_entry_fields({field_name})
                             elif new_val != old_val:
-                                raise serializers.ValidationError(
-                                    {
-                                        'static_entry': {
-                                            field_name: 'Cannot change this field after stage 1.',
-                                        },
-                                    }
-                                )
+                                raise _locked_static_entry_fields({field_name})
 
         static_entry = attrs.get('static_entry')
         if not static_entry:
@@ -1045,11 +1015,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 
         if self.instance is None:
             if not static_entry.get('url') and not static_entry.get('file'):
-                raise serializers.ValidationError(
-                    {
-                        'static_entry': 'Provide a URL or file for the static feed entry.',
-                    }
-                )
+                raise field_error('static_entry', 'feeds.static_source_missing')
             return attrs
 
         try:
@@ -1059,14 +1025,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 
         if entry is None:
             if not static_entry.get('url') and not static_entry.get('file'):
-                raise serializers.ValidationError(
-                    {
-                        'static_entry': (
-                            'Provide a URL or file when adding a static feed entry '
-                            'to this submission.'
-                        ),
-                    }
-                )
+                raise field_error('static_entry', 'feeds.static_source_missing')
             return attrs
 
         return attrs
@@ -1089,6 +1048,11 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
         if entry.is_proxy_managed:
             from data_manager.tasks import enqueue_on_commit, fetch_static_entry_task
 
+            # A resubmitted source is validated again even when the upstream
+            # file matches the cached copy: forget what that copy was.
+            StaticFeedEntry.objects.filter(pk=entry.pk).update(
+                **dict.fromkeys(StaticFeedEntry.CACHE_VALIDATOR_FIELDS, '')
+            )
             enqueue_on_commit(fetch_static_entry_task, entry.pk)
         elif entry.submission.data_type == 'gtfs':
             if getattr(entry, '_gtfs_validation_queued', False):
@@ -1148,6 +1112,21 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     if static_entry_data.get('auth_type'):
                         entry.hide_original = True
                         update_fields.add('hide_original')
+                    url_changed = entry.url != old_url
+                    # The cache is a copy of the old proxied URL: once the source
+                    # is a file, another URL or not proxied, it must not be
+                    # validated or served. The cleanup_files pre_save signal
+                    # deletes the old file.
+                    if url_changed or not entry.is_proxy_managed:
+                        entry.cached_file = None
+                        entry.cached_at = None
+                        for name in StaticFeedEntry.CACHE_VALIDATOR_FIELDS:
+                            setattr(entry, name, '')
+                        update_fields |= {
+                            'cached_file',
+                            'cached_at',
+                            *StaticFeedEntry.CACHE_VALIDATOR_FIELDS,
+                        }
                     try:
                         entry.full_clean()
                     except DjangoValidationError as exc:
@@ -1156,14 +1135,10 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     # cached_file/cached_at concurrently via queryset.update();
                     # a full save() would write back this instance's stale copy.
                     entry.save(update_fields=sorted(update_fields))
-                    # defer_source_refresh: the rejected-resubmission flow in the
+                    # defer_source_refresh: the stage-1 resubmission flow in the
                     # view schedules the refresh itself (unconditionally, so a
                     # resubmission with an unchanged url still re-validates).
-                    if (
-                        entry.url
-                        and entry.url != old_url
-                        and not self.context.get('defer_source_refresh')
-                    ):
+                    if entry.url and url_changed and not self.context.get('defer_source_refresh'):
                         self._schedule_source_refresh(entry)
                 else:
                     if static_entry_data.get('auth_type'):

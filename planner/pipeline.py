@@ -51,6 +51,17 @@ class BuildFailed(Exception):
         self.log = log
 
 
+class BuildAborted(BuildFailed):
+    """The build's row is no longer RUNNING: the watchdog declared it interrupted.
+
+    A BuildFailed, so a step's own cleanup (temporary files, putting the previous
+    graph back) still runs; run_build then leaves the row as the watchdog wrote it.
+    """
+
+    def __init__(self):
+        super().__init__('planner.build_interrupted')
+
+
 class FeedUnavailable(Exception):
     pass
 
@@ -118,6 +129,9 @@ def run_build(build_id: int) -> None:
         build.save(update_fields=['status', 'started_at', 'heartbeat_at'])
 
     workdir = data_path('builds', str(build.id))
+    # False once the watchdog has failed the row: it then owns serving, and a newer
+    # build may already be using the maintenance window, so OTP is not started here.
+    owns_row = True
     try:
         if build.rollback_of_id:
             _stop_serving(build)
@@ -125,17 +139,27 @@ def run_build(build_id: int) -> None:
             _activate(build, included, fresh=[])
         else:
             _build_and_activate(build, workdir)
+    except BuildAborted:
+        owns_row = False
+        logger.error('Graph build %s was declared interrupted; stopped it', build.id)
     except BuildFailed as exc:
-        _finish_failed(build, exc.code, exc.log)
+        owns_row = _finish_failed(build, exc.code, exc.log)
     except otp_runtime.DockerUnavailable as exc:
-        _finish_failed(build, 'planner.docker_unavailable', str(exc))
+        owns_row = _finish_failed(build, 'planner.docker_unavailable', str(exc))
     except Exception:  # noqa: BLE001 - any unexpected failure must still end the build
         logger.exception('Graph build %s crashed', build.id)
-        _finish_failed(build, 'planner.build_failed')
+        owns_row = _finish_failed(build, 'planner.build_failed')
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
-        if build.otp_stopped_at:
+        if build.otp_stopped_at and owns_row:
             _start_serving()
+        # A failed build's graph (~1.8 GB for Poland) is never served. A rollback's
+        # graph is an earlier build's: it served before and may be retried.
+        if (
+            not build.rollback_of_id
+            and not GraphBuild.objects.filter(pk=build.pk, is_active=True).exists()
+        ):
+            shutil.rmtree(graph_dir(build), ignore_errors=True)
     refresh_index()
 
 
@@ -207,10 +231,10 @@ def refresh_index() -> None:
 
 
 def ensure_serving() -> None:
-    """Bring the active graph back up unless a build is using the maintenance window.
+    """Serve the active graph and clean up, unless a build is using the maintenance window.
 
-    Covers a worker killed mid-build (deploy, reboot), after which nothing else
-    would restart the stopped OTP container.
+    Covers a worker killed mid-build or mid-activation (deploy, reboot), which
+    can leave OTP stopped or on a graph that never became active, and its files.
     """
     if GraphBuild.objects.filter(status=GraphBuild.STATUS_RUNNING).exists():
         return
@@ -218,9 +242,17 @@ def ensure_serving() -> None:
     active = GraphBuild.objects.filter(is_active=True).first()
     if active is None:
         return
-    _point_serving_at(graph_dir(active))
+    target = graph_dir(active)
+    if _serving_target() != target:
+        # Stop before repointing: interrupted after that, OTP is stopped (and
+        # started on the next run), never running on the wrong graph.
+        logger.warning('Serving does not point at the active graph; restarting OTP on it')
+        otp_runtime.stop_server()
+        _point_serving_at(target)
     if not otp_runtime.server_running():
         otp_runtime.start_server()
+    _remove_finished_build_dirs(data_path('builds'))
+    _remove_unused_graphs(current=target)
 
 
 def fail_stale_osm_downloads() -> int:
@@ -242,15 +274,21 @@ def fail_stale_osm_downloads() -> int:
 
 
 def fail_stale_builds() -> int:
-    """Mark builds whose worker disappeared as failed; returns how many."""
-    cutoff = timezone.now() - HEARTBEAT_STALE_AFTER
-    stale = GraphBuild.objects.filter(
-        status=GraphBuild.STATUS_RUNNING, heartbeat_at__lt=cutoff
-    ) | GraphBuild.objects.filter(status=GraphBuild.STATUS_QUEUED, created_at__lt=cutoff)
-    stale = list(stale)
-    for build in stale:
-        _finish_failed(build, 'planner.build_interrupted')
-    return len(stale)
+    """Mark builds whose worker disappeared as failed; returns how many.
+
+    A build that is in fact still alive notices at its next heartbeat and stops.
+    """
+    now = timezone.now()
+    cutoff = now - HEARTBEAT_STALE_AFTER
+    return GraphBuild.objects.filter(
+        Q(status=GraphBuild.STATUS_RUNNING, heartbeat_at__lt=cutoff)
+        | Q(status=GraphBuild.STATUS_QUEUED, created_at__lt=cutoff)
+    ).update(
+        status=GraphBuild.STATUS_FAILED,
+        finished_at=now,
+        error_code='planner.build_interrupted',
+        log_excerpt='',
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +327,7 @@ def _build_and_activate(build: GraphBuild, workdir: str) -> None:
             'submission__endpoints'
         )
     )
-    build.save(update_fields=['rental_results'])
+    _update_running(build, rental_results=build.rental_results)
 
     target = graph_dir(build)
     os.makedirs(target, exist_ok=True)
@@ -317,7 +355,7 @@ def _collect_candidates(build: GraphBuild, workdir: str) -> list[Candidate]:
             continue
         target = os.path.join(workdir, 'feeds', f'{feed.feed_id}.zip')
         try:
-            version_at = _fetch_feed(feed, target)
+            version_at = _fetch_feed(build, feed, target)
         except FeedUnavailable:
             candidates.append(_fall_back(feed, target, 'planner.feed_source_unavailable'))
             continue
@@ -333,7 +371,7 @@ def _collect_candidates(build: GraphBuild, workdir: str) -> list[Candidate]:
     return candidates
 
 
-def _fetch_feed(feed: PlannerFeed, target: str):
+def _fetch_feed(build: GraphBuild, feed: PlannerFeed, target: str):
     """Copy (or download) the feed's current file to ``target``; returns its version time.
 
     A proxied or uploaded file may be mid-rewrite (OverwriteStorage deletes and
@@ -344,6 +382,9 @@ def _fetch_feed(feed: PlannerFeed, target: str):
         raise FeedUnavailable
     for attempt in range(2):
         if attempt:
+            # Two downloads of up to FEED_FETCH_TOTAL_TIMEOUT_SECONDS each would
+            # outlast HEARTBEAT_STALE_AFTER without this.
+            _heartbeat(build)
             # The file may have been replaced (and renamed) by a fetch meanwhile.
             _sleep(FETCH_RETRY_DELAY_SECONDS)
             entry.refresh_from_db()
@@ -469,7 +510,12 @@ def _ensure_street_graph(build: GraphBuild, candidates: list[Candidate]) -> str:
     shutil.rmtree(tmp_dir, ignore_errors=True)
     os.makedirs(tmp_dir)
     try:
-        osm.prepare_osm(osm_file, cells, os.path.join(tmp_dir, STREET_OSM_FILE))
+        osm.prepare_osm(
+            osm_file,
+            cells,
+            os.path.join(tmp_dir, STREET_OSM_FILE),
+            on_tick=lambda: _heartbeat(build),
+        )
         _write_json(
             os.path.join(tmp_dir, 'build-config.json'),
             otp_config.build_config({}, osm_file=STREET_OSM_FILE),
@@ -524,34 +570,36 @@ def _activate(build: GraphBuild, included_feed_ids: list[str], fresh: list[Candi
     target = graph_dir(build)
     if not os.path.exists(os.path.join(target, 'graph.obj')):
         raise BuildFailed('planner.graph_missing')
-    serving = data_path('serving')
-    previous_target = os.readlink(serving) if os.path.islink(serving) else None
+    previous_target = _serving_target()
     _point_serving_at(target)
     otp_runtime.start_server()
-    if not _wait_until_healthy(build) or not _serves_feeds(included_feed_ids):
+    try:
+        if not _wait_until_healthy(build) or not _serves_feeds(included_feed_ids):
+            raise BuildFailed('planner.activation_failed')
+        # Copies first (may fail), then the database, then atomic renames. A crash
+        # between the commit and the renames leaves a snapshot older than its
+        # last_good_sha256, with the right file still in its .tmp link;
+        # _stage_snapshot replaces it the next time that version is fetched.
+        staged = [_stage_snapshot(candidate) for candidate in fresh]
+        staged = [paths for paths in staged if paths]
+        now = timezone.now()
+        with transaction.atomic():
+            GraphBuild.objects.filter(is_active=True).update(is_active=False)
+            _update_running(
+                build, is_active=True, finished_at=now, status=GraphBuild.STATUS_SUCCEEDED
+            )
+            for candidate in fresh:
+                PlannerFeed.objects.filter(pk=candidate.feed.pk).update(
+                    last_good_sha256=candidate.sha256, last_good_at=now
+                )
+    except BuildFailed:
         otp_runtime.stop_server()
         if previous_target:
-            _point_serving_at(data_path(previous_target))
+            _point_serving_at(previous_target)
         else:
             # First build: nothing to go back to, so serve nothing rather than this graph.
-            os.remove(serving)
-        raise BuildFailed('planner.activation_failed')
-
-    # Copies first (may fail), then the database, then atomic renames, so a
-    # snapshot never disagrees with the last_good_sha256 that describes it.
-    staged = [_stage_snapshot(candidate) for candidate in fresh]
-    staged = [paths for paths in staged if paths]
-    now = timezone.now()
-    with transaction.atomic():
-        GraphBuild.objects.filter(is_active=True).update(is_active=False)
-        build.is_active = True
-        build.finished_at = now
-        build.status = GraphBuild.STATUS_SUCCEEDED
-        build.save(update_fields=['is_active', 'finished_at', 'status'])
-        for candidate in fresh:
-            PlannerFeed.objects.filter(pk=candidate.feed.pk).update(
-                last_good_sha256=candidate.sha256, last_good_at=now
-            )
+            os.remove(data_path('serving'))
+        raise
     for tmp, snapshot in staged:
         os.replace(tmp, snapshot)
     _remove_unused_graphs(current=target)
@@ -564,20 +612,30 @@ def _activate(build: GraphBuild, included_feed_ids: list[str], fresh: list[Candi
 
 
 def _stop_serving(build: GraphBuild) -> None:
-    build.otp_stopped_at = timezone.now()
-    build.save(update_fields=['otp_stopped_at'])
+    now = timezone.now()
+    _update_running(build, otp_stopped_at=now)
+    build.otp_stopped_at = now
     try:
         otp_runtime.stop_server()
     except Exception as exc:  # noqa: BLE001 - docker errors vary; the build must not proceed
         raise BuildFailed('planner.docker_unavailable', str(exc)) from exc
 
 
-def _start_serving() -> None:
+def _start_serving() -> bool:
+    """Start the serving OTP unless it runs; False if Docker refused."""
     try:
         if not otp_runtime.server_running():
             otp_runtime.start_server()
     except Exception:  # noqa: BLE001 - the watchdog retries every few minutes
         logger.exception('Could not start the serving OTP container')
+        return False
+    return True
+
+
+def _serving_target() -> str | None:
+    """The graph directory ``serving`` points at, or None when it is not a symlink."""
+    serving = data_path('serving')
+    return data_path(os.readlink(serving)) if os.path.islink(serving) else None
 
 
 def _point_serving_at(target: str) -> None:
@@ -594,13 +652,22 @@ def _point_serving_at(target: str) -> None:
 
 
 def _wait_until_healthy(build: GraphBuild) -> bool:
+    """False after SERVER_START_TIMEOUT_SECONDS, or as soon as the container stopped."""
     deadline = timezone.now() + timedelta(seconds=SERVER_START_TIMEOUT_SECONDS)
     while not otp_runtime.is_healthy():
-        if timezone.now() >= deadline:
+        if timezone.now() >= deadline or _server_stopped():
             return False
         _heartbeat(build)
         _sleep(SERVER_POLL_SECONDS)
     return True
+
+
+def _server_stopped() -> bool:
+    """True once the serving container exited (e.g. it ran out of memory loading the graph)."""
+    try:
+        return not otp_runtime.server_running()
+    except Exception:  # noqa: BLE001 - docker errors vary; the health deadline still applies
+        return False
 
 
 def _sleep(seconds: int) -> None:
@@ -618,10 +685,15 @@ def _serves_feeds(feed_ids: list[str]) -> bool:
 def _stage_snapshot(candidate: Candidate) -> tuple[str, str] | None:
     """Link the new last good version next to its snapshot; None if it is unchanged."""
     snapshot = snapshot_path(candidate.feed)
-    if candidate.sha256 == candidate.feed.last_good_sha256 and os.path.exists(snapshot):
+    tmp = f'{snapshot}.tmp'
+    # A leftover .tmp means a crash may have kept the rename from replacing the snapshot.
+    if (
+        candidate.sha256 == candidate.feed.last_good_sha256
+        and os.path.exists(snapshot)
+        and not os.path.lexists(tmp)
+    ):
         return None
     os.makedirs(os.path.dirname(snapshot), exist_ok=True)
-    tmp = f'{snapshot}.tmp'
     if os.path.lexists(tmp):
         os.remove(tmp)
     os.link(candidate.path, tmp)
@@ -629,39 +701,88 @@ def _stage_snapshot(candidate: Candidate) -> tuple[str, str] | None:
 
 
 def _remove_unused_graphs(current: str) -> None:
-    """Keep the serving graph and the newest other one (for a rollback)."""
+    """Keep the serving graph and the one that served before it (for a rollback).
+
+    Builds run one at a time and every succeeded one, a rollback too, was active
+    until the next succeeded, so the newest inactive one served last; a rollback's
+    graph is its target's.
+    """
     keep = {current}
     previous = (
-        GraphBuild.objects.filter(status=GraphBuild.STATUS_SUCCEEDED, rollback_of__isnull=True)
+        GraphBuild.objects.filter(status=GraphBuild.STATUS_SUCCEEDED)
         .exclude(is_active=True)
         .first()
     )
     if previous:
         keep.add(graph_dir(previous))
-    root = data_path('graphs')
-    for name in os.listdir(root):
+    _remove_finished_build_dirs(data_path('graphs'), keep)
+
+
+def _remove_finished_build_dirs(root: str, keep: set[str] | frozenset[str] = frozenset()) -> None:
+    """Remove ``root/<id>`` of finished builds except ``keep``; leave anything else alone.
+
+    A queued or running build may be about to write its directory, and a name
+    that is no build's id is not ours to judge.
+    """
+    if not os.path.isdir(root):
+        return
+    names = [name for name in os.listdir(root) if name.isascii() and name.isdigit()]
+    finished = set(
+        GraphBuild.objects.filter(
+            pk__in=names, status__in=(GraphBuild.STATUS_SUCCEEDED, GraphBuild.STATUS_FAILED)
+        ).values_list('pk', flat=True)
+    )
+    for name in names:
         path = os.path.join(root, name)
-        if path not in keep:
+        if int(name) in finished and path not in keep:
             shutil.rmtree(path, ignore_errors=True)
 
 
 def _record_results(build: GraphBuild, candidates: list[Candidate]) -> None:
     build.feed_results = [c.result() for c in candidates]
-    build.heartbeat_at = timezone.now()
-    build.save(update_fields=['feed_results', 'heartbeat_at'])
+    _update_running(build, feed_results=build.feed_results, heartbeat_at=timezone.now())
 
 
 def _heartbeat(build: GraphBuild) -> None:
-    GraphBuild.objects.filter(pk=build.pk).update(heartbeat_at=timezone.now())
+    _update_running(build, heartbeat_at=timezone.now())
 
 
-def _finish_failed(build: GraphBuild, code: str, log: str = '') -> None:
-    build.status = GraphBuild.STATUS_FAILED
-    build.finished_at = timezone.now()
-    build.error_code = code
-    build.log_excerpt = log[-LOG_EXCERPT_CHARS:]
-    build.save(update_fields=['status', 'finished_at', 'error_code', 'log_excerpt'])
+def _update_running(build: GraphBuild, **fields) -> None:
+    """Save fields of a running build; raise BuildAborted if it is no longer running."""
+    running = GraphBuild.objects.filter(pk=build.pk, status=GraphBuild.STATUS_RUNNING)
+    if not running.update(**fields):
+        raise BuildAborted
+
+
+def _finish_failed(build: GraphBuild, code: str, log: str = '') -> bool:
+    """Serve the previous graph again, then fail the build; False if the watchdog already had.
+
+    The row stays RUNNING, and so the maintenance window open, until OTP is healthy
+    on the previous graph: until then the API answers 503 maintenance with
+    Retry-After instead of sending requests to an OTP that is still loading.
+    """
+    try:
+        if build.otp_stopped_at:
+            _restore_serving(build)
+        _update_running(
+            build,
+            status=GraphBuild.STATUS_FAILED,
+            finished_at=timezone.now(),
+            error_code=code,
+            log_excerpt=log[-LOG_EXCERPT_CHARS:],
+        )
+    except BuildAborted:
+        logger.error('Graph build %s was declared interrupted before failing: %s', build.id, code)
+        return False
     logger.error('Graph build %s failed: %s', build.id, code)
+    return True
+
+
+def _restore_serving(build: GraphBuild) -> None:
+    if _serving_target() is None:
+        return  # a failed first build: there is no graph to serve
+    if _start_serving() and not _wait_until_healthy(build):
+        logger.error('OTP is not healthy on the previous graph after build %s failed', build.id)
 
 
 def _build_error_code(result: otp_runtime.RunResult, default: str) -> str:

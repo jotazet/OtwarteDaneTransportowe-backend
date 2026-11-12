@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.db import IntegrityError, transaction
 from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -16,6 +17,7 @@ from blog.api.serializers import (
     reaction_count_annotations,
 )
 from blog.models import Post, Reaction
+from OtwarteDaneTransportowe.api_errors import CodedError
 from OtwarteDaneTransportowe.auth_roles import IsEditorOrOwnBloggerOrReadOnly
 from OtwarteDaneTransportowe.request_ip import get_client_ip
 
@@ -89,7 +91,7 @@ class MyReactionsView(APIView):
         post_ids = []
         for value in raw:
             value = value.strip()
-            if value.isdigit():
+            if value.isdecimal():
                 post_ids.append(int(value))
             if len(post_ids) >= self.MAX_POST_IDS:
                 break
@@ -134,11 +136,11 @@ class ReactionViewSet(viewsets.ModelViewSet):
         """
         client_ip = self.get_client_ip(request)
         if not client_ip:
-            return Response({'detail': 'Unable to determine client IP.'}, status=400)
+            raise CodedError('blog.client_ip_unknown')
 
         post_id = kwargs.get('post_id')
         if not post_id:
-            return Response({'detail': 'post_id is required in the URL.'}, status=400)
+            raise CodedError('blog.post_id_required')
         post = get_object_or_404(Post, pk=post_id)
 
         serializer = self.get_serializer(data=request.data)
@@ -165,18 +167,24 @@ class ReactionViewSet(viewsets.ModelViewSet):
             )
 
             if reactions_today >= 10:
-                return Response(
-                    {'detail': 'Daily limit reached. You can add maximum 10 reactions per day.'},
-                    status=status.HTTP_429_TOO_MANY_REQUESTS,
-                )
+                raise CodedError('blog.reaction_daily_limit', status.HTTP_429_TOO_MANY_REQUESTS)
 
-            reaction = Reaction.objects.create(
-                post=post,
-                ip_address=client_ip,
-                reaction=new_reaction,
-            )
-            output = self.get_serializer(reaction)
-            return Response(output.data, status=status.HTTP_201_CREATED)
+            try:
+                # Savepoint: a failed INSERT must not poison an outer transaction
+                # (ATOMIC_REQUESTS, tests) before we look the row up again.
+                with transaction.atomic():
+                    reaction = Reaction.objects.create(
+                        post=post,
+                        ip_address=client_ip,
+                        reaction=new_reaction,
+                    )
+            except IntegrityError:
+                # A concurrent request (double click) created the row between our
+                # lookup and the insert: treat this request as the update.
+                existing = Reaction.objects.get(post=post, ip_address=client_ip)
+            else:
+                output = self.get_serializer(reaction)
+                return Response(output.data, status=status.HTTP_201_CREATED)
 
         # Existing row found for this (post, IP)
         if is_empty:

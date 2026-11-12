@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import atexit
+import hashlib
 import os
+import re
 import socket
+import stat
 import tempfile
 import threading
 import time
-from contextlib import contextmanager, nullcontext
-from ipaddress import ip_address
-from urllib.parse import urljoin, urlsplit
+from contextlib import contextmanager, nullcontext, suppress
+from ipaddress import ip_address, ip_network
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 
@@ -33,21 +35,25 @@ class ResponseTooLarge(OutboundURLBlocked):
         self.max_bytes = max_bytes
 
 
+# NAT64 prefixes embed an IPv4 address in the low bits, so a NAT64 gateway would
+# reach whatever IPv4 host is encoded. ``is_global`` still accepts the well-known
+# prefix, hence the explicit list.
+_NAT64_NETWORKS = (ip_network("64:ff9b::/96"), ip_network("64:ff9b:1::/48"))
+
+
 def _is_public_ip(ip: str) -> bool:
+    """True only for globally routable unicast addresses.
+
+    ``is_global`` excludes private, loopback, link-local, reserved and
+    unspecified ranges as well as shared address space (100.64.0.0/10), but it
+    accepts some multicast ranges, so multicast is rejected separately.
+    """
     addr = ip_address(ip)
-    if addr.is_private:
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    if addr.version == 6 and any(addr in network for network in _NAT64_NETWORKS):
         return False
-    if addr.is_loopback:
-        return False
-    if addr.is_link_local:
-        return False
-    if addr.is_multicast:
-        return False
-    if addr.is_reserved:
-        return False
-    if addr.is_unspecified:
-        return False
-    return True
+    return addr.is_global and not addr.is_multicast
 
 
 def split_userinfo(url: str) -> tuple[str, dict]:
@@ -69,7 +75,7 @@ def split_userinfo(url: str) -> tuple[str, dict]:
     if not parts.username and not parts.password:
         return url, {}
     import base64
-    from urllib.parse import unquote, urlunsplit
+    from urllib.parse import unquote
 
     user = unquote(parts.username or "")
     password = unquote(parts.password or "")
@@ -81,6 +87,47 @@ def split_userinfo(url: str) -> tuple[str, dict]:
     return clean, {"Authorization": f"Basic {token}"}
 
 
+def redact_url(url: str) -> str:
+    """``url`` for logs and stored error messages: scheme, host, port and path.
+
+    Userinfo, the query and the fragment are dropped, since sources carry
+    credentials there (``user:pass@``, ``?token=``). A relative URL keeps its
+    path only.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<invalid URL>"
+    netloc = parts.netloc.rpartition("@")[2]
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+# Absolute URLs, and paths with a query: urllib3 reports a failed request
+# as "... with url: /feed?token=... (Caused by ...)". Userinfo, query and
+# fragment run to the next whitespace: quotes and brackets are valid there.
+_URL_IN_TEXT = re.compile(
+    r"""[a-z][a-z0-9+.-]*://[^\s/?#]*[^\s'"<>?#]*(?:[?#]\S*)?|/[^\s'"<>?]*\?\S*""", re.I
+)
+
+
+def redact_urls(text: str) -> str:
+    """``text`` (e.g. an exception message) with every URL in it redacted."""
+    return _URL_IN_TEXT.sub(lambda match: redact_url(match.group()), text)
+
+
+def _normalise_url(url: str) -> str:
+    """``url`` exactly as ``requests`` will send it.
+
+    An internationalised hostname becomes its ASCII (IDNA/punycode) form —
+    the name urllib3 actually resolves. Validating, pinning and requesting
+    this one form keeps the three in agreement.
+    """
+    try:
+        return requests.Request("GET", url).prepare().url
+    except requests.exceptions.RequestException as exc:
+        raise OutboundURLBlocked("Invalid URL.") from exc
+
+
 def resolve_public_ips(url: str) -> tuple[str, int, set[str]]:
     """
     Validate an outbound URL and return ``(hostname, port, resolved_public_ips)``.
@@ -88,6 +135,8 @@ def resolve_public_ips(url: str) -> tuple[str, int, set[str]]:
     SSRF guard:
     - scheme must be http/https
     - must have hostname
+    - the returned hostname is the ASCII form ``requests`` resolves (see
+      :func:`_normalise_url`)
     - resolve DNS and block if ANY resolved IP is private/loopback/link-local/etc.
 
     Userinfo (``user:pass@host``) is permitted — see :func:`split_userinfo`;
@@ -102,12 +151,14 @@ def resolve_public_ips(url: str) -> tuple[str, int, set[str]]:
     if not parts.hostname:
         raise OutboundURLBlocked("URL must include a hostname.")
 
+    parts = urlsplit(_normalise_url(url.strip()))
+    hostname = parts.hostname
     port = parts.port or (443 if parts.scheme == "https" else 80)
 
     try:
-        infos = socket.getaddrinfo(parts.hostname, port)
+        infos = socket.getaddrinfo(hostname, port)
     except socket.gaierror as exc:
-        raise OutboundURLBlocked(f"DNS resolution failed for host '{parts.hostname}'.") from exc
+        raise OutboundURLBlocked(f"DNS resolution failed for host '{hostname}'.") from exc
 
     resolved_ips: set[str] = set()
     for family, _, _, _, sockaddr in infos:
@@ -117,13 +168,13 @@ def resolve_public_ips(url: str) -> tuple[str, int, set[str]]:
             resolved_ips.add(sockaddr[0])
 
     if not resolved_ips:
-        raise OutboundURLBlocked(f"Could not resolve host '{parts.hostname}'.")
+        raise OutboundURLBlocked(f"Could not resolve host '{hostname}'.")
 
     for ip in resolved_ips:
         if not _is_public_ip(ip):
             raise OutboundURLBlocked("URL resolves to a non-public IP address.")
 
-    return parts.hostname, port, resolved_ips
+    return hostname, port, resolved_ips
 
 
 def assert_safe_outbound_url(url: str) -> None:
@@ -160,6 +211,16 @@ def _may_forward_auth(origin: tuple[str, str, int], target: tuple[str, str, int]
 # ---------------------------------------------------------------------------
 
 
+def _is_ip_literal(host) -> bool:
+    if not isinstance(host, str):  # ip_address() reads 4/16 bytes as a packed IP
+        return False
+    try:
+        ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
 @contextmanager
 def _pinned_dns(hostname: str, allowed_ips: set[str]):
     """
@@ -176,23 +237,37 @@ def _pinned_dns(hostname: str, allowed_ips: set[str]):
 
     Supported Celery pool remains prefork; the thread guard is what keeps this
     correct if that ever changes.
+
+    Fails closed: on the owner thread, any other name (one the client spelled
+    differently from ``hostname``) raises ``socket.gaierror`` before a
+    connection is made, instead of getting a fresh, unvalidated lookup. Literal
+    IPs still resolve, as that needs no DNS and is how nested pins answer.
+
+    Yields a list that records every pinned lookup. Empty after a request
+    means the client made no lookup at all, so the caller must not trust
+    that connection either.
     """
     real_getaddrinfo = socket.getaddrinfo
     owner_thread = threading.get_ident()
+    pinned_lookups: list[str] = []
 
     def patched(host, *args, **kwargs):
-        if host == hostname and threading.get_ident() == owner_thread:
+        if threading.get_ident() != owner_thread:
+            return real_getaddrinfo(host, *args, **kwargs)
+        if host == hostname:
             results: list = []
             for ip in allowed_ips:
                 # Resolving a literal IP performs no network DNS lookup.
                 results.extend(real_getaddrinfo(ip, *args, **kwargs))
-            if results:
-                return results
-        return real_getaddrinfo(host, *args, **kwargs)
+            pinned_lookups.append(host)
+            return results
+        if _is_ip_literal(host):
+            return real_getaddrinfo(host, *args, **kwargs)
+        raise socket.gaierror(socket.EAI_NONAME, f"'{host}' is outside the DNS pin.")
 
     socket.getaddrinfo = patched
     try:
-        yield
+        yield pinned_lookups
     finally:
         socket.getaddrinfo = real_getaddrinfo
 
@@ -201,27 +276,41 @@ def _pinned_dns(hostname: str, allowed_ips: set[str]):
 # Incomplete TLS chains (AIA completion)
 # ---------------------------------------------------------------------------
 
-# Per-process cache: hostname -> path of a CA bundle extended with the host's
-# AIA-fetched intermediates. Realtime loops hit the same hosts every few
+# Per-process cache: (hostname, port) -> path of a CA bundle extended with the
+# host's AIA-fetched intermediates. Realtime loops hit the same hosts every few
 # seconds; the chain must not be re-fetched each time.
-_AIA_BUNDLE_CACHE: dict[str, str] = {}
+_AIA_BUNDLE_CACHE: dict[tuple[str, int], str] = {}
 _AIA_INTERMEDIATE_MAX_BYTES = 100_000
+# requests' ``verify`` takes a path, so the bundles are files, named after
+# their content: a recycled worker child rewrites the same file instead of
+# leaving another behind (billiard children may skip atexit cleanup).
+_AIA_BUNDLE_DIR = os.path.join(tempfile.gettempdir(), 'odt-ca-aia')
 
 
-def _purge_aia_bundles() -> None:
-    """Remove the generated CA bundles (they are NamedTemporaryFile(delete=False))."""
-    for path in list(_AIA_BUNDLE_CACHE.values()):
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-    _AIA_BUNDLE_CACHE.clear()
+def _write_aia_bundle(pem: str) -> str | None:
+    """Path of the file holding ``pem``; None unless the directory is ours alone
+    (a bundle is a trust anchor, so nobody else may plant a root in it)."""
+    try:
+        os.makedirs(_AIA_BUNDLE_DIR, mode=0o700, exist_ok=True)
+        info = os.lstat(_AIA_BUNDLE_DIR)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            return None
+        path = os.path.join(_AIA_BUNDLE_DIR, f'{hashlib.sha256(pem.encode()).hexdigest()}.pem')
+        if not os.path.exists(path):
+            with tempfile.NamedTemporaryFile(
+                'w', dir=_AIA_BUNDLE_DIR, suffix='.tmp', delete=False
+            ) as tmp:
+                tmp.write(pem)
+            # Atomic: a concurrent reader never sees a half-written bundle.
+            os.replace(tmp.name, path)
+        return path
+    except OSError:
+        return None
 
 
-atexit.register(_purge_aia_bundles)
-
-
-def _ca_bundle_with_aia_intermediates(hostname: str, port: int) -> str | None:
+def _ca_bundle_with_aia_intermediates(
+    hostname: str, port: int, allowed_ips: set[str]
+) -> str | None:
     """Best-effort fix for servers that omit their intermediate certificate.
 
     Reads the server's leaf certificate, follows its Authority Information
@@ -232,23 +321,25 @@ def _ca_bundle_with_aia_intermediates(hostname: str, port: int) -> str | None:
     they only help verification succeed if they genuinely link the leaf to a
     trusted root, so this cannot make a forged certificate pass.
     """
-    cached = _AIA_BUNDLE_CACHE.get(hostname)
-    if cached:
+    cached = _AIA_BUNDLE_CACHE.get((hostname, port))
+    if cached and os.path.exists(cached):
         return cached
 
     import ssl
-    import tempfile
 
     import certifi
     from cryptography import x509
     from cryptography.hazmat.primitives import serialization
 
     try:
-        # Unpinned on purpose: this leaf is untrusted input used ONLY to read
-        # its AIA extension, and each issuer URL below is SSRF-validated and
-        # pinned on its own. The request that actually gets verified is pinned
-        # by the caller.
-        leaf_pem = ssl.get_server_certificate((hostname, port), timeout=10)
+        # Pinned like the request itself, so the handshake reaches only the
+        # validated addresses. The leaf is untrusted input used ONLY to read
+        # its AIA extension; each issuer URL below is validated and pinned on
+        # its own.
+        with _pinned_dns(hostname, allowed_ips) as pinned:
+            leaf_pem = ssl.get_server_certificate((hostname, port), timeout=10)
+        if not pinned:
+            return None
         leaf = x509.load_pem_x509_certificate(leaf_pem.encode())
         aia = leaf.extensions.get_extension_for_class(x509.AuthorityInformationAccess).value
         issuer_urls = [
@@ -288,13 +379,10 @@ def _ca_bundle_with_aia_intermediates(hostname: str, port: int) -> str | None:
 
     with open(certifi.where(), encoding='utf-8') as fh:
         roots = fh.read()
-    bundle = tempfile.NamedTemporaryFile(
-        'w', suffix='.pem', prefix=f'ca-aia-{hostname}-', delete=False
-    )
-    bundle.write(roots + '\n' + '\n'.join(intermediate_pems))
-    bundle.close()
-    _AIA_BUNDLE_CACHE[hostname] = bundle.name
-    return bundle.name
+    bundle = _write_aia_bundle(roots + '\n' + '\n'.join(intermediate_pems))
+    if bundle:
+        _AIA_BUNDLE_CACHE[(hostname, port)] = bundle
+    return bundle
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +406,46 @@ class _Deadline:
         if self._expires_at is not None and time.monotonic() > self._expires_at:
             raise requests.exceptions.Timeout('Total download time budget exceeded.')
 
+    def watchdog(self, interrupt) -> threading.Timer | None:
+        """Call ``interrupt`` from another thread once the budget has run out."""
+        if self._expires_at is None:
+            return None
+        timer = threading.Timer(max(0.0, self._expires_at - time.monotonic()), interrupt)
+        timer.daemon = True
+        timer.start()
+        return timer
+
+
+def _interrupt_read(response) -> None:
+    # Already closed or released to the pool: there is no read to interrupt.
+    with suppress(Exception):
+        response.raw.shutdown()
+
+
+def _pinned_get(url: str, hostname: str, allowed_ips: set[str], **kwargs) -> requests.Response:
+    """Un-redirected streaming ``requests.get`` pinned to ``allowed_ips``.
+
+    Backstop to the refusal in :func:`_pinned_dns`: a response obtained
+    without any pinned lookup is discarded.
+    """
+    with _pinned_dns(hostname, allowed_ips) as pinned:
+        response = requests.get(url, allow_redirects=False, stream=True, **kwargs)
+    if not pinned:
+        response.close()
+        raise OutboundURLBlocked("The connection did not use the validated address.")
+    return response
+
 
 def _drain(response, body, *, max_bytes: int, chunk_size: int, deadline: _Deadline) -> None:
-    """Stream a response body into ``body``, enforcing ``max_bytes``, and rewind it."""
+    """Stream a response body into ``body``, enforcing ``max_bytes``, and rewind it.
+
+    Checking the deadline between chunks is not enough: a read blocks until a
+    whole chunk (or decoder output) has arrived, which a server trickling bytes
+    within the read timeout never completes. A watchdog shuts the socket down
+    at the deadline, so the blocked read returns and the fetch fails as a
+    ``Timeout``.
+    """
+    watchdog = deadline.watchdog(lambda: _interrupt_read(response))
     try:
         total = 0
         for chunk in response.iter_content(chunk_size=chunk_size):
@@ -331,8 +456,19 @@ def _drain(response, body, *, max_bytes: int, chunk_size: int, deadline: _Deadli
             if total > max_bytes:
                 raise ResponseTooLarge(max_bytes)
             body.write(chunk)
+        # A shut-down socket can also look like a clean end of the body.
+        deadline.check()
         body.seek(0)
+    except requests.exceptions.ChunkedEncodingError as exc:
+        deadline.check()
+        # Cut off mid-transfer: a connection failure, not bad content.
+        raise requests.exceptions.ConnectionError(exc) from exc
+    except Exception:
+        deadline.check()
+        raise
     finally:
+        if watchdog:
+            watchdog.cancel()
         response.close()
 
 
@@ -364,7 +500,7 @@ def safe_download(
     - the body is size-capped WHILE streaming, never after the fact.
     """
     deadline = _Deadline(total_timeout)
-    origin = _request_origin(split_userinfo(url)[0])
+    origin = _request_origin(_normalise_url(split_userinfo(url)[0]))
     current_url = url
 
     for _ in range(max_redirects + 1):
@@ -373,6 +509,7 @@ def safe_download(
         # THIS hop; the request itself always goes to a credential-free URL.
         # Explicitly passed headers (auth_type/auth_value) take precedence.
         clean_url, userinfo_headers = split_userinfo(current_url)
+        clean_url = _normalise_url(clean_url)
 
         if _may_forward_auth(origin, _request_origin(clean_url)):
             request_headers = {**userinfo_headers, **(headers or {})} or None
@@ -384,42 +521,25 @@ def safe_download(
 
         hostname, port, allowed_ips = resolve_public_ips(clean_url)
 
-        response = None
-        verify_error = None
-        with _pinned_dns(hostname, allowed_ips):
-            try:
-                response = requests.get(
-                    clean_url,
-                    headers=request_headers,
-                    timeout=timeout,
-                    allow_redirects=False,
-                    stream=True,
-                )
-            except requests.exceptions.SSLError as exc:
-                # Misconfigured upstream: server does not send its intermediate
-                # certificate (browsers hide this by AIA-fetching it). Complete
-                # the chain ourselves and retry ONCE — full verification stays
-                # in force, the chain must still anchor at a trusted root.
-                if "certificate verify failed" not in str(exc).lower():
-                    raise
-                verify_error = exc
-
-        if response is None:
-            # Deliberately outside the pin above: completing the chain talks to
-            # the CA's repository, a different host that needs its own DNS
-            # resolution and its own pin.
-            bundle = _ca_bundle_with_aia_intermediates(hostname, port)
+        request_kwargs = {'headers': request_headers, 'timeout': timeout}
+        try:
+            response = _pinned_get(clean_url, hostname, allowed_ips, **request_kwargs)
+        except requests.exceptions.SSLError as exc:
+            # Misconfigured upstream: server does not send its intermediate
+            # certificate (browsers hide this by AIA-fetching it). Complete
+            # the chain ourselves and retry ONCE — full verification stays
+            # in force, the chain must still anchor at a trusted root.
+            # The pin above has already been lifted: completing the chain
+            # talks to the CA's repository, a different host that needs its
+            # own DNS resolution and its own pin.
+            if "certificate verify failed" not in str(exc).lower():
+                raise
+            bundle = _ca_bundle_with_aia_intermediates(hostname, port, allowed_ips)
             if not bundle:
-                raise verify_error
-            with _pinned_dns(hostname, allowed_ips):
-                response = requests.get(
-                    clean_url,
-                    headers=request_headers,
-                    timeout=timeout,
-                    allow_redirects=False,
-                    stream=True,
-                    verify=bundle,
-                )
+                raise
+            response = _pinned_get(
+                clean_url, hostname, allowed_ips, **request_kwargs, verify=bundle
+            )
 
         if response.is_redirect:
             location = response.headers.get('Location')

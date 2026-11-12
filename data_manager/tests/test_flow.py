@@ -4,7 +4,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.conf import settings
@@ -63,6 +63,7 @@ def fake_download(body: bytes, status_code: int = 200):
     def _cm(*args, **kwargs):
         response = MagicMock()
         response.status_code = status_code
+        response.headers = {}
         response.content = body
         response.raise_for_status = MagicMock()
         yield response, io.BytesIO(body)
@@ -135,10 +136,13 @@ def _mock_docker_from_env(error_count: int, runs: list | None = None):
             }
             with open(os.path.join(output_host_dir, 'report.json'), 'w', encoding='utf-8') as fh:
                 json.dump(payload, fh)
-            return b''
+            container = MagicMock()
+            container.wait.return_value = {'StatusCode': 0}
+            return container
 
     class _DockerClient:
         containers = _Containers()
+        api = MagicMock()
 
     return lambda: _DockerClient()
 
@@ -630,6 +634,14 @@ def test_owner_realtime_restricted_after_stage_2(api_client, normal_user, org):
     assert rts.name == 'GBFS org'
     assert rts.license == 'CC0'
 
+    too_short = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'endpoints': [{'endpoint_type': 'gbfs', 'interval': 4}]},
+        format='json',
+    )
+    assert too_short.status_code == 400, too_short.data
+    assert too_short.data['endpoints'][0]['interval'][0].code == 'realtime.interval_too_short'
+
 
 def test_owner_realtime_restricted_cannot_change_hide_or_original(api_client, normal_user, org):
     rts = RealtimeSubmission.objects.create(
@@ -1081,11 +1093,31 @@ def test_validate_gtfs_task_uses_feeds_queue():
     assert settings.CELERY_TASK_ROUTES['data_manager.validate_gtfs_feed']['queue'] == 'feeds'
 
 
+@pytest.mark.parametrize(
+    ('task', 'queue'),
+    [
+        ('data_manager.fetch_realtime_endpoint', 'realtime'),
+        ('data_manager.validate_realtime_submission', 'realtime'),
+        ('data_manager.bootstrap_realtime_tasks', 'default'),
+        ('data_manager.refresh_static_feeds', 'default'),
+    ],
+)
+def test_realtime_fetches_do_not_share_the_dispatchers_queue(task, queue):
+    """Up to 90 s per realtime job must not delay the dispatchers (issue #47)."""
+    from OtwarteDaneTransportowe.celery import app
+
+    assert app.amqp.router.route({}, task)['queue'].name == queue
+
+
 def test_beat_dispatchers_do_not_wait_behind_feeds_jobs():
     # The feeds worker runs one long job at a time (validation/download up to
     # ~10 min); the static dispatcher only catches up 10 minutes, so it must
     # never be queued behind those jobs.
-    for name in ('refresh-static-feeds', 'bootstrap-realtime-tasks'):
+    for name in (
+        'refresh-static-feeds',
+        'bootstrap-realtime-tasks',
+        'retry-stuck-realtime-verifications',
+    ):
         assert settings.CELERY_BEAT_SCHEDULE[name]['options']['queue'] == 'default'
 
 

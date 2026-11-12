@@ -30,9 +30,14 @@ def gtfs_variant(marker: str) -> bytes:
 @pytest.fixture(autouse=True)
 def fresh_vehicle_snapshot():
     """The vehicle snapshot is per process; no test may see another test's vehicles."""
-    vehicles.forget_snapshot()
+    _forget_vehicle_snapshot()
     yield
-    vehicles.forget_snapshot()
+    _forget_vehicle_snapshot()
+
+
+def _forget_vehicle_snapshot():
+    with vehicles._lock:
+        vehicles._snapshot.update(until=0.0, taken=None, vehicles=[])
 
 
 @pytest.fixture
@@ -189,7 +194,7 @@ def fake_otp(monkeypatch):
     monkeypatch.setattr(pipeline, '_sleep', lambda seconds: None)
     monkeypatch.setattr(pipeline, 'SERVER_START_TIMEOUT_SECONDS', 0)
 
-    def prepare_osm(source, cells, target):
+    def prepare_osm(source, cells, target, on_tick=None):
         Path(target).write_text('x')
 
     monkeypatch.setattr(osm, 'prepare_osm', prepare_osm)

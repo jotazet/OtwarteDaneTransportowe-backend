@@ -66,11 +66,6 @@ def snapshot(query) -> list[dict]:
         _lock.release()
 
 
-def forget_snapshot() -> None:
-    with _lock:
-        _snapshot.update(until=0.0, taken=None, vehicles=[])
-
-
 def vehicles(data: dict) -> list[dict]:
     oldest = timezone.now() - MAX_POSITION_AGE
     rows = []
@@ -148,50 +143,77 @@ query Running($agency: String!, $today: LocalDate!, $yesterday: LocalDate!) {{
 }}
 """
 # Every trip of the operator for two days (MPK Kraków: 33k trips, ~10 MB, 0.8 s),
-# so the answer is reused for a minute, and while one request recounts, the
-# others use the previous count.
+# so the answer is reused for a minute. An operator is recounted by one request
+# at a time (in every process); the others use the previous count, or get
+# planner.busy before there is one.
 RUNNING_CACHE_SECONDS = 60
 RUNNING_PREVIOUS_SECONDS = 600
+# One recount at a time per web process, so recounts take at most one of its two
+# OTP query slots (otp_runtime). A request waits for other recounts at most this
+# long in all (about six recounts of the largest measured operator), then uses
+# previous counts or gets planner.busy: a slow OTP must not hold its thread.
+RECOUNT_WAIT_SECONDS = 5
+# Longer than a recount (the wait above plus the 10 s OTP timeout), short enough
+# that a lock left by a killed web process blocks first counts only briefly.
+RECOUNT_LOCK_SECONDS = 30
+_recount_slot = threading.Lock()
 
 
-def running_trips(agency_id: str, graph_id: int, query) -> dict | None:
+def running_trips(agency_id: str, graph_id: int, query, wait_until: float) -> dict | None:
     """``{'agency': {id, name}, 'trips': [IDs of its trips under way]}``; None if unknown.
 
     Under way: started and not yet finished now, by predicted times where the
     operator gives them; trips cancelled in realtime are not counted. Cached per
     served graph, whose trip IDs they are.
+
+    Raises otp_runtime.OtpBusy when the operator cannot be recounted now (another
+    request is recounting it, or this process another operator) and there is no
+    previous count by ``wait_until`` (time.monotonic()), and whatever ``query`` raises.
     """
     key = f'planner:running:{graph_id}:{agency_id}'
     cached = cache.get(key)
     if cached is not None:
         return cached or None
-    previous = cache.get(f'{key}:previous')
-    if previous is not None and not cache.add(f'{key}:lock', 1, RUNNING_CACHE_SECONDS):
-        return previous or None
+    if not cache.add(f'{key}:lock', 1, RECOUNT_LOCK_SECONDS):
+        return _previous_count(key)
     try:
-        today = schedules.today()
-        data = query(
-            RUNNING_DOCUMENT,
-            {
-                'agency': agency_id,
-                'today': today.isoformat(),
-                'yesterday': (today - timedelta(days=1)).isoformat(),
-            },
-        )
-        agency = data.get('agency')
-        result = (
-            {
-                'agency': {'id': agency['gtfsId'], 'name': agency['name']},
-                'trips': sorted(_under_way(agency, timezone.now())),
-            }
-            if agency
-            else {}
-        )
+        if not _recount_slot.acquire(timeout=max(0.0, wait_until - time.monotonic())):
+            return _previous_count(key)
+        try:
+            result = _count_running(agency_id, query)
+        finally:
+            _recount_slot.release()
         cache.set(key, result, RUNNING_CACHE_SECONDS)
         cache.set(f'{key}:previous', result, RUNNING_PREVIOUS_SECONDS)
     finally:
         cache.delete(f'{key}:lock')
     return result or None
+
+
+def _previous_count(key: str) -> dict | None:
+    previous = cache.get(f'{key}:previous')
+    if previous is None:
+        raise otp_runtime.OtpBusy
+    return previous or None
+
+
+def _count_running(agency_id: str, query) -> dict:
+    today = schedules.today()
+    data = query(
+        RUNNING_DOCUMENT,
+        {
+            'agency': agency_id,
+            'today': today.isoformat(),
+            'yesterday': (today - timedelta(days=1)).isoformat(),
+        },
+    )
+    agency = data.get('agency')
+    if not agency:
+        return {}
+    return {
+        'agency': {'id': agency['gtfsId'], 'name': agency['name']},
+        'trips': sorted(_under_way(agency, timezone.now())),
+    }
 
 
 def _under_way(agency: dict, now: datetime) -> set[str]:

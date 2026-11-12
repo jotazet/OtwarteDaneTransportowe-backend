@@ -23,7 +23,7 @@ The full submission lifecycle (stages, rejections, fetch errors and pauses) is d
 GET /api/data_manager/submissions/
 ```
 
-The endpoint requires JWT and returns, in a single response (not paginated), the logged-in user's own submissions: static (`feed-submissions`) and realtime (`realtime-submissions`). The optional query param `transport_organization` filters both types by organization.
+The endpoint requires JWT and returns, in a single response (not paginated), the logged-in user's own submissions: static (`feed-submissions`) and realtime (`realtime-submissions`). The optional query param `transport_organization` filters both types by organization (a non-integer value returns `400`, as for the lists below). A user without the `DataProvider`, `Helper` or `Admin` role gets `403` with `{"code": "feeds.submissions_forbidden", "details": {}}`.
 
 ```json
 {
@@ -72,8 +72,8 @@ Base endpoint:
 - `GET list` - `DataProvider` sees its own submissions; `Helper`/`Admin` sees all.
 - `POST` - `DataProvider` or `Admin`.
 - `GET detail` - owner or `Helper`/`Admin`.
-- `PUT/PATCH` - owner (`DataProvider`) subject to the **editing restrictions** below; **Helper** may only **confirm/reject** (`stage`, `rejection_cause`); **Admin** (the `Admin` group) may edit the submission content as well as confirm/reject.
-- `DELETE` - `Admin` only (the `Admin` group or a superuser); anyone else, including the owner, gets `403` (submissions are part of the review audit trail).
+- `PUT/PATCH` - owner (`DataProvider`) subject to the **editing restrictions** below; **Helper** may only **confirm/reject** (`stage`, `rejection_cause`); **Admin** (the `Admin` group) may edit the submission content as well as confirm/reject. Anyone else who sends `stage` or `rejection_cause` gets `403` with `{"code": "feeds.review_forbidden", "details": {}}`.
+- `DELETE` - `Admin` only (the `Admin` group or a superuser); anyone else, including the owner, gets `403` with `{"code": "feeds.delete_forbidden", "details": {}}` (submissions are part of the review audit trail).
 
 **Editing restrictions for the owner (static feed):**
 
@@ -85,18 +85,18 @@ Base endpoint:
 > **Secret** credentials must be provided via `auth_type`/`auth_value`
 > (encrypted, they force proxying and are never disclosed).
 
-- **Full editing** — only when the submission is **rejected** (`is_rejected=true`, usually `current_stage=1`) or when the history contains only stage **1** (a rare case with no transition to stage 2). In that case all fields can be changed, including `name`, the source (`url` / file), `is_original`, `hide_original`, `auth_type`, `auth_value`.
+- **Full editing** — only at `current_stage=1`: after a **rejection** (`is_rejected=true`) or after a reviewer moved the submission back to stage 1 without a `rejection_cause`. In that case all fields can be changed, including `name`, the source (`url` / file), `is_original`, `hide_original`, `auth_type`, `auth_value`. An owner request that sends source fields (`url`, `file`, `auth_type`, `auth_value`, `is_original`, `hide_original`) moves the submission to stage 2 and restarts verification, in both cases.
 - **Editing from stage 2 to 4** — when there is **no** rejection and `current_stage` is **2, 3 or 4**, the owner (`DataProvider`) may change only:
   - on the submission: **`note`** (the **`name` field is locked**);
   - in `static_entry`: only **`license`**, **`download_time_1`**, **`download_time_2`** (UTC; including setting `download_time_2` to `null`).
-- **Forbidden from stage 2 to 4 for the owner** (an attempt to change them via `PATCH` returns `400` with a validation error): **`name`**, **`transport_organization`**, **`data_type`**, link / file (`url`, `file`), **`is_original`**, **`hide_original`**, **`auth_type`**, **`auth_value`** (password / secret). **Only a user in the Django `Admin` group** may change the URL/file at stages 2–4 (`is_superuser` / `is_staff` alone without that group is **not** enough).
+- **Forbidden from stage 2 to 4 for the owner** (an attempt to change them via `PUT` or `PATCH` returns `400` with `feeds.field_locked` on the field, e.g. `{"name": ["feeds.field_locked"]}` or `{"static_entry": {"url": ["feeds.field_locked"]}}`; sending the current value is allowed, so a full `PUT` works): **`name`**, **`transport_organization`**, **`data_type`**, link / file (`url`, `file`), **`is_original`**, **`hide_original`**, **`auth_type`**, **`auth_value`** (password / secret). **Only a user in the Django `Admin` group** may change the URL/file at stages 2–4 (`is_superuser` / `is_staff` alone without that group is **not** enough).
 - **Published feed (stage 4):** re-running GTFS validation **does not move** the stage back to rejection — the error is logged and the `FeedSubmission` stays at stage 4.
-- **Helper** does not edit submission content at any stage: a `PUT`/`PATCH` from a Helper with any field other than `stage` and `rejection_cause` returns `403` (`{"detail": "Helper may only confirm or reject submissions ..."}`) and nothing is saved. **Admin** (the `Admin` group) may change the URL/file at stages 2–4; other fields according to role.
+- **Helper** does not edit submission content at any stage: a `PUT`/`PATCH` from a Helper with any field other than `stage` and `rejection_cause` returns `403` with `{"code": "feeds.helper_content_edit_forbidden", "details": {}}` and nothing is saved. **Admin** (the `Admin` group) may change the URL/file at stages 2–4; other fields according to role.
 
 **List query params:**
 
 - `data_type` - e.g. `gtfs`.
-- `transport_organization` - organization ID.
+- `transport_organization` - organization ID; a value that is not an integer returns `400` with `{"transport_organization": ["feeds.invalid_integer"]}`.
 
 **List:**
 
@@ -186,9 +186,23 @@ Base endpoint:
 
 In `static_entry`:
 
-- `download_time_1` and `download_time_2` are daily fetch times in **UTC** (`HH:MM:SS`), not Polish local time. `download_time_1` is required for a URL source and must be empty for an uploaded file; `download_time_2` is optional. ODT fetches on this schedule only when the source is proxied (`is_proxy_managed`).
+- Exactly one source: a `url` or a `file`. Neither returns `400` with `feeds.static_source_missing`, both `feeds.static_source_url_and_file`. A `url` refused by ODT's outbound security rules returns `{"static_entry": {"url": ["feeds.url_blocked"]}}`. An uploaded GTFS file that is not a ZIP returns `feeds.gtfs_not_zip` on `static_entry.file`, a file over the size limit `feeds.file_too_large`. See [error codes](README.md#error-codes).
+- `download_time_1` and `download_time_2` are daily fetch times in **UTC** (`HH:MM:SS`), not Polish local time. `download_time_1` is required for a URL source (`feeds.download_time_required`) and must be empty for an uploaded file (`feeds.download_time_with_file`); `download_time_2` is optional. ODT fetches on this schedule only when the source is proxied (`is_proxy_managed`).
 - The fetch health fields, from `fetch_status` to `fetch_error_count_7d`, are present only when `is_proxy_managed` is `true` (a URL with `hide_original=true`); for an uploaded file or a non-proxied URL they are left out. They are described in the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
-- `validation_status` is `pending`, `valid`, `invalid` or `error`; `validation_message` is a short English status or error text from validation (empty when valid).
+- `validation_status` is `pending`, `valid`, `invalid` or `error`. `validation_message` depends on it:
+  - `pending`, `valid`: empty.
+  - `invalid`: the feed failed validation and the submission was rejected; the same text as the rejection cause (validator notice codes as `code: count`, or English text when the provider's URL could not be downloaded).
+  - `error`: validation **could not run** because of a problem on ODT's side; the feed was not judged. The submission keeps its stage (no rejection); the ODT team re-runs the validation (`manage.py retry_gtfs_validation`), and a proxied feed is also re-validated at its next fetch. `validation_message` is one of the codes below, which the frontend translates ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
+
+| Code | Meaning |
+|---|---|
+| `gtfs_validation.file_missing` | The feed file to validate is not available on ODT's storage. |
+| `gtfs_validation.validator_unavailable` | ODT could not start the validator (Docker unreachable). |
+| `gtfs_validation.validator_failed` | The validator stopped or produced no usable report (e.g. it ran out of memory). |
+| `gtfs_validation.timeout` | Validation did not finish within ODT's time limit. |
+| `gtfs_validation.credential_undecryptable` | ODT cannot decrypt the stored source credential (a key configuration problem on ODT's side), so it did not download the feed. |
+
+`realtime_submissions` lists the realtime submissions linked to this static feed. For a `DataProvider` it holds only the ones the feed's owner submitted; `GET .../download/realtime/{endpoint_pk}/` likewise returns `404` for an endpoint of another user's realtime submission.
 
 For Helper/Admin the detail and the write responses also contain `submitted_by_username`.
 
@@ -234,6 +248,10 @@ If `auth_type` is non-empty (anything but `""`), the backend automatically sets 
 
 For a URL source, `hide_original=true` **does not require** authorization to be set — the server can download a public URL and serve a copy without disclosing the original link.
 
+Changing the source of a proxied static feed (to an uploaded file, to another URL, or `hide_original` to `false`) drops the server's copy of the old URL in the same `PATCH`: `cached_file` and `cached_at` become `null` and the file is deleted. Validation and the public download then use the new source. Changing only `license` or the download schedule keeps the copy.
+
+`cached_at` is when the current copy was downloaded. A scheduled fetch that finds the upstream file unchanged keeps the copy and its `cached_at` and only updates `last_fetch_success_at` (see [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds)).
+
 **Create - file upload:**
 
 ```http
@@ -257,9 +275,11 @@ static_entry.license=CC BY 4.0
 }
 ```
 
-`stage` must be a number from 1 to 4. If `stage=4`, the backend creates a `completed` history entry and the feed becomes public.
+`stage` must be a number from 1 to 4; anything else returns `400` with `{"stage": ["feeds.invalid_stage"]}`. If `stage=4`, the backend creates a `completed` history entry and the feed becomes public.
 
 **Reviewer override:** Helper/Admin may set **any** stage from any state, skipping stages or moving a submission back; the rule and its history entries are in the [feed workflow](../domain/feed-workflow.md#reviewer-override). Sending the current stage changes nothing. A non-empty `rejection_cause` takes precedence over `stage`. The same applies to realtime submissions.
+
+**Concurrent stage change:** a `PUT`/`PATCH` of a static or realtime submission whose stage (or rejection) changed while the request was being processed, e.g. by automatic validation or another reviewer, returns `409 Conflict` with `{"code": "feeds.stage_changed", "details": {}}` and saves nothing. Reload the submission and send the request again if it still applies.
 
 **Rejection by Helper/Admin:**
 
@@ -282,24 +302,24 @@ Base endpoint:
 - `GET list` - `DataProvider` sees its own; `Helper`/`Admin` sees all.
 - `POST` - `DataProvider` or `Admin`.
 - `GET detail` - owner or `Helper`/`Admin`.
-- `PUT/PATCH` - owner (`DataProvider`) subject to the **editing restrictions** below; **Helper** may only **confirm/reject** (`stage`, `rejection_cause`); **Admin** (the `Admin` group) may edit the submission content at any stage as well as confirm/reject.
-- `DELETE` - `Admin` only (the `Admin` group or a superuser); anyone else, including the owner, gets `403`.
+- `PUT/PATCH` - owner (`DataProvider`) subject to the **editing restrictions** below; **Helper** may only **confirm/reject** (`stage`, `rejection_cause`); **Admin** (the `Admin` group) may edit the submission content at any stage as well as confirm/reject. The `403` codes are the same as for static submissions.
+- `DELETE` - `Admin` only (the `Admin` group or a superuser); anyone else, including the owner, gets `403` with `{"code": "feeds.delete_forbidden", "details": {}}`.
 
 **Editing restrictions for the owner (realtime feed):**
 
-- **Full editing** — at stage **1** or after a **rejection** (`is_rejected`): the owner may change, among others, **`name`**, endpoint URLs, authorization (`auth_type`, `auth_value`), `is_original`, `hide_original`, and replace the entire `endpoints` list; the backend may re-run realtime validation after such a change.
+- **Full editing** — at stage **1** or after a **rejection** (`is_rejected`): the owner may change, among others, **`name`**, endpoint URLs, authorization (`auth_type`, `auth_value`), `is_original`, `hide_original`, and replace the entire `endpoints` list. A change of `endpoints`, `protocol` or `static_submission` restarts verification: an `uploaded` entry (back to stage 1) is added to `history` and realtime validation runs again in the background. Other fields (`name`, `note`, `license`) do not restart it.
 - **Stored secrets** (any edit, owner or Admin): `auth_value` is never returned, so it may be omitted (or sent as `""`) when the user does not retype it. If the endpoint of the same `endpoint_type` had the same `auth_type` before the edit and its URL keeps the same origin (scheme and host), its stored `auth_value` is kept; after a move to another origin the secret must be sent again. On a full edit, to replace the secret, send the new `auth_value`; when changing `auth_type`, send the new `auth_value` too; to remove authorization, send `"auth_type": ""`.
 - **Editing from stage 2 upwards** — when there is **no** rejection and `current_stage >= 2`, `DataProvider` may change only:
   - on the submission: **`note`**, **`license`** (the **`name` field is locked**);
   - in each **existing** endpoint: only **`interval`**.
 - **Forbidden from stage 2:** **`name`**, the feed **`url`**, **`auth_type`**, **`auth_value`**, **`is_original`**, **`hide_original`**, adding/removing endpoints, changing `transport_organization` / `static_submission` / `protocol`.
-- With restricted editing, a shortened endpoint object can be sent, e.g. `{"endpoint_type": "gbfs", "interval": 120}` — missing fields are filled in from the database; an attempt to change a locked field returns a validation error.
+- With restricted editing, a shortened endpoint object can be sent, e.g. `{"endpoint_type": "gbfs", "interval": 120}` — missing fields are filled in from the database. An attempt to change a locked field returns `400` with `feeds.field_locked` on that field (`endpoints` for an endpoint's fields); adding or removing endpoints returns `realtime.endpoints_locked`, an `endpoint_type` the submission does not have `realtime.endpoint_type_unknown`, both on `endpoints`.
 - Changing only **`interval`** does **not** re-run the link validation task and does not delete endpoint records.
-- **Helper** does not edit submission content at any stage: a body with any field other than `stage` and `rejection_cause` returns `403`, as for static feeds. **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing) at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background. A failure rejects a submission at stage 2 or 3, but **does not unpublish** one at stage 4: no rejection is recorded and the codes go to the server log only.
+- **Helper** does not edit submission content at any stage: a body with any field other than `stage` and `rejection_cause` returns `403`, as for static feeds. **Admin** (the `Admin` group) may change endpoints (URL, authorization, adding/removing), `protocol` or `static_submission` at stages 2–4; the submission keeps its current stage and realtime validation re-runs in the background. A failure rejects a submission at stage 2 or 3, but **does not unpublish** one at stage 4: no rejection is recorded and the codes go to the server log only.
 
 **List query params:**
 
-- `transport_organization` - organization ID.
+- `transport_organization` - organization ID; a value that is not an integer returns `400` with `{"transport_organization": ["feeds.invalid_integer"]}`.
 
 **Static submissions to which realtime can be added:**
 
@@ -401,15 +421,19 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
 
 **Realtime validation rules:**
 
-- `protocol=gtfs_rt` and `protocol=siri` require `static_submission`.
-- `gtfs_rt` can only be attached to a static `gtfs` feed.
-- `siri` can only be attached to a static `netex` feed.
-- `static_submission` must be a published static feed (`current_stage=4`).
-- `static_submission` must belong to the same `transport_organization`.
-- `protocol=gbfs` cannot have a `static_submission`, i.e. GBFS cannot be attached to `gtfs` or `netex`.
-- `endpoints` are required and cannot be empty.
-- Two endpoints of the same `endpoint_type` cannot be added to one submission.
-- The endpoint type must match the protocol.
+Each rule returns `400` with the code in brackets as the field message ([error codes](README.md#error-codes)).
+
+- `protocol=gtfs_rt` and `protocol=siri` require `static_submission` (`realtime.static_submission_required`).
+- `gtfs_rt` can only be attached to a static `gtfs` feed, `siri` only to a static `netex` feed (`realtime.static_submission_type_mismatch`).
+- `static_submission` must be a published static feed, `current_stage=4` (`realtime.static_submission_not_published`).
+- `static_submission` must belong to the same `transport_organization` (`realtime.static_submission_other_organization`).
+- For a `DataProvider`, `static_submission` must be a feed it submitted itself, as listed by `eligible-static-submissions` (`realtime.static_submission_not_owned`). Checked on create and whenever `static_submission` changes. `Admin` may link any feed.
+- `protocol=gbfs` cannot have a `static_submission`, i.e. GBFS cannot be attached to `gtfs` or `netex` (`realtime.static_submission_not_allowed`).
+- `endpoints` are required and cannot be empty (`realtime.endpoints_required`).
+- Two endpoints of the same `endpoint_type` cannot be added to one submission (`realtime.endpoint_type_duplicate`).
+- An endpoint `url` refused by ODT's outbound security rules returns `feeds.url_blocked` on that endpoint's `url`.
+- The endpoint type must match the protocol (`realtime.endpoints_invalid_for_protocol` on `endpoints`). A `protocol` change sent without `endpoints` keeps the stored endpoints, so they are checked against the new protocol; if they do not fit, `400` with the code as the field message, `{"protocol": ["realtime.endpoints_invalid_for_protocol"]}`. Endpoint types of different protocols never overlap, so in practice a protocol change must send the new `endpoints` with it.
+- `interval` (refresh interval in seconds, default `60`) must be at least **5**; a lower value returns `400` with the code as the field message, `{"endpoints": {"0": {"interval": ["realtime.interval_too_short"]}}}` (keyed by the endpoint's index), also when only the interval is changed from stage 2.
 - `auth_value` is write-only.
 - If `auth_type` is non-empty (anything but `""`), the backend automatically sets `hide_original=True`; `null` is rejected with `400`.
 - `hide_original=true` **does not require** authorization — the endpoint can be fetched by the server from a public URL without `auth_type` / `auth_value`.
@@ -496,8 +520,8 @@ Rejections recorded before codes existed were converted when every part of their
 | `realtime.endpoint_content_invalid` | `endpoint_type`, `protocol` | The body is not a valid feed of `protocol` (`gtfs_rt`: not a parsable protobuf or no `header.gtfs_realtime_version`; `gbfs`: not JSON; `siri`: an HTML page). |
 | `realtime.endpoint_too_large` | `endpoint_type`, `limit_bytes` | The response exceeded the size limit for realtime feeds (`MAX_REALTIME_FEED_BYTES`, 32 MiB by default). |
 | `realtime.endpoint_url_blocked` | `endpoint_type` | The URL was refused by the outbound security rules: its host does not resolve or resolves to a non-public address, or a redirect was refused. |
-| `realtime.endpoint_timeout` | `endpoint_type` | The endpoint did not answer in time. |
-| `realtime.endpoint_unreachable` | `endpoint_type` | No connection could be made (refused, reset, TLS error). |
+| `realtime.endpoint_timeout` | `endpoint_type` | The endpoint did not answer in time, or the verification had used up its time budget (4 minutes for all endpoints) before reaching it. |
+| `realtime.endpoint_unreachable` | `endpoint_type` | No connection could be made (refused, reset, TLS error), or the body was cut off mid-transfer. |
 | `realtime.endpoint_fetch_failed` | `endpoint_type` | Any other error while fetching; details are in the server log. |
 | `realtime.endpoint_cache_failed` | `endpoint_type` | Verification passed, but the first fetch into the server cache (`hide_original`) stored nothing. |
 
@@ -619,7 +643,7 @@ The public catalogue shows only feeds whose latest history entry has `stage_afte
 
 ## Public file downloads
 
-These endpoints are outside `/api/` because they serve as stable public links to feeds.
+These endpoints are outside `/api/` because they serve as stable public links to feeds. `GET /feed/` without a feed ID returns `400` with `{"code": "feeds.feed_id_required", "details": {}}`.
 
 ### `GET /feed/{feed_submission_id}/`
 

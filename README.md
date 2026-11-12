@@ -7,12 +7,12 @@ This README intentionally stays **high-level**. Detailed API docs and deployment
 ## What's in this repo
 
 - **Backend**: Django + Django REST Framework
-- **Runtime**: Docker Compose (web + PostgreSQL) for local development
+- **Runtime**: Docker Compose for local development (web, PostgreSQL, Redis, Celery workers and beat; the journey planner with `COMPOSE_PROFILES=planner`)
 
 ## Documentation
 
 - **API reference**: [`docs/api/`](docs/api/README.md), with breaking changes in [`docs/api/changelog.md`](docs/api/changelog.md)
-- **Deployment**: [`docs/deployment.md`](docs/deployment.md). A GitHub Release with a `vX.Y.Z` tag on `main` deploys to production automatically ([section 20](docs/deployment.md#20-releases-automatic-deployment-from-github)); production settings live in the GitHub environment `production`
+- **Deployment**: [`docs/deployment.md`](docs/deployment.md). A GitHub Release with a `vX.Y.Z` tag on `main` deploys to production automatically ([section 20](docs/deployment.md#20-releases-automatic-deployment-from-github)); application settings and secrets live in the GitHub environment `production`, host settings in `/etc/odt/backend-host.env` on the server
 - **Domain, architecture and decisions**: [`docs/`](docs/README.md)
 - **Conventions for contributors and AI agents**: [`CLAUDE.md`](CLAUDE.md)
 
@@ -62,5 +62,6 @@ Dependencies are managed with [uv](https://docs.astral.sh/uv/): `uv add <package
 ## Configuration notes
 
 - Environment variables are managed via `.env` (see `.env.example` for a baseline).
+- Settings: `docker compose` uses the development settings from `.env.example`, and `manage.py` and pytest default to them on the host. The image, `wsgi.py`, `asgi.py` and `celery.py` default to `settings_prod`, which refuses to start without production secrets: set `DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_dev` to run them elsewhere for development.
 - Service/port mapping for local development is defined in `docker-compose.yml`.
 

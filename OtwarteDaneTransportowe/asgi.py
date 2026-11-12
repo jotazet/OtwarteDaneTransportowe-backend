@@ -11,6 +11,7 @@ import os
 
 from django.core.asgi import get_asgi_application
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'OtwarteDaneTransportowe.settings')
+# Without DJANGO_SETTINGS_MODULE it fails closed on the production settings.
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'OtwarteDaneTransportowe.settings_prod')
 
 application = get_asgi_application()

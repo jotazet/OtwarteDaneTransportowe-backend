@@ -37,9 +37,10 @@ BAD_KEY_LIMIT = 10
 ACCESS_CACHE_SECONDS = 30
 LAST_USED_EVERY_SECONDS = 300
 # A client hammering the API while refused (bad key, banned, limited, switched
-# off) is logged once a minute per status.
+# off, maintenance) is logged once a minute per status. The last two are 503s
+# that skip the rate limits; other 503s (OTP failing or busy) are all logged.
 REJECTION_LOG_EVERY_SECONDS = 60
-REJECTION_STATUSES = (401, 403, 429, 503)
+REJECTION_STATUSES = (401, 403, 429)
 MAINTENANCE_RETRY_AFTER_SECONDS = 600
 OTP_BUSY_RETRY_AFTER_SECONDS = 5
 
@@ -323,18 +324,30 @@ class PlannerPublicView(APIView):
         return response
 
 
+def _is_rejection(response) -> bool:
+    if response.status_code in REJECTION_STATUSES:
+        return True
+    data = getattr(response, 'data', None)
+    if response.status_code != 503 or not isinstance(data, dict):
+        return False
+    details = data.get('details') or {}
+    return data.get('code') == 'planner.disabled' or details.get('reason') == 'maintenance'
+
+
 def _log_request(request, response, started: float) -> None:
     ip, ident = client_identity(request)
-    if response.status_code in REJECTION_STATUSES and not cache.add(
+    if _is_rejection(response) and not cache.add(
         f'planner:rejection-logged:{ident}:{response.status_code}', 1, REJECTION_LOG_EVERY_SECONDS
     ):
         return
     match = getattr(request, 'resolver_match', None)
+    # Not request.auth: that would authenticate now, after a refusal that must not look up keys.
+    auth = getattr(request, '_auth', None)
     PlannerRequestLog.objects.create(
         endpoint=(match.url_name if match else '') or '',
         status_code=response.status_code,
         latency_ms=int((time.monotonic() - started) * 1000),
         client_ip=ip,
-        api_key=request.auth if isinstance(request.auth, ApiKey) else None,
+        api_key=auth if isinstance(auth, ApiKey) else None,
         user_agent=request.headers.get('User-Agent', '')[:256],
     )

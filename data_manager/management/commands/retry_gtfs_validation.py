@@ -1,5 +1,8 @@
 """
-Re-queue GTFS validation for submissions stuck at stage 2 (pending / failed Docker).
+Re-queue GTFS validation that never finished: entries at stage 2 or 3 whose
+validation_status is ``pending`` (task lost, worker killed) or ``error`` (the
+validator could not run: Docker down, container failure, timeout). Entries named
+with --submission-id are re-queued whatever their status.
 
 Usage:
     python manage.py retry_gtfs_validation
@@ -32,6 +35,13 @@ class Command(BaseCommand):
 
         if submission_ids:
             entries = entries.filter(submission_id__in=submission_ids)
+        else:
+            entries = entries.filter(
+                validation_status__in=[
+                    StaticFeedEntry.VALIDATION_PENDING,
+                    StaticFeedEntry.VALIDATION_ERROR,
+                ]
+            )
 
         queued = 0
         for entry in entries:
@@ -40,7 +50,7 @@ class Command(BaseCommand):
                 continue
             if sub.current_stage >= 4:
                 continue
-            if not (entry.file or entry.cached_file):
+            if not (entry.file or entry.cached_file or entry.url):
                 self.stderr.write(
                     f'Skip entry {entry.id} (submission {sub.id}): no file to validate.'
                 )

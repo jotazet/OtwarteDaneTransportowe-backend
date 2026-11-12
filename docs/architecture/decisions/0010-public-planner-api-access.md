@@ -22,7 +22,7 @@ Client IP addresses are personal data under the GDPR (Recital 30; CJEU C-582/14 
 - **Bans.** IPv4/IPv6 networks with an optional expiry, edited in the panel, returning `403 planner.client_banned`.
 - **Build window.** Endpoints that need OTP answer `503 planner.unavailable` with `Retry-After` while a build has OTP stopped; index lookups keep working.
 - **Request log.** One row per request with time, endpoint name, status, latency, client IP, key and User-Agent, and **never the query string**.
-  - Rejected requests (403, 429) are logged at most once a minute per client.
+  - Refused requests are logged at most once a minute per client and status: a wrong key (401), a ban (403), a limit (429), and `503` while the API is switched off or in the build window (these two skip the rate limits, so a client could otherwise write a row per request). A `503` because OTP failed or was busy is always logged, so the daily statistics count OTP outages.
   - Rows older than 30 days (`PLANNER_REQUEST_LOG_RETENTION_DAYS`) are deleted daily after each finished day is summarised into `PlannerDailyStat`, which holds no IP addresses.
   - Only the `Admin` group can read the log.
 - **CORS.** Any origin may call `/api/planner/v1/`, without credentials. The rest of the API keeps its allowlist.

@@ -3,18 +3,24 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from accounts.services import generate_random_password, set_user_roles, user_role_names
+from accounts.services import (
+    generate_random_password,
+    set_password_and_end_sessions,
+    set_user_roles,
+    user_role_names,
+)
 from OtwarteDaneTransportowe.auth_roles import ALLOWED_ROLE_NAMES
 
 User = get_user_model()
+
+# Error code (ADR 0006); the message is the code so it reaches the client.
+WRONG_PASSWORD = 'users.wrong_password'
 
 
 def validate_role_names(roles):
     invalid = set(roles) - ALLOWED_ROLE_NAMES
     if invalid:
-        raise serializers.ValidationError(
-            f'Unknown roles: {sorted(invalid)}. Allowed: {sorted(ALLOWED_ROLE_NAMES)}'
-        )
+        raise serializers.ValidationError('users.unknown_role', code='users.unknown_role')
     return roles
 
 
@@ -38,6 +44,8 @@ class UserSerializer(serializers.ModelSerializer):
             'first_name',
             'last_name',
             'is_active',
+            'is_staff',
+            'is_superuser',
             'roles',
         ]
         read_only_fields = fields
@@ -93,7 +101,7 @@ class ChangeEmailSerializer(serializers.Serializer):
     def validate_current_password(self, value):
         user = self.context['request'].user
         if not user.check_password(value):
-            raise serializers.ValidationError('Current password is incorrect.')
+            raise serializers.ValidationError(WRONG_PASSWORD, code=WRONG_PASSWORD)
         return value
 
     def save(self, **kwargs):
@@ -110,7 +118,7 @@ class ChangePasswordSerializer(serializers.Serializer):
     def validate_current_password(self, value):
         user = self.context['request'].user
         if not user.check_password(value):
-            raise serializers.ValidationError('Current password is incorrect.')
+            raise serializers.ValidationError(WRONG_PASSWORD, code=WRONG_PASSWORD)
         return value
 
     def validate_new_password(self, value):
@@ -118,11 +126,13 @@ class ChangePasswordSerializer(serializers.Serializer):
         try:
             validate_password(value, user=user)
         except DjangoValidationError as exc:
-            raise serializers.ValidationError(list(exc.messages)) from exc
+            # Django's validator codes, e.g. password_too_short -> users.password_too_short.
+            raise serializers.ValidationError(
+                [f'users.{error.code}' for error in exc.error_list]
+            ) from None
         return value
 
     def save(self, **kwargs):
         user = self.context['request'].user
-        user.set_password(self.validated_data['new_password'])
-        user.save(update_fields=['password'])
+        set_password_and_end_sessions(user, self.validated_data['new_password'])
         return user

@@ -1,9 +1,15 @@
+from datetime import timedelta
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 
+from accounts.tasks import flush_expired_tokens_task
 from OtwarteDaneTransportowe.auth_roles import ROLE_ADMIN, ROLE_DATA_PROVIDER
+from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairSerializer
 
 pytestmark = pytest.mark.django_db
 
@@ -88,17 +94,134 @@ def test_reset_password(api_client, admin_user, regular_user):
     assert regular_user.check_password(response.data['generated_password'])
 
 
-def test_change_password(api_client, regular_user):
-    api_client.force_authenticate(user=regular_user)
-    response = api_client.post(
+def _session(user):
+    """A refresh token of a new session of ``user``, as issued at login."""
+    return str(RolesInTokenObtainPairSerializer.get_token(user))
+
+
+def _refresh(refresh):
+    return APIClient().post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
+
+
+def _logout(refresh):
+    return APIClient().post('/api/auth/logout/', {'refresh': refresh}, format='json')
+
+
+def _change_password(client, current_password):
+    return client.post(
         '/api/users/me/change-password/',
-        {'current_password': 'regularpass', 'new_password': 'NewSecurePass9!'},
+        {'current_password': current_password, 'new_password': 'NewSecurePass9!'},
         format='json',
     )
-    assert response.status_code == 200
 
+
+def test_reset_password_ends_the_users_sessions(api_client, admin_user, regular_user):
+    rotated = _refresh(_session(regular_user)).data['refresh']
+    sessions = [_session(regular_user), rotated]
+    admin_session = _session(admin_user)
+    api_client.force_authenticate(user=admin_user)
+
+    assert api_client.post(f'/api/users/{regular_user.pk}/reset-password/').status_code == 200
+
+    assert [_refresh(r).status_code for r in sessions] == [401, 401]
+    assert _refresh(admin_session).status_code == 200
+
+
+def test_change_password_ends_other_sessions_and_returns_a_new_pair(api_client, regular_user):
+    old_session = _session(regular_user)
+    api_client.force_authenticate(user=regular_user)
+
+    response = _change_password(api_client, 'regularpass')
+
+    assert response.status_code == 200
     regular_user.refresh_from_db()
     assert regular_user.check_password('NewSecurePass9!')
+    assert _refresh(old_session).status_code == 401
+    assert _refresh(response.data['refresh']).status_code == 200
+    me = APIClient()
+    me.credentials(HTTP_AUTHORIZATION=f'Bearer {response.data["access"]}')
+    assert me.get('/api/users/me/').status_code == 200
+
+
+def test_wrong_current_password_keeps_the_sessions(api_client, regular_user):
+    session = _session(regular_user)
+    api_client.force_authenticate(user=regular_user)
+
+    response = _change_password(api_client, 'wrong')
+
+    assert response.status_code == 400
+    assert response.data == {'current_password': ['users.wrong_password']}
+    assert _refresh(session).status_code == 200
+
+
+@pytest.mark.parametrize(
+    'new_password, codes',
+    [
+        ('Ab1!', ['users.password_too_short']),
+        ('12345678901', ['users.password_too_common', 'users.password_entirely_numeric']),
+    ],
+)
+def test_rejected_new_password_returns_validator_codes(
+    api_client, regular_user, new_password, codes
+):
+    api_client.force_authenticate(user=regular_user)
+
+    response = api_client.post(
+        '/api/users/me/change-password/',
+        {'current_password': 'regularpass', 'new_password': new_password},
+        format='json',
+    )
+
+    assert response.status_code == 400
+    assert response.data == {'new_password': codes}
+
+
+def test_change_email_with_wrong_password(api_client, regular_user):
+    api_client.force_authenticate(user=regular_user)
+
+    response = api_client.post(
+        '/api/users/me/change-email/',
+        {'current_password': 'wrong', 'new_email': 'changed@example.com'},
+        format='json',
+    )
+
+    assert response.status_code == 400
+    assert response.data == {'current_password': ['users.wrong_password']}
+
+
+def test_unknown_role(api_client, admin_user, regular_user):
+    api_client.force_authenticate(user=admin_user)
+
+    response = api_client.patch(
+        f'/api/users/{regular_user.pk}/', {'roles': ['Superhero']}, format='json'
+    )
+
+    assert response.status_code == 400
+    assert response.data == {'roles': ['users.unknown_role']}
+
+
+def test_logout_blacklists_the_refresh_token(make_user):
+    user = make_user(ROLE_DATA_PROVIDER)
+    session, other_session = _session(user), _session(user)
+
+    assert _logout(session).status_code == 200
+    assert _refresh(session).status_code == 401
+    assert _refresh(other_session).status_code == 200
+    # A second logout with the same token: 401, which the client treats as done.
+    assert _logout(session).status_code == 401
+
+
+def test_flush_expired_tokens_task_deletes_only_expired_tokens(make_user):
+    user = make_user(ROLE_DATA_PROVIDER)
+    _session(user)
+    expired = OutstandingToken.objects.create(
+        user=user, jti='expired', token='x', expires_at=timezone.now() - timedelta(days=1)
+    )
+
+    flush_expired_tokens_task()
+
+    assert not OutstandingToken.objects.filter(pk=expired.pk).exists()
+    assert OutstandingToken.objects.filter(user=user).count() == 1
 
 
 def test_change_email(api_client, regular_user):
@@ -123,6 +246,7 @@ def test_cannot_delete_self(api_client, admin_user):
     api_client.force_authenticate(user=admin_user)
     response = api_client.delete(f'/api/users/{admin_user.pk}/')
     assert response.status_code == 400
+    assert response.data == {'code': 'users.cannot_delete_self', 'details': {}}
 
 
 def test_cannot_remove_last_admin(api_client, admin_user):
@@ -133,6 +257,7 @@ def test_cannot_remove_last_admin(api_client, admin_user):
         format='json',
     )
     assert response.status_code == 400
+    assert response.data == {'code': 'users.last_admin', 'details': {}}
 
     response = api_client.delete(f'/api/users/{admin_user.pk}/')
     assert response.status_code == 400
@@ -192,3 +317,92 @@ def test_can_deactivate_admin_when_another_remains(api_client, admin_user, admin
         format='json',
     )
     assert response.status_code == 200
+
+
+# Accounts with Django-level flags are managed only by superusers
+# (OtwarteDaneTransportowe.auth_roles.can_manage_user_account).
+
+PROTECTED_FLAGS = [
+    pytest.param({'is_superuser': True}, id='superuser'),
+    pytest.param({'is_staff': True}, id='staff'),
+]
+
+# (method, path suffix, body)
+MANAGE_ACTIONS = [
+    pytest.param('post', 'reset-password/', None, id='reset-password'),
+    pytest.param('patch', '', {'first_name': 'Changed'}, id='patch-profile'),
+    pytest.param('put', '', {'first_name': 'Changed'}, id='put-profile'),
+    pytest.param('patch', '', {'roles': [ROLE_DATA_PROVIDER]}, id='patch-roles'),
+    pytest.param('patch', '', {'is_active': False}, id='deactivate'),
+    pytest.param('delete', '', None, id='delete'),
+]
+
+
+def _manage(api_client, method, target, suffix, body):
+    return getattr(api_client, method)(f'/api/users/{target.pk}/{suffix}', body, format='json')
+
+
+def _success_status(method):
+    return 204 if method == 'delete' else 200
+
+
+@pytest.fixture
+def superuser_admin(admin_group):
+    user = User.objects.create_user('root_admin', 'root@example.com', 'rootpass', is_superuser=True)
+    user.groups.add(admin_group)
+    return user
+
+
+@pytest.mark.parametrize('flags', PROTECTED_FLAGS)
+@pytest.mark.parametrize('method, suffix, body', MANAGE_ACTIONS)
+def test_admin_cannot_manage_protected_account(
+    api_client, admin_user, admin_group, flags, method, suffix, body
+):
+    target = User.objects.create_user('protected', 'p@example.com', 'protectedpass', **flags)
+    target.groups.add(admin_group)
+    api_client.force_authenticate(user=admin_user)
+
+    response = _manage(api_client, method, target, suffix, body)
+
+    assert response.status_code == 403
+    assert response.json() == {'code': 'users.protected_account', 'details': {}}
+    target.refresh_from_db()
+    assert target.check_password('protectedpass')
+    assert target.first_name == ''
+    assert target.is_active
+    assert list(target.groups.values_list('name', flat=True)) == [ROLE_ADMIN]
+
+
+@pytest.mark.parametrize('flags', PROTECTED_FLAGS)
+@pytest.mark.parametrize('method, suffix, body', MANAGE_ACTIONS)
+def test_superuser_admin_can_manage_protected_account(
+    api_client, superuser_admin, admin_user, flags, method, suffix, body
+):
+    # admin_user stays the remaining Admin, so the last-admin guard never trips.
+    target = User.objects.create_user('protected', 'p@example.com', 'protectedpass', **flags)
+    api_client.force_authenticate(user=superuser_admin)
+
+    response = _manage(api_client, method, target, suffix, body)
+
+    assert response.status_code == _success_status(method), response.data
+
+
+@pytest.mark.parametrize('method, suffix, body', MANAGE_ACTIONS)
+def test_admin_can_manage_regular_account(
+    api_client, admin_user, regular_user, method, suffix, body
+):
+    api_client.force_authenticate(user=admin_user)
+
+    response = _manage(api_client, method, regular_user, suffix, body)
+
+    assert response.status_code == _success_status(method), response.data
+
+
+def test_admin_can_read_protected_account_flags(api_client, admin_user, superuser_admin):
+    api_client.force_authenticate(user=admin_user)
+
+    response = api_client.get(f'/api/users/{superuser_admin.pk}/')
+
+    assert response.status_code == 200
+    assert response.data['is_superuser'] is True
+    assert response.data['is_staff'] is False

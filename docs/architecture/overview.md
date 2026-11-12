@@ -16,7 +16,8 @@
                                                       │              ▼
                        ┌──────────────────────────────┴──────────────────────────────┐
                        │ celery_beat (DB scheduler)  → dispatches every 1 / 5 min      │
-                       │ celery_worker (queue default) → realtime fetching, dispatch   │
+                       │ celery_worker (queue default) → dispatch, short tasks         │
+                       │ celery_realtime_worker (queue realtime) → realtime fetching   │
                        │ celery_validator_worker (queue feeds) → static downloads,      │
                        │   GTFS validation via docker-socket-proxy → MobilityData image │
                        └──────────────────────────────────────────────────────────────┘
@@ -26,7 +27,7 @@
 ```
 
 - Consumers find published feeds in the catalogue (`/api/data_manager/feeds/`). Uploaded files and copies of proxied sources (`hide_original`) are served by the API host under `/feed/...`; sources that are not proxied are listed with their original URL.
-- Decisions: [0001 two repositories](decisions/0001-separate-backend-and-frontend-repositories.md), [0002 Django + DRF + PostgreSQL](decisions/0002-django-drf-and-postgresql.md), [0003 JWT and roles](decisions/0003-jwt-and-group-based-roles.md), [0004 Celery + Redis](decisions/0004-celery-and-redis-for-background-work.md), [0005 feed validation](decisions/0005-feed-validation.md), [0006 error codes](decisions/0006-api-error-codes.md) (proposed), [0007 uv and ruff](decisions/0007-uv-and-ruff.md), [0008 journey planner on private OTP](decisions/0008-journey-planner-on-private-opentripplanner.md) (proposed), [0009 planner graph builds](decisions/0009-planner-graph-build-pipeline.md) (proposed), [0010 public planner API access](decisions/0010-public-planner-api-access.md) (proposed), [0011 client IP behind Cloudflare and in SSR](decisions/0011-client-ip-behind-cloudflare-and-ssr.md), [0012 rate limit only login, feed downloads and the planner](decisions/0012-rate-limit-only-scoped-views-and-the-planner.md), [0013 release tags deploy from a runner on the server](decisions/0013-release-tags-deploy-from-a-server-runner.md) (proposed).
+- Decisions: [0001 two repositories](decisions/0001-separate-backend-and-frontend-repositories.md), [0002 Django + DRF + PostgreSQL](decisions/0002-django-drf-and-postgresql.md), [0003 JWT and roles](decisions/0003-jwt-and-group-based-roles.md), [0004 Celery + Redis](decisions/0004-celery-and-redis-for-background-work.md), [0005 feed validation](decisions/0005-feed-validation.md), [0006 error codes](decisions/0006-api-error-codes.md) (proposed), [0007 uv and ruff](decisions/0007-uv-and-ruff.md), [0008 journey planner on private OTP](decisions/0008-journey-planner-on-private-opentripplanner.md) (proposed), [0009 planner graph builds](decisions/0009-planner-graph-build-pipeline.md) (proposed), [0010 public planner API access](decisions/0010-public-planner-api-access.md) (proposed), [0011 client IP behind Cloudflare and in SSR](decisions/0011-client-ip-behind-cloudflare-and-ssr.md), [0012 rate limit only login, feed downloads and the planner](decisions/0012-rate-limit-only-scoped-views-and-the-planner.md), [0013 release tags deploy from a runner on the server](decisions/0013-release-tags-deploy-from-a-server-runner.md) (proposed), [0014 daily backups with an off-host copy](decisions/0014-daily-backups-with-a-configurable-off-host-copy.md) (proposed), [0015 feed credential keys fail closed and rotate](decisions/0015-feed-credential-keys-fail-closed-and-rotate.md) (proposed).
 - Workflow of a submission: [feed workflow](../domain/feed-workflow.md). Operations: [deployment](../deployment.md).
 - **Journey planner** (compose profile `planner`): a private OpenTripPlanner container (`otp`) with no published port, on a network shared only with `web` and the planner worker, built and switched by `celery_planner_worker` (queue `planner`, Docker via `docker-socket-proxy`). Admin API under `/api/planner/admin/`, public API under `/api/planner/v1/` (keys, limits, bans, request log: [ADR 0010](decisions/0010-public-planner-api-access.md)). See [journey planner](../domain/journey-planner.md), [ADR 0008](decisions/0008-journey-planner-on-private-opentripplanner.md) and [ADR 0009](decisions/0009-planner-graph-build-pipeline.md).
 
@@ -40,7 +41,7 @@ OtwarteDaneTransportowe/
 │   ├── settings_base.py       # DRF, JWT, apps, database, Celery beat schedule
 │   ├── settings_dev.py        # development overrides
 │   ├── settings_prod.py       # production hardening and startup checks
-│   ├── settings.py            # default module, imports settings_dev
+│   ├── settings.py            # pytest's module, imports settings_dev
 │   ├── urls.py                # main project URLs
 │   ├── auth_roles.py          # roles and permission classes
 │   ├── pagination.py          # default list pagination (50 / max 200)

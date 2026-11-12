@@ -13,4 +13,6 @@ class PlannerConfig(AppConfig):
     def ready(self):
         from corsheaders.signals import check_request_enabled
 
+        import planner.signals  # noqa: F401 - registers the @receiver handlers
+
         check_request_enabled.connect(allow_any_origin_for_public_planner_api)

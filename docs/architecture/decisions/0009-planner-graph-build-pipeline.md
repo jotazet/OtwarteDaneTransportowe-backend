@@ -10,20 +10,27 @@ The planner graph (OTP) is built from the published GTFS feeds an admin selects,
 ## Decision
 
 - **Schedule.** Builds run on a schedule set in the admin panel: a django-celery-beat `PeriodicTask`, in UTC, default Wednesday and Sunday 01:40. Admins can also build on demand. One build at a time, serialised with a Postgres advisory lock.
-- **Maintenance window.** A build first collects every feed's newest file (copied, or downloaded through `net_security` when ODT holds no copy). Then it stops the serving OTP to free memory, and the OTP-backed public endpoints answer `503 planner.unavailable`. After that it builds and starts OTP on the new graph.
+- **Maintenance window.** A build first collects every feed's newest file (copied, or downloaded through `net_security` when ODT holds no copy). Then it stops the serving OTP to free memory, and the OTP-backed public endpoints answer `503 planner.unavailable`. After that it builds and starts OTP on the new graph. The window ends when the build does: after a success once OTP is healthy on the new graph, after a failure once OTP is healthy on the previous graph again (or after the 20-minute health deadline), so clients get `maintenance` with `Retry-After` while OTP loads rather than failing requests.
 - **Per-feed isolation.** Every feed whose file changed since its last good version, or every feed when the OTP image changed, is first built **alone** (transit only, no street map) in a network-less container.
   - If it fails, the feed's failure policy applies: `keep_last_good` (default) uses the snapshot of the last version that went into a served graph and marks the feed `stale`; `exclude` (or no snapshot) leaves it out.
   - The outcome, an error code and an excerpt of OTP's log are stored per feed in `GraphBuild.feed_results`.
 - **Street graph.** OSM is filtered to routable ways and cropped to ~3 km cells around the included stops (osmium). The street graph is rebuilt only when the OSM file, the OTP image or the set of cells changes.
 - **Activation.**
   - `planner_data/serving` is a symlink to `graphs/<build>`, mounted read-only into `otp`; Docker resolves it on each start.
-  - Activation repoints the symlink, starts OTP, waits for `/otp/actuators/health` and checks that every included feed is served.
-  - If anything fails, the previous graph is restored and started. The previous graph is kept on disk for a rollback from the panel.
-- **Recovery.** A watchdog (every 5 minutes) fails builds whose heartbeat stopped (worker killed by a deploy or reboot) and restarts the active graph.
+  - Activation repoints the symlink, starts OTP, waits for `/otp/actuators/health` (at most 20 minutes, and no longer once the container has exited, e.g. out of memory) and checks that every included feed is served.
+  - If a step fails, OTP is stopped, the symlink is pointed back at the previous graph, and OTP is started on it. The failed graph is deleted (a failed rollback keeps the graph it rolled back to).
+  - The graph that served before the switch is kept on disk for a rollback from the panel; after a rollback that is the graph rolled back to, not the one rolled away from. Older graphs are deleted.
+  - This restore is done by the build itself. A worker killed during activation does not restore anything: OTP stays on the new graph (or stopped) until the watchdog below fails the build and repoints `serving`, up to about 20 minutes later.
+- **Recovery.** A watchdog (every 5 minutes) fails builds whose heartbeat stopped (worker killed by a deploy or reboot). While no build is running, it then serves the active graph again:
+  - If `serving` does not point at the active graph (a worker killed during activation leaves OTP on a graph the database never made active), OTP is stopped, the symlink is repointed and OTP is started. Otherwise OTP is only started if it is stopped.
+  - It deletes `builds/<id>` and `graphs/<id>` of finished builds, except the active graph and the rollback candidate (the graph that served before it). Directories of queued or running builds, and names that are not a build's id, are left alone.
+  - A running build refreshes its heartbeat before each feed download and once a minute while osmium and the OTP containers run.
+  - Every write of the build checks that its row is still `running`. A build the watchdog has failed stops at its next heartbeat: it removes its containers, never becomes active and leaves restarting OTP to the watchdog.
 - **Realtime sources.** OTP polls the same links the public catalogue shows, at the endpoint's ODT interval.
   - Proxied endpoints are read from ODT's cached copy over the internal network. The requests carry a shared token (`PLANNER_INTERNAL_TOKEN`) that exempts them from public throttling.
   - Non-proxied endpoints are polled from the provider's URL directly. **This is a deliberate exception to "outbound HTTP to user-supplied URLs only through `net_security`"**, mitigated as follows:
     - every such URL passes `assert_safe_outbound_url` when the configuration is generated, and blocked ones are skipped (`planner.rt_url_blocked`);
+    - URLs containing `${` are skipped (`planner.rt_url_unsupported`): OTP expands `${NAME}` (environment variables) and `${includeFile:NAME}` in the raw config text before parsing it, and fails to load the file when a variable is not set (verified in OTP 2.10.0's `ConfigFileLoader` and `EnvironmentVariableReplacer`);
     - OTP's network does not reach Postgres, Redis or the Docker proxy;
     - sources with credentials are always proxied, so OTP never holds secrets.
   - Remaining risks: DNS rebinding after the check, and no response size cap beyond OTP's memory limit.
@@ -35,6 +42,8 @@ The planner graph (OTP) is built from the published GTFS feeds an admin selects,
 - A broken new version of one feed no longer stops the planner from updating; the panel shows which feed, why, and that it is not the newest.
 - The planner is down during builds. On the spike machine (swap in RAM) building all of Poland took about 13 minutes, plus 8 when the street graph is rebuilt and about 1 minute to start; disk swap on the VPS is slower and must be measured after deployment.
 - Snapshots of the last good version are kept under `planner_data/snapshots/`, and they cannot be recreated, so back them up.
+  - A new snapshot is linked next to the old one as `<feed>.zip.tmp`, the database records its hash, then the file is renamed over the old one. A crash between the commit and the rename leaves the old file under the new hash; the leftover `.tmp` makes the next build that fetches that version write the snapshot again. Until then a fallback to that feed's last good version would use the older file.
+  - Deleting a `PlannerFeed` (directly or with its submission) removes its snapshot once the deletion commits. The served graph and the one kept for a rollback hold their own copies of the feeds.
 - The planner worker can create containers through `docker-socket-proxy`, the same accepted risk as the GTFS validator ([ADR 0005](0005-feed-validation.md)).
 
 ## Alternatives considered

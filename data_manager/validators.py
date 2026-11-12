@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 # sniffing checks must never read the whole file.
 CONTENT_SNIFF_BYTES = 8192
 
+# Shortest realtime refresh interval ODT accepts (product decision, issue #42):
+# lower values hammer the provider and keep a worker slot busy.
+REALTIME_MIN_INTERVAL_SECONDS = 5
+
 
 class InvalidFeedContent(Exception):
     """Fetched bytes do not look like the expected feed format.
@@ -168,7 +172,7 @@ def validate_uploaded_gtfs_zip(file_obj) -> None:
     head = file_obj.read(4)
     file_obj.seek(0)
     if not looks_like_zip(head):
-        raise ValidationError('Uploaded GTFS file is not a ZIP archive.')
+        raise ValidationError('feeds.gtfs_not_zip', code='feeds.gtfs_not_zip')
 
 
 def validate_feed_file_size(value):
@@ -180,6 +184,14 @@ def validate_feed_file_size(value):
     limit = getattr(settings, 'MAX_FEED_FILE_SIZE_BYTES', 200 * 1024 * 1024)
     size = getattr(value, 'size', None)
     if size is not None and size > limit:
-        raise ValidationError(
-            f'File is too large ({size} bytes). Maximum allowed is {limit} bytes.'
-        )
+        raise ValidationError('feeds.file_too_large', code='feeds.file_too_large')
+
+
+def validate_realtime_interval(value):
+    """Reject a realtime refresh interval below ``REALTIME_MIN_INTERVAL_SECONDS``.
+
+    The message is the error code itself (ADR 0006), so the API response carries it;
+    ModelSerializer copies this validator into the API field.
+    """
+    if value < REALTIME_MIN_INTERVAL_SECONDS:
+        raise ValidationError('realtime.interval_too_short', code='realtime.interval_too_short')

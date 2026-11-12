@@ -37,6 +37,28 @@ def validate_production_secret_key(key: str | None) -> None:
         )
 
 
+def validate_feed_auth_encryption_keys(key: str | None, old_keys: list[str]) -> None:
+    """Fail fast unless the current feed credential key and every old key are Fernet keys."""
+    from cryptography.fernet import Fernet
+
+    if not key:
+        raise ImproperlyConfigured(
+            'FEED_AUTH_ENCRYPTION_KEY must be set in production: without it feed '
+            'credentials would be stored as plaintext. See docs/deployment.md.'
+        )
+    try:
+        Fernet(key)
+    except ValueError:
+        raise ImproperlyConfigured('FEED_AUTH_ENCRYPTION_KEY is not a Fernet key.') from None
+    try:
+        for old_key in old_keys:
+            Fernet(old_key)
+    except ValueError:
+        raise ImproperlyConfigured(
+            'FEED_AUTH_ENCRYPTION_OLD_KEYS holds a value that is not a Fernet key.'
+        ) from None
+
+
 # Path to the project root on the HOST machine.
 HOST_PROJECT_PATH = os.environ.get('HOST_PROJECT_PATH', str(BASE_DIR))
 
@@ -107,7 +129,7 @@ ROOT_URLCONF = 'OtwarteDaneTransportowe.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [str(BASE_DIR / 'Portal')],
+        'DIRS': [],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -139,6 +161,11 @@ DATABASES = {
         'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'postgres'),
         'HOST': os.getenv('POSTGRES_HOST', '127.0.0.1'),
         'PORT': os.getenv('POSTGRES_PORT', '5420'),
+        # Reuse a connection for this many seconds instead of opening one per request
+        # (0 closes it after every request, as before). The health check replaces a
+        # connection that died in between (e.g. after a Postgres restart).
+        'CONN_MAX_AGE': int(os.getenv('POSTGRES_CONN_MAX_AGE', '60')),
+        'CONN_HEALTH_CHECKS': True,
     }
 }
 
@@ -191,6 +218,9 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'login': os.getenv('THROTTLE_LOGIN', '10/min'),
+        # me/change-password and me/change-email check the current password;
+        # counted per user (they require login).
+        'account_change': os.getenv('THROTTLE_ACCOUNT_CHANGE', '5/min'),
         'feed_download': os.getenv('THROTTLE_FEED_DOWNLOAD', '120/min'),
         'reaction': os.getenv('THROTTLE_REACTION', '30/min'),
     },
@@ -247,10 +277,11 @@ HOST_MEDIA_ROOT = os.getenv('HOST_MEDIA_ROOT', os.path.join(HOST_PROJECT_PATH, '
 GTFS_VALIDATOR_UID = os.getenv('UID', '1000')
 GTFS_VALIDATOR_GID = os.getenv('GID', '1000')
 # Resource limits of the validator container (a zip bomb must not exhaust the
-# host). NANO_CPUS is in 1e-9 CPUs (1000000000 = one core).
+# host). NANO_CPUS is in 1e-9 CPUs (1000000000 = one core); the default of two
+# cores leaves four of the production VPS's six to OpenTripPlanner and the web.
 GTFS_VALIDATOR_MEM_LIMIT = os.getenv('GTFS_VALIDATOR_MEM_LIMIT') or '2g'
 GTFS_VALIDATOR_PIDS_LIMIT = int(os.getenv('GTFS_VALIDATOR_PIDS_LIMIT') or 512)
-GTFS_VALIDATOR_NANO_CPUS = int(os.getenv('GTFS_VALIDATOR_NANO_CPUS') or 0)  # 0 = no cap
+GTFS_VALIDATOR_NANO_CPUS = int(os.getenv('GTFS_VALIDATOR_NANO_CPUS') or 2_000_000_000)
 # Hard cap (bytes) for blog post images.
 MAX_IMAGE_FILE_SIZE_BYTES = int(os.getenv('MAX_IMAGE_FILE_SIZE_BYTES', str(10 * 1024 * 1024)))
 
@@ -266,13 +297,15 @@ SIMPLE_JWT = {
 
 # Celery
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/1')
+# No result backend: nothing reads task results (every task is fire-and-forget and
+# records its outcome in the database), so storing one per realtime poll only filled
+# Redis. A task whose result must be read needs a backend AND ignore_result=False.
+CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = True
-CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+CELERY_BEAT_SCHEDULER = 'OtwarteDaneTransportowe.celery_beat:HeartbeatScheduler'
 
 from celery.schedules import crontab  # noqa: E402
 
@@ -293,11 +326,21 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': crontab(minute='*/5'),
         'options': {'queue': 'default'},
     },
+    'retry-stuck-realtime-verifications': {
+        'task': 'data_manager.retry_stuck_realtime_verifications',
+        'schedule': crontab(minute='*/15'),
+        'options': {'queue': 'default'},
+    },
     # The graph build itself is scheduled from the admin panel (PeriodicTask
     # 'planner-graph-build', managed by planner.services), not here.
     'planner-watchdog': {
         'task': 'planner.watchdog',
         'schedule': crontab(minute='*/5'),
+        'options': {'queue': 'default'},
+    },
+    'flush-expired-tokens': {
+        'task': 'accounts.flush_expired_tokens',
+        'schedule': crontab(minute=15, hour=3),
         'options': {'queue': 'default'},
     },
     'planner-request-logs': {
@@ -310,6 +353,9 @@ CELERY_BEAT_SCHEDULE = {
 CELERY_TASK_QUEUES = {
     'default': {},
     'feeds': {},
+    # Realtime fetches and verifications may each hold a worker for up to 90 s;
+    # on 'default' they could hold back the dispatchers above (issue #47).
+    'realtime': {},
     # Graph builds run for minutes to hours and drive Docker, so they get their
     # own worker (celery_planner_worker) and never delay validations on 'feeds'.
     'planner': {},
@@ -318,6 +364,8 @@ CELERY_TASK_DEFAULT_QUEUE = 'default'
 CELERY_TASK_ROUTES = {
     'data_manager.validate_gtfs_feed': {'queue': 'feeds'},
     'data_manager.fetch_static_entry': {'queue': 'feeds'},
+    'data_manager.fetch_realtime_endpoint': {'queue': 'realtime'},
+    'data_manager.validate_realtime_submission': {'queue': 'realtime'},
     'planner.run_graph_build': {'queue': 'planner'},
     'planner.ensure_serving': {'queue': 'planner'},
     'planner.refresh_index': {'queue': 'planner'},
@@ -343,15 +391,11 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = int(os.getenv('CELERY_WORKER_PREFETCH_MULTIP
 
 # Fernet key used by data_manager.fields.EncryptedCharField to encrypt stored
 # feed auth credentials at rest. When unset, values fall back to plaintext
-# (development/testing only). Production MUST set this.
+# (development/testing only); settings_prod refuses to start without it.
+# FEED_AUTH_ENCRYPTION_OLD_KEYS (comma-separated) only decrypt: previous keys
+# during a rotation (docs/deployment.md, "Rotating FEED_AUTH_ENCRYPTION_KEY").
 FEED_AUTH_ENCRYPTION_KEY = os.getenv('FEED_AUTH_ENCRYPTION_KEY')
-
-# Public base URL of this API (scheme://host, no trailing slash), e.g.
-# https://api.example.org. Used to hand the GTFS-RT validator a downloadable
-# URL for PROXIED static feeds (their cached copy is only reachable through
-# our /feed/ routes). Unset => semantic validation is skipped for proxied
-# feeds (link-checks still run).
-PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', '').rstrip('/')
+FEED_AUTH_ENCRYPTION_OLD_KEYS = _env_list('FEED_AUTH_ENCRYPTION_OLD_KEYS')
 
 # Proxy settings (client IP for blog reaction limits and DRF throttling)
 TRUSTED_PROXY_CIDRS = _env_list('TRUSTED_PROXY_CIDRS', default=[])

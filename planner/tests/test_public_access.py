@@ -1,14 +1,17 @@
 """Public planner API access: kill switch, limits, keys, bans, maintenance, logs, CORS."""
 
 import io
+import logging
+import time
 from datetime import timedelta
 
 import pytest
+from django.core.cache import cache
 from django.core.management import call_command
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from planner import access
+from planner import access, otp_runtime
 from planner.models import ApiKey, GraphBuild, IpBan, PlannerRequestLog, PlannerSettings
 
 pytestmark = pytest.mark.django_db
@@ -309,6 +312,32 @@ def test_banned_client_sending_a_key_still_gets_banned(enabled):
     assert response.status_code == 403
 
 
+@pytest.mark.parametrize('refusal', ['banned', 'switched_off'])
+@pytest.mark.parametrize('raw', ['odt_one', 'odt_wrong'])
+def test_refused_request_with_a_key_is_logged_without_looking_the_key_up(
+    refusal, raw, enabled, caplog
+):
+    key = make_key('odt_one')
+    if refusal == 'banned':
+        IpBan.objects.create(network='203.0.113.50/32')
+    else:
+        PlannerSettings.objects.filter(pk=1).update(public_api_enabled=False)
+        access.forget_cached_access()
+
+    response = get(LOOKUP, ip='203.0.113.50', **{'X-API-Key': raw})
+
+    assert response.status_code == (403 if refusal == 'banned' else 503)
+    key.refresh_from_db()
+    assert key.last_used_at is None
+    minute = int(time.time() // 60)
+    assert cache.get(f'planner:bad-key:203.0.113.50:{minute}') is None
+    (row,) = PlannerRequestLog.objects.all()
+    assert (row.status_code, row.api_key) == (response.status_code, None)
+    assert not [
+        r for r in caplog.records if r.name == 'planner.access' and r.levelno >= logging.ERROR
+    ]
+
+
 def test_guessing_keys_is_cut_off_and_logged_once_a_minute(enabled):
     responses = [get(LOOKUP, **{'X-API-Key': f'odt_guess_{n}'}) for n in range(12)]
 
@@ -328,3 +357,26 @@ def test_requests_while_switched_off_are_logged_once_a_minute():
         get(LOOKUP)
 
     assert PlannerRequestLog.objects.filter(status_code=503).count() == 1
+
+
+def test_requests_during_maintenance_are_logged_once_a_minute(enabled):
+    GraphBuild.objects.create(
+        trigger='schedule', otp_image='x', status='running', otp_stopped_at=timezone.now()
+    )
+
+    for _ in range(3):
+        get(OTP)
+
+    assert PlannerRequestLog.objects.filter(status_code=503).count() == 1
+
+
+def test_every_request_otp_fails_is_logged(enabled, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise otp_runtime.OtpUnavailable('connection refused')
+
+    monkeypatch.setattr(otp_runtime, 'query', unavailable)
+
+    responses = [get('/api/planner/v1/test-engine/') for _ in range(3)]
+
+    assert {r.json()['details']['reason'] for r in responses} == {'engine'}
+    assert PlannerRequestLog.objects.filter(status_code=503).count() == 3
