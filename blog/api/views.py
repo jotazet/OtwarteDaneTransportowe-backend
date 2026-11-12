@@ -135,11 +135,11 @@ class ReactionViewSet(viewsets.ModelViewSet):
         """
         client_ip = self.get_client_ip(request)
         if not client_ip:
-            return Response({'detail': 'Unable to determine client IP.'}, status=400)
+            return Response({'code': 'blog.client_ip_unknown', 'details': {}}, status=400)
 
         post_id = kwargs.get('post_id')
         if not post_id:
-            return Response({'detail': 'post_id is required in the URL.'}, status=400)
+            return Response({'code': 'blog.post_id_required', 'details': {}}, status=400)
         post = get_object_or_404(Post, pk=post_id)
 
         serializer = self.get_serializer(data=request.data)
@@ -167,7 +167,7 @@ class ReactionViewSet(viewsets.ModelViewSet):
 
             if reactions_today >= 10:
                 return Response(
-                    {'detail': 'Daily limit reached. You can add maximum 10 reactions per day.'},
+                    {'code': 'blog.reaction_daily_limit', 'details': {}},
                     status=status.HTTP_429_TOO_MANY_REQUESTS,
                 )
 

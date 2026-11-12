@@ -170,7 +170,7 @@ A realtime back-off step shorter than the bootstrap period (5 minutes, so the 30
 
 A manual pause is never undone by a fetch: a download that was already running when `pause-fetch` was called still records `last_fetch_success_at` or `last_fetch_error_at` (and its `FeedFetchError`), but `fetch_status`, the error counter and `fetch_pause_reason` stay as the pause set them, and the realtime loop stops. Only `resume-fetch` lifts it.
 
-`Helper` or `Admin` can manually pause or resume a single **proxied** feed (`is_proxy_managed=true`). The `proxy-feeds` list is available to any logged-in user (a `DataProvider` sees only its own feeds), but `pause-fetch` / `resume-fetch` return `403` for anyone other than `Helper`/`Admin`:
+`Helper` or `Admin` can manually pause or resume a single **proxied** feed (`is_proxy_managed=true`). The `proxy-feeds` list is available to any logged-in user (a `DataProvider` sees only its own feeds), but `pause-fetch` / `resume-fetch` return `403` with `{"code": "feeds.fetch_control_forbidden", "details": {}}` for anyone other than `Helper`/`Admin`:
 
 ```http
 GET /api/data_manager/proxy-feeds/

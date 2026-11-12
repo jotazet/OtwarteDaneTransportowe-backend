@@ -2,6 +2,58 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: error codes instead of prose in feeds, users and blog
+
+**Breaking.** The remaining English error messages of `data_manager`, `accounts` and `blog` are now error codes ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). Status codes and field keys are unchanged; only the text changes. Request errors that were `{"detail": "..."}` (or a bare `["..."]` list) are now `{"code": "...", "details": {}}`; field errors keep DRF's field dictionary with the code as the message. Every code is listed in [error codes](README.md#error-codes).
+
+| Old message | New code | Shape |
+|---|---|---|
+| `Specify a feed ID.`, `Specify a realtime feed ID.` | `feeds.feed_id_required` | request |
+| `You do not have permission to view submissions.` | `feeds.submissions_forbidden` | request |
+| `Only Admin or Helper can confirm or reject submissions.` | `feeds.review_forbidden` | request |
+| `Helper may only confirm or reject submissions (fields: stage, rejection_cause).` | `feeds.helper_content_edit_forbidden` | request |
+| `Only Admin can delete submissions.` | `feeds.delete_forbidden` | request |
+| `Only Admin or Helper can pause or resume feed fetching.` | `feeds.fetch_control_forbidden` | request |
+| `Stage must be an integer.`, `Stage must be between 1 and 4.` | `feeds.invalid_stage` | field `stage` |
+| `Cannot change name after stage 1.`, `Cannot change organization after stage 1.`, `Cannot change data type after stage 1.`, `Cannot change this field after stage 1.`, `Cannot change '<field>' after stage 1.`, `Cannot change auth credentials after validation.` | `feeds.field_locked` | field |
+| `After stage 1, only license and download schedule times (UTC) can be changed (disallowed: ...).` on `static_entry` | `feeds.field_locked` on each disallowed `static_entry.<field>` | field |
+| the outbound URL check's text, e.g. `URL resolves to a non-public IP address.` | `feeds.url_blocked` (the reason is no longer disclosed) | field `url` |
+| `Provide a URL or file for the static feed entry.`, `Provide a URL or file when adding a static feed entry to this submission.`, `Either a URL or a file upload must be provided.` | `feeds.static_source_missing` | field `static_entry` |
+| `Provide either a URL or a file upload, not both.` | `feeds.static_source_url_and_file` | field `static_entry` |
+| `This field is required when a URL is provided.` | `feeds.download_time_required` | field `static_entry.download_time_1` |
+| `This field must be empty when a file is provided.`, `Download schedule is only applicable when a URL is provided, not a file upload.` | `feeds.download_time_with_file` | field `static_entry` |
+| `"Hide original" is only applicable when a URL is provided, not a file upload.` | `feeds.hide_original_with_file` (now on `static_entry.hide_original`) | field |
+| `Server-downloaded static file fields cannot be used for a manual file upload.` | `feeds.cached_file_with_upload` | field `static_entry` |
+| `Uploaded GTFS file is not a ZIP archive.` | `feeds.gtfs_not_zip` | field `static_entry.file` |
+| `File is too large (...). Maximum allowed is ... bytes.` | `feeds.file_too_large` | field `static_entry.file` |
+| `At least one endpoint is required.` | `realtime.endpoints_required` | field `endpoints` |
+| `Cannot add or remove endpoints after validation.` | `realtime.endpoints_locked` | field `endpoints` |
+| `Unknown endpoint type '...'.`, `Unknown endpoint_type '...' for this submission; ...` | `realtime.endpoint_type_unknown` | field `endpoints` |
+| `Duplicate endpoint_type '...'.` | `realtime.endpoint_type_duplicate` | field `endpoints` |
+| `Invalid endpoint_type '...' for protocol '...'. ...`, `Endpoint type '...' is not valid for protocol '...'. ...` | `realtime.endpoints_invalid_for_protocol` | field `endpoints` |
+| `This field is required for GTFS-RT and SIRI.` | `realtime.static_submission_required` | field `static_submission` |
+| `GBFS must not reference a static submission.` | `realtime.static_submission_not_allowed` | field `static_submission` |
+| `Static submission must belong to the same organization.` | `realtime.static_submission_other_organization` | field `static_submission` |
+| `Protocol '...' cannot be linked to static feed type '...'. ...` | `realtime.static_submission_type_mismatch` | field `static_submission` |
+| `Static feed must be published (completed) before adding realtime.` | `realtime.static_submission_not_published` | field `static_submission` |
+| `Static submission must be your own.` | `realtime.static_submission_not_owned` (the code is now the message) | field `static_submission` |
+| `You cannot delete your own account.` | `users.cannot_delete_self` | request |
+| `Cannot delete the last user with the Admin role.`, `Cannot remove the Admin role from, or deactivate, the last admin user.` | `users.last_admin` | request |
+| `Unknown roles: [...]. Allowed: [...]` | `users.unknown_role` | field `roles` |
+| `Current password is incorrect.` | `users.wrong_password` | field `current_password` |
+| Django's password validator texts | `users.password_too_short`, `users.password_too_similar`, `users.password_too_common`, `users.password_entirely_numeric` | field `new_password` |
+| `Unable to determine client IP.` | `blog.client_ip_unknown` | request |
+| `post_id is required in the URL.` | `blog.post_id_required` | request |
+| `Daily limit reached. You can add maximum 10 reactions per day.` | `blog.reaction_daily_limit` | request |
+| `There is limit to 5 tags.` | `blog.too_many_tags` | field `tags` |
+| `Image is too large (...). Maximum allowed is ... bytes.` | `blog.image_too_large` | field `image` |
+
+Messages produced by DRF and Django themselves (`This field is required.`, `Not found.`, a permission class's default `403`, throttling) are unchanged.
+
+**Frontend:** translate every code above in all four dictionaries and stop relying on the old text; read a code from a field dictionary as well as from `{code, details}`.
+
+---
+
 ## 2026-11-12: owner edits of static submissions at stage 1 and full `PUT`
 
 Not breaking. `PUT`/`PATCH /api/data_manager/feed-submissions/{id}/`:

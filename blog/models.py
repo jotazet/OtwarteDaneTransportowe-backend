@@ -7,11 +7,12 @@ from blog.validators import validate_image_file_size
 
 
 def validate_tags(value):
+    # Messages are API error codes (ADR 0006).
     if len(value) > 5:
-        raise ValidationError("There is limit to 5 tags.")
+        raise ValidationError('blog.too_many_tags', code='blog.too_many_tags')
     for tag in value:
         if len(tag) > 16:
-            raise ValidationError(f"Tag '{tag}' is too long (max 16 characters).")
+            raise ValidationError('blog.tag_too_long', code='blog.tag_too_long')
 
 
 class Post(models.Model):

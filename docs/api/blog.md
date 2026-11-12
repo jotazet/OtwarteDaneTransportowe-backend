@@ -71,9 +71,9 @@ Creates a blog post. The author is set automatically to the logged-in user.
 **Fields:**
 
 - `title` - required, max. 24 characters.
-- `tags` - list of max. 5 tags, each max. 16 characters.
+- `tags` - list of max. 5 tags (`blog.too_many_tags`), each max. 16 characters (a longer tag gets DRF's built-in `max_length` error, keyed by its index).
 - `content` - required.
-- `image` - optional image file. In responses, `image` is the absolute URL of the file (see below) or `null`.
+- `image` - optional image file, at most `MAX_IMAGE_FILE_SIZE_BYTES` (`blog.image_too_large`). In responses, `image` is the absolute URL of the file (see below) or `null`.
 
 ## `GET /internal-media/blog/{path}`
 
@@ -116,6 +116,6 @@ Removing a reaction:
 **Rules:**
 
 - Reactions are limited per IP.
-- At most 10 active new reactions per IP within 24h.
+- At most 10 active new reactions per IP within 24h; the 11th returns `429` with `{"code": "blog.reaction_daily_limit", "details": {}}`. If the server cannot determine the client IP, `400` with `{"code": "blog.client_ip_unknown", "details": {}}`.
 - Responses: `201` first reaction, `200` change of an existing one, `204` empty reaction. Two simultaneous first reactions from one IP (double click) give `201` and `200`, never `500`.
 - The endpoint supports only `POST` and `OPTIONS`; list/retrieve are deliberately disabled so as not to expose IP addresses.

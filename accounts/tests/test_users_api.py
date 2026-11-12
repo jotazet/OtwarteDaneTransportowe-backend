@@ -147,8 +147,57 @@ def test_wrong_current_password_keeps_the_sessions(api_client, regular_user):
     session = _session(regular_user)
     api_client.force_authenticate(user=regular_user)
 
-    assert _change_password(api_client, 'wrong').status_code == 400
+    response = _change_password(api_client, 'wrong')
+
+    assert response.status_code == 400
+    assert response.data == {'current_password': ['users.wrong_password']}
     assert _refresh(session).status_code == 200
+
+
+@pytest.mark.parametrize(
+    'new_password, codes',
+    [
+        ('Ab1!', ['users.password_too_short']),
+        ('12345678901', ['users.password_too_common', 'users.password_entirely_numeric']),
+    ],
+)
+def test_rejected_new_password_returns_validator_codes(
+    api_client, regular_user, new_password, codes
+):
+    api_client.force_authenticate(user=regular_user)
+
+    response = api_client.post(
+        '/api/users/me/change-password/',
+        {'current_password': 'regularpass', 'new_password': new_password},
+        format='json',
+    )
+
+    assert response.status_code == 400
+    assert response.data == {'new_password': codes}
+
+
+def test_change_email_with_wrong_password(api_client, regular_user):
+    api_client.force_authenticate(user=regular_user)
+
+    response = api_client.post(
+        '/api/users/me/change-email/',
+        {'current_password': 'wrong', 'new_email': 'changed@example.com'},
+        format='json',
+    )
+
+    assert response.status_code == 400
+    assert response.data == {'current_password': ['users.wrong_password']}
+
+
+def test_unknown_role(api_client, admin_user, regular_user):
+    api_client.force_authenticate(user=admin_user)
+
+    response = api_client.patch(
+        f'/api/users/{regular_user.pk}/', {'roles': ['Superhero']}, format='json'
+    )
+
+    assert response.status_code == 400
+    assert response.data == {'roles': ['users.unknown_role']}
 
 
 def test_logout_blacklists_the_refresh_token(make_user):
@@ -197,6 +246,7 @@ def test_cannot_delete_self(api_client, admin_user):
     api_client.force_authenticate(user=admin_user)
     response = api_client.delete(f'/api/users/{admin_user.pk}/')
     assert response.status_code == 400
+    assert response.data == {'code': 'users.cannot_delete_self', 'details': {}}
 
 
 def test_cannot_remove_last_admin(api_client, admin_user):
@@ -207,6 +257,7 @@ def test_cannot_remove_last_admin(api_client, admin_user):
         format='json',
     )
     assert response.status_code == 400
+    assert response.data == {'code': 'users.last_admin', 'details': {}}
 
     response = api_client.delete(f'/api/users/{admin_user.pk}/')
     assert response.status_code == 400

@@ -279,9 +279,11 @@ def _validate_stage_value(raw):
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        raise ValidationError({'stage': 'Stage must be an integer.'}) from None
+        raise ValidationError(
+            {'stage': ['feeds.invalid_stage']}, code='feeds.invalid_stage'
+        ) from None
     if value < 1 or value > 4:
-        raise ValidationError({'stage': 'Stage must be between 1 and 4.'})
+        raise ValidationError({'stage': ['feeds.invalid_stage']}, code='feeds.invalid_stage')
     return value
 
 
@@ -399,7 +401,10 @@ class PublicFeedDownloadView(APIView):
 
     def get(self, request, pk=None, filename=None):
         if pk is None:
-            return Response({"detail": "Specify a feed ID."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'code': 'feeds.feed_id_required', 'details': {}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         submission = self._get_submission_or_404(pk)
 
@@ -450,7 +455,8 @@ class RealtimePublicFeedDownloadView(APIView):
     def get(self, request, pk=None, endpoint_type=None, filename=None):
         if pk is None:
             return Response(
-                {"detail": "Specify a realtime feed ID."}, status=status.HTTP_400_BAD_REQUEST
+                {'code': 'feeds.feed_id_required', 'details': {}},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if pk not in completed_realtime_submission_ids():
@@ -581,7 +587,7 @@ class UserSubmissionsView(APIView):
         user = request.user
         if not (can_add_feeds(user) or can_confirm_feeds(user)):
             return Response(
-                {'detail': 'You do not have permission to view submissions.'},
+                {'code': 'feeds.submissions_forbidden', 'details': {}},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -690,18 +696,13 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         if not can_confirm_feeds(request.user):
             if request.data.get('stage') is not None or request.data.get('rejection_cause'):
                 return Response(
-                    {'detail': 'Only Admin or Helper can confirm or reject submissions.'},
+                    {'code': 'feeds.review_forbidden', 'details': {}},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
         if is_helper_reviewer(request.user) and patch_request_includes_submission_content(request):
             return Response(
-                {
-                    'detail': (
-                        'Helper may only confirm or reject submissions '
-                        '(fields: stage, rejection_cause).'
-                    ),
-                },
+                {'code': 'feeds.helper_content_edit_forbidden', 'details': {}},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -771,7 +772,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         if is_admin(request.user):
             return super().destroy(request, *args, **kwargs)
         return Response(
-            {'detail': 'Only Admin can delete submissions.'},
+            {'code': 'feeds.delete_forbidden', 'details': {}},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -947,7 +948,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         if not can_confirm_feeds(request.user):
             if request.data.get('stage') is not None or request.data.get('rejection_cause'):
                 return Response(
-                    {'detail': 'Only Admin or Helper can confirm or reject submissions.'},
+                    {'code': 'feeds.review_forbidden', 'details': {}},
                     status=status.HTTP_403_FORBIDDEN,
                 )
         # Early input check: content must not be saved before a bad 'stage' 400s.
@@ -955,12 +956,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
 
         if is_helper_reviewer(request.user) and patch_request_includes_submission_content(request):
             return Response(
-                {
-                    'detail': (
-                        'Helper may only confirm or reject submissions '
-                        '(fields: stage, rejection_cause).'
-                    ),
-                },
+                {'code': 'feeds.helper_content_edit_forbidden', 'details': {}},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -992,14 +988,10 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                         try:
                             obj = instance.endpoints.get(endpoint_type=ep['endpoint_type'])
                         except RealtimeEndpointRT.DoesNotExist:
+                            # Only intervals of existing endpoints can change.
                             raise ValidationError(
-                                {
-                                    'endpoints': (
-                                        f"Unknown endpoint_type '{ep['endpoint_type']}' for this "
-                                        'submission; only interval changes to existing endpoints '
-                                        'are allowed after stage 1.'
-                                    ),
-                                }
+                                {'endpoints': ['realtime.endpoint_type_unknown']},
+                                code='realtime.endpoint_type_unknown',
                             ) from None
                         if obj.interval != ep['interval']:
                             obj.interval = ep['interval']
@@ -1068,7 +1060,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         if is_admin(request.user):
             return super().destroy(request, *args, **kwargs)
         return Response(
-            {'detail': 'Only Admin can delete submissions.'},
+            {'code': 'feeds.delete_forbidden', 'details': {}},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -1101,7 +1093,7 @@ class StaticFeedEntryViewSet(viewsets.ReadOnlyModelViewSet):
     def _require_operator(self, request):
         if not can_confirm_feeds(request.user):
             return Response(
-                {'detail': 'Only Admin or Helper can pause or resume feed fetching.'},
+                {'code': 'feeds.fetch_control_forbidden', 'details': {}},
                 status=status.HTTP_403_FORBIDDEN,
             )
         return None
@@ -1150,7 +1142,7 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
     def _require_operator(self, request):
         if not can_confirm_feeds(request.user):
             return Response(
-                {'detail': 'Only Admin or Helper can pause or resume feed fetching.'},
+                {'code': 'feeds.fetch_control_forbidden', 'details': {}},
                 status=status.HTTP_403_FORBIDDEN,
             )
         return None
