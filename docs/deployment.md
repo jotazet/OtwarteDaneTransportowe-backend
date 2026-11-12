@@ -141,7 +141,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(64))"
 # FEED_AUTH_ENCRYPTION_KEY (Fernet key for encrypting feed credentials)
 python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 # (if you do not have 'cryptography' locally, generate it in the container after the first build:
-#  docker compose run --rm web python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+#  ./scripts/deploy.sh run --rm web python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 
 # POSTGRES_PASSWORD (strong database password)
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -299,7 +299,7 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `FEED_AUTH_ENCRYPTION_KEY` | At-rest encryption of feed credentials (Fernet key). `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty or not a Fernet key. A stored credential that no configured key decrypts is never used: its fetches fail with `auth_error` / `fetch.credential_undecryptable` ([section 18](#18-troubleshooting)). |
 | `FEED_AUTH_ENCRYPTION_OLD_KEYS` | Optional, comma-separated previous keys that still decrypt but never encrypt. Set only while [rotating the key](#rotating-feed_auth_encryption_key). |
 | `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). Set by `docker-compose.yml` (database `2`), which overrides `.env`. |
-| `REDIS_PASSWORD` | Password of the Redis server; `docker-compose.yml` builds the broker, result backend and cache URLs from it (`redis://:${REDIS_PASSWORD}@redis:6379/<db>`). Required in production: the Docker bridge network is reachable from the host, so an unpublished Redis without a password is still open to local processes. Letters, digits, `-` and `_` only, because it goes into the URLs unencoded (`envfile.py` refuses anything else). Empty in development (no authentication). |
+| `REDIS_PASSWORD` | Password of the Redis server; `docker-compose.yml` builds the broker and cache URLs from it (`redis://:${REDIS_PASSWORD}@redis:6379/<db>`). Required in production: the Docker bridge network is reachable from the host, so an unpublished Redis without a password is still open to local processes. Letters, digits, `-` and `_` only, because it goes into the URLs unencoded (`envfile.py` refuses anything else). Empty in development (no authentication). |
 | `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks, and the client IP is its rightmost address that is not inside them (entries to the left are whatever the client sent). List **every** proxy hop, including a CDN in front of nginx, or its address becomes the client IP of everyone behind it; keep the networks as narrow as possible, because any address inside them is treated as a proxy. DRF throttling (`THROTTLE_*`) counts requests per this client IP too. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit, and all visitors share one login, feed download and planner limit. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
 | `ALLOW_UNTRUSTED_PROXY_IPS` | Default `False`. Set to `True` only when the app is served directly to clients without a reverse proxy: it disables the startup check for an empty `TRUSTED_PROXY_CIDRS`, and the client IP is then taken from the socket address (`REMOTE_ADDR`). |
 | `PUBLIC_BASE_URL` | Currently unused (defined in settings, not read by any code). |
@@ -307,7 +307,8 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `HOST_PROJECT_PATH` / `HOST_MEDIA_ROOT` | Host paths of the project and of `uploaded_data/`. The validator is started by the host's Docker daemon, so its bind mounts need host paths. Compose passes `${PWD}` and `${PWD}/uploaded_data` when unset; outside compose `HOST_MEDIA_ROOT` defaults to `HOST_PROJECT_PATH/uploaded_data`. |
 | `GTFS_VALIDATOR_MEM_LIMIT`, `GTFS_VALIDATOR_PIDS_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS` | Resource limits of the validator container. Defaults `2g`, `512` and two cores (`2000000000`; `1000000000` = one core, `0` = no cap). Two of the production VPS's six vCPUs leave the rest to OpenTripPlanner, the web and the other workers; a validation then takes longer but still has to fit the 10-minute budget below. Docker refuses a cap above the host's CPU count, so set `1000000000` (or `0`) on a single-CPU machine. |
 | `WEB_MEM_LIMIT`, `CELERY_DEFAULT_MEM_LIMIT`, `CELERY_REALTIME_MEM_LIMIT`, `CELERY_FEEDS_MEM_LIMIT`, `CELERY_PLANNER_MEM_LIMIT`, `POSTGRES_MEM_LIMIT` | `mem_limit` of `web`, `celery_worker`, `celery_realtime_worker`, `celery_validator_worker`, `celery_planner_worker` and `postgres`. Default `1g` each, `6g` for the planner worker (it crops the OSM extract); raise the web and worker ones together with `GUNICORN_WORKERS` and the Celery concurrencies, the planner one with a larger OSM extract. See [section 1](#memory-limits-and-logs). |
-| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis databases of the Celery broker and result backend. `docker-compose.yml` sets them (databases `0` and `1`), which overrides `.env`; the defaults (`redis://localhost:6379/0`, `/1`) are for running outside Docker. |
+| `CELERY_BROKER_URL` | Redis database of the Celery broker. `docker-compose.yml` sets it (database `0`), which overrides `.env`; the default `redis://localhost:6379/0` is for running outside Docker. Celery has no result backend: nothing reads task results (`CELERY_TASK_IGNORE_RESULT`). |
+| `POSTGRES_CONN_MAX_AGE` | Seconds a web (gunicorn) thread keeps its database connection open for the next request. Default `60`; `0` opens a new connection for every request. A dead connection is replaced before use (`CONN_HEALTH_CHECKS`). See [section 6](#6-postgresql) for the connection count. |
 | `POSTGRES_HOST` / `POSTGRES_PORT` | Database address. `docker-compose.yml` sets `postgres` and `5432`; the defaults `127.0.0.1` and `5420` (the port published on the host in development) are for running on the host. |
 | `DJANGO_MEDIA_ROOT` | Directory of uploaded and cached feed files and blog images inside the containers. Default `uploaded_data/` in the project directory; if you change it, `HOST_MEDIA_ROOT` must still point to the same directory on the host. |
 | `DJANGO_SECURE_REFERRER_POLICY` | `Referrer-Policy` header in `settings_prod`. Default `same-origin`. |
@@ -326,6 +327,15 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
   Redis, because a `127.0.0.1` port is still open to every local user and process of a
   shared host: use `./scripts/deploy.sh exec postgres psql ...` (or `pg_dump`) instead.
 - Data is kept in the `odt_pgdata` volume (it survives container restarts/recreation).
+- **Connections.** With `POSTGRES_CONN_MAX_AGE` (default 60 s) every gunicorn thread keeps
+  its connection open between requests: 12 with the defaults (`GUNICORN_WORKERS` 3 ×
+  `GUNICORN_THREADS` 4). Celery workers still open a connection per task (Celery's Django
+  fixup closes it before and after each task), at most one per process: 2 for
+  `celery_worker`, 2 for `celery_realtime_worker`, 1 for `celery_validator_worker`, 2 for
+  `celery_planner_worker`, plus 1 for `celery_beat` and one-off `migrate`, backup and shell
+  sessions. That is about 22 of
+  PostgreSQL's default `max_connections` of 100; raise it only if the gunicorn workers and
+  threads and the Celery concurrencies together approach it.
 
 ### Changing the password of an existing database
 
@@ -457,11 +467,17 @@ docker compose up -d --build
 docker compose ps
 ```
 
-> **Passwords and keys in `.env`:** the values are loaded via `env_file`, so they may
-> contain the `$` character without double escaping. Avoid writing secrets as
-> `${POSTGRES_PASSWORD}` in compose files — this caused warnings such as
-> `The "o" variable is not set`. `REDIS_PASSWORD` is the exception: Compose interpolates
-> it into the Redis URLs, which is why it is limited to letters, digits, `-` and `_`.
+> **`$` in `.env` values:** Compose expands `$NAME` and `${NAME}` in unquoted and
+> double-quoted values, both in the `env_file` entries the containers receive and in the
+> project `.env` it interpolates into `docker-compose*.yml` (such as `PLANNER_INTERNAL_TOKEN`).
+> Write a literal `$` as `$$` (`pa$$word` is `pa$word`), or put the whole value in single
+> quotes (`'pa$word'`), which Compose takes as is. An unescaped `pa$word` becomes `pa` plus
+> the value of a variable `word`, with a warning such as `The "word" variable is not set`. A
+> `$` followed by neither a letter, `_` nor `{` stays as it is (`^/(api|feed)/.*$`). This
+> applies to every hand-written file: `.env` and the host file
+> ([section 20](#the-host-file)). Values in the GitHub environment are literal: the release
+> writes them into `.env` escaped. `REDIS_PASSWORD` also goes into the Redis URLs
+> unencoded, which is why it is limited to letters, digits, `-` and `_`.
 
 The startup order is enforced by dependencies: `init_uploads` → `postgres`/`redis`
 (healthcheck) → `migrate` → `web`/workers.
@@ -477,7 +493,7 @@ Migrations run automatically in the `migrate` service at startup. The role group
 Create the first administrator account:
 
 ```bash
-docker compose exec web python manage.py createsuperuser
+./scripts/deploy.sh exec web python manage.py createsuperuser
 ```
 
 You assign roles in the `/admin/` panel (Groups) or via the user management API
@@ -486,7 +502,7 @@ You assign roles in the `/admin/` panel (Groups) or via the user management API
 Manual migrations (if needed):
 
 ```bash
-docker compose exec web python manage.py migrate
+./scripts/deploy.sh exec web python manage.py migrate
 ```
 
 ---
@@ -644,7 +660,7 @@ Verification: add a reaction to a blog post you have not reacted to yet; the new
 address must be your own IP, not a Cloudflare one:
 
 ```bash
-docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT ip_address FROM blog_reaction ORDER BY date DESC LIMIT 1"'
+./scripts/deploy.sh exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT ip_address FROM blog_reaction ORDER BY date DESC LIMIT 1"'
 ```
 
 ---
@@ -653,14 +669,14 @@ docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB
 
 ```bash
 # Service status and healthcheck: web, the workers and beat should be (healthy)
-docker compose ps
+./scripts/deploy.sh ps
 
 # Application and worker logs
-docker compose logs -f web
-docker compose logs -f celery_validator_worker
+./scripts/deploy.sh logs -f web
+./scripts/deploy.sh logs -f celery_validator_worker
 
 # Security configuration check (inside the container, prod)
-docker compose exec web python manage.py check --deploy
+./scripts/deploy.sh exec web python manage.py check --deploy
 ```
 
 Expected: no `security.W*` warnings. Then check through the browser/proxy:
@@ -906,8 +922,8 @@ lower its concurrency.
 `./scripts/deploy.sh up -d --build`.
 
 **Compose warnings: `The "o" variable is not set`**
-→ Secrets in `.env` must not be substituted via `${VAR}` in compose — use
-`env_file` (the project default). Passwords may contain `$` without escaping.
+→ A value in `.env` or the host file contains `$o`, which Compose expands. Write the `$` as
+`$$` or single-quote the value ([section 10](#10-startup)).
 
 **CSRF 403 on POST**
 → Fill in `CSRF_TRUSTED_ORIGINS` and make sure the proxy sends `X-Forwarded-Proto`.
@@ -923,8 +939,8 @@ so rebuild it; in development the `migrate` service collects them at startup. If
 [12](#12-static-files-static) and [13](#13-reverse-proxy--tls)).
 
 **GTFS validation does not work / "Cannot connect to Docker"**
-→ Check that the `docker-socket-proxy` service is running (`docker compose ps`,
-`docker compose logs docker-socket-proxy`) and that `celery_validator_worker`
+→ Check that the `docker-socket-proxy` service is running (`./scripts/deploy.sh ps`,
+`./scripts/deploy.sh logs docker-socket-proxy`) and that `celery_validator_worker`
 has `DOCKER_HOST=tcp://docker-socket-proxy:2375` and is on the `docker-api` network.
 
 **Files in `uploaded_data/` are owned by root / cannot write**
@@ -937,7 +953,7 @@ required for the lock and throttling across processes).
 **Blog reactions: everyone overwrites each other's reaction / one reaction globally; anonymous visitors get `429` together**
 → The backend sees everyone with a single IP (the proxy's address). Set `TRUSTED_PROXY_CIDRS`
 to the proxy network (e.g. `172.16.0.0/12,127.0.0.1/32`) and make sure nginx/Caddy
-forwards `X-Forwarded-For`. Verification: `docker compose exec web python
+forwards `X-Forwarded-For`. Verification: `./scripts/deploy.sh exec web python
 manage.py check` must not report `blog.W001`.
 
 **Blog reactions are stored with Cloudflare addresses**
@@ -956,21 +972,21 @@ needed; only the proxy mounts the socket (read-only).
 
 1. Make sure the proxy is running:
    ```bash
-   docker compose up -d docker-socket-proxy celery_validator_worker
-   docker compose ps docker-socket-proxy
+   ./scripts/deploy.sh up -d docker-socket-proxy celery_validator_worker
+   ./scripts/deploy.sh ps docker-socket-proxy
    ```
 
 2. Check the logs:
    ```bash
-   docker compose logs celery_validator_worker --tail 50
+   ./scripts/deploy.sh logs celery_validator_worker --tail 50
    ```
    The error `Cannot connect to Docker` = the proxy is not running or `DOCKER_HOST`
    is missing from the worker's environment (see `docker-compose.yml`).
 
 3. Retry validation for submissions stuck at stage 2:
    ```bash
-   docker compose exec web python manage.py retry_gtfs_validation
-   docker compose exec web python manage.py retry_gtfs_validation --submission-id 64
+   ./scripts/deploy.sh exec web python manage.py retry_gtfs_validation
+   ./scripts/deploy.sh exec web python manage.py retry_gtfs_validation --submission-id 64
    ```
    Without `--submission-id` it re-queues GTFS entries at stage 2 or 3 whose `validation_status` is
    `error` (validation could not run: the submission was not rejected) or `pending` (the task was lost
@@ -1180,7 +1196,8 @@ interpolates into `docker-compose*.yml` (`*_HOST_PORT`, `WEB_HOST_BIND`, `GUNICO
 `PLANNER_DATA_DIR`, `PLANNER_OSM_FILE`, `PLANNER_OTP_CONTAINER`, `PLANNER_OTP_URL`,
 `PLANNER_ODT_INTERNAL_URL`, `REDIS_CACHE_URL`). It may also pin an application setting. It
 holds no secret. `odt-deploy` refuses to run unless the file and `/etc/odt` are owned by root
-and writable by nobody else; the format is that of `.env`. Change it as root, then deploy.
+and writable by nobody else; the format is that of `.env`, `$$` for a literal `$` included
+([section 10](#10-startup)). Change it as root, then deploy.
 
 ```bash
 sudo install -d -o root -g root -m 755 /etc/odt

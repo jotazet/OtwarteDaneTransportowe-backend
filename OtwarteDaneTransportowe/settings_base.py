@@ -161,6 +161,11 @@ DATABASES = {
         'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'postgres'),
         'HOST': os.getenv('POSTGRES_HOST', '127.0.0.1'),
         'PORT': os.getenv('POSTGRES_PORT', '5420'),
+        # Reuse a connection for this many seconds instead of opening one per request
+        # (0 closes it after every request, as before). The health check replaces a
+        # connection that died in between (e.g. after a Postgres restart).
+        'CONN_MAX_AGE': int(os.getenv('POSTGRES_CONN_MAX_AGE', '60')),
+        'CONN_HEALTH_CHECKS': True,
     }
 }
 
@@ -292,9 +297,11 @@ SIMPLE_JWT = {
 
 # Celery
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/1')
+# No result backend: nothing reads task results (every task is fire-and-forget and
+# records its outcome in the database), so storing one per realtime poll only filled
+# Redis. A task whose result must be read needs a backend AND ignore_result=False.
+CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = True
