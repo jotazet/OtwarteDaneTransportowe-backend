@@ -149,6 +149,8 @@ The first successful fetch resets the error counter to zero and sets `fetch_stat
 
 A delayed realtime endpoint has no fetch queued: the periodic realtime bootstrap (every 5 minutes) resumes it once `next_fetch_after` has passed, so the actual retry comes up to 5 minutes after the time in the table. Static feeds are retried by the per-minute dispatcher.
 
+A manual pause is never undone by a fetch: a download that was already running when `pause-fetch` was called still records `last_fetch_success_at` or `last_fetch_error_at` (and its `FeedFetchError`), but `fetch_status`, the error counter and `fetch_pause_reason` stay as the pause set them, and the realtime loop stops. Only `resume-fetch` lifts it.
+
 `Helper` or `Admin` can manually pause or resume a single **proxied** feed (`is_proxy_managed=true`). The `proxy-feeds` list is available to any logged-in user (a `DataProvider` sees only its own feeds), but `pause-fetch` / `resume-fetch` return `403` for anyone other than `Helper`/`Admin`:
 
 ```http

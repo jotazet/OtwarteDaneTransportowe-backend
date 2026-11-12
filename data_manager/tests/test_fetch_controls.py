@@ -25,6 +25,7 @@ from data_manager.models import (
     StaticFeedEntry,
 )
 from data_manager.scheduler import FETCH_OK, FETCH_TRANSIENT, _fetch_static_entry
+from data_manager.tests.test_flow import fake_download
 
 pytestmark = pytest.mark.django_db
 
@@ -628,6 +629,88 @@ def test_proxy_feeds_list_combines_static_and_realtime(api_client, org, provider
 
     filtered = api_client.get('/api/data_manager/proxy-feeds/')
     assert filtered.data['count'] == 2
+
+
+def _download_pausing(model, pk, body=b'', exc=None):
+    """safe_download stand-in: a Helper pauses the feed while it is in flight."""
+
+    @contextmanager
+    def _download(*args, **kwargs):
+        model.objects.get(pk=pk).pause_fetch('maintenance')
+        if exc is not None:
+            raise exc
+        with fake_download(body)() as result:
+            yield result
+
+    return _download
+
+
+@pytest.mark.parametrize('fails', [False, True], ids=['success', 'failure'])
+def test_static_pause_during_fetch_survives_its_outcome(monkeypatch, org, provider_user, fails):
+    entry = _published_static_entry(org, provider_user)
+    monkeypatch.setattr(
+        'data_manager.scheduler.safe_download',
+        _download_pausing(
+            StaticFeedEntry,
+            entry.pk,
+            body=b'PK\x03\x04feed-bytes',
+            exc=requests.exceptions.Timeout('timeout') if fails else None,
+        ),
+    )
+    monkeypatch.setattr('data_manager.tasks.validate_gtfs_feed_task.delay', lambda *a, **k: None)
+
+    result = tasks.fetch_static_entry_task(entry.pk)
+
+    entry.refresh_from_db()
+    assert result['fetch_status'] == FETCH_STATUS_MANUAL_PAUSED
+    assert entry.fetch_status == FETCH_STATUS_MANUAL_PAUSED
+    assert entry.fetch_pause_reason == 'maintenance'
+    assert entry.fetch_failure_count == 0
+    assert entry.next_fetch_after is None
+    # The outcome itself is still recorded.
+    if fails:
+        assert entry.last_fetch_error_at is not None
+        assert entry.last_fetch_success_at is None
+    else:
+        assert entry.last_fetch_success_at is not None
+        assert entry.last_fetch_error_at is None
+
+
+@pytest.mark.parametrize('fails', [False, True], ids=['success', 'failure'])
+def test_realtime_pause_during_fetch_survives_and_stops_loop(
+    monkeypatch, org, provider_user, fails
+):
+    endpoint = _published_realtime_endpoint(org, provider_user)
+    monkeypatch.setattr(
+        'data_manager.scheduler.safe_download',
+        _download_pausing(
+            RealtimeEndpointRT,
+            endpoint.pk,
+            body=b'{}',
+            exc=requests.exceptions.ConnectionError('down') if fails else None,
+        ),
+    )
+    monkeypatch.setattr(
+        'data_manager.scheduler.validate_realtime_feed_stream', lambda *a, **k: set()
+    )
+    rescheduled = []
+    monkeypatch.setattr(
+        tasks.fetch_realtime_endpoint_task,
+        'apply_async',
+        lambda *a, **k: rescheduled.append(k),
+    )
+
+    result = tasks.fetch_realtime_endpoint_task(endpoint.pk)
+
+    endpoint.refresh_from_db()
+    assert result['fetch_status'] == FETCH_STATUS_MANUAL_PAUSED
+    assert endpoint.fetch_status == FETCH_STATUS_MANUAL_PAUSED
+    assert endpoint.fetch_failure_count == 0
+    assert rescheduled == []
+    if fails:
+        assert endpoint.last_fetch_error_at is not None
+    else:
+        assert endpoint.last_fetch_success_at is not None
 
 
 def test_proxy_feeds_pages_list_every_feed_once_with_polish_names(
