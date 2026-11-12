@@ -9,7 +9,7 @@ from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django.core.files.base import ContentFile
+from django.core.files.base import ContentFile, File
 from django.utils import timezone
 
 from cases.models import TransportOrganization
@@ -482,3 +482,62 @@ def test_overwrite_storage_survives_a_concurrent_save_of_the_same_file(settings,
         storage.save('7/validation/report.json', ContentFile(b'new'))
 
     assert (tmp_path / '7/validation/report.json').read_bytes() == b'new'
+
+
+@pytest.fixture
+def storage(settings, tmp_path):
+    from data_manager.models import OverwriteStorage
+
+    settings.MEDIA_ROOT = str(tmp_path)
+    return OverwriteStorage()
+
+
+def test_overwrite_storage_keeps_an_open_reader_on_the_complete_old_file(storage, tmp_path):
+    """A download served during a refresh must not see a truncated or mixed file."""
+    old, new = b'old-' * 50_000, b'new-' * 60_000
+    storage.save('7/static/cached/feed.zip', ContentFile(old))
+
+    with storage.open('7/static/cached/feed.zip', 'rb') as reader:
+        head = reader.read(10)
+        storage.save('7/static/cached/feed.zip', ContentFile(new))
+        assert head + reader.read() == old
+
+    assert (tmp_path / '7/static/cached/feed.zip').read_bytes() == new
+    assert not list(tmp_path.rglob('*.tmp'))
+
+
+def test_overwrite_storage_failed_write_keeps_the_old_file_and_no_temp(storage, tmp_path):
+    class BrokenStream(File):
+        def chunks(self, chunk_size=None):
+            yield b'partial'
+            raise OSError('connection reset')
+
+    storage.save('7/dynamic/cached/vp/feed.pb', ContentFile(b'complete'))
+
+    with pytest.raises(OSError, match='connection reset'):
+        storage.save('7/dynamic/cached/vp/feed.pb', BrokenStream(io.BytesIO()))
+
+    assert (tmp_path / '7/dynamic/cached/vp/feed.pb').read_bytes() == b'complete'
+    assert not list(tmp_path.rglob('*.tmp'))
+
+
+def test_overwrite_storage_overlapping_saves_of_one_name_both_succeed(storage, tmp_path):
+    """A second save that starts and finishes while the first is still writing
+    (revalidation vs. the fetch loop, overlapping report.json writes)."""
+    storage.save('7/validation/report.json', ContentFile(b'old'))
+    second_result = []
+
+    class SlowStream(File):
+        def chunks(self, chunk_size=None):
+            yield b'{"run": '
+            second_result.append(
+                storage.save('7/validation/report.json', ContentFile(b'{"run": 2}'))
+            )
+            yield b'1}'
+
+    first_result = storage.save('7/validation/report.json', SlowStream(io.BytesIO()))
+
+    assert first_result == second_result[0] == '7/validation/report.json'
+    # The last rename wins and the file is one complete version, never a mix.
+    assert (tmp_path / '7/validation/report.json').read_bytes() == b'{"run": 1}'
+    assert not list(tmp_path.rglob('*.tmp'))
