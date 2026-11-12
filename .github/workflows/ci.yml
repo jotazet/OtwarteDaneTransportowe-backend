@@ -115,13 +115,15 @@ jobs:
         with:
           persist-credentials: false
       # Every variable of the environment and its named secrets: keep this list in step
-      # with REQUIRED_SECRETS and OPTIONAL_SECRETS in scripts/deploy/envfile.py.
+      # with REQUIRED_SECRETS and OPTIONAL_SECRETS in scripts/deploy/envfile.py. The server
+      # refuses a variable outside RELEASE_VARIABLES there (docs/deployment.md section 20).
       - name: Write .env from the environment's variables and secrets
         env:
           VARS_JSON: ${{ toJSON(vars) }}
           DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           FEED_AUTH_ENCRYPTION_KEY: ${{ secrets.FEED_AUTH_ENCRYPTION_KEY }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           PLANNER_INTERNAL_TOKEN: ${{ secrets.PLANNER_INTERNAL_TOKEN }}
         run: python3 -I scripts/deploy/envfile.py write "$RUNNER_TEMP/production.env"
       # odt-deploy takes the tag as its only argument and the .env on standard input.
