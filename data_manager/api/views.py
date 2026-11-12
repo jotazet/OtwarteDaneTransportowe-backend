@@ -38,6 +38,7 @@ from data_manager.api.serializers import (
     UserFeedSubmissionListSerializer,
     UserRealtimeSubmissionSerializer,
     annotate_fetch_health,
+    field_error,
     raise_as_drf_validation_error,
 )
 from data_manager.models import (
@@ -52,6 +53,7 @@ from data_manager.models import (
     completed_submission_ids,
     lock_submission,
 )
+from OtwarteDaneTransportowe.api_errors import CodedError
 from OtwarteDaneTransportowe.auth_roles import (
     IsFeedParticipant,
     can_add_feeds,
@@ -279,26 +281,20 @@ def _validate_stage_value(raw):
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        raise ValidationError(
-            {'stage': ['feeds.invalid_stage']}, code='feeds.invalid_stage'
-        ) from None
-    if value < 1 or value > 4:
-        raise ValidationError({'stage': ['feeds.invalid_stage']}, code='feeds.invalid_stage')
+        value = 0
+    if not 1 <= value <= 4:
+        raise field_error('stage', 'feeds.invalid_stage')
     return value
 
 
 def _require_proxy_managed(source):
-    """400 with an error code (ADR 0006) when a feed source is not proxied.
+    """Raise a 400 with an error code (ADR 0006) when a feed source is not proxied.
 
     Pause/resume only applies to sources the server fetches and caches
     (hide_original=true).
     """
-    if source.is_proxy_managed:
-        return None
-    return Response(
-        {'code': 'feeds.not_proxy_managed', 'details': {}},
-        status=status.HTTP_400_BAD_REQUEST,
-    )
+    if not source.is_proxy_managed:
+        raise CodedError('feeds.not_proxy_managed')
 
 
 class StageChanged(APIException):
@@ -401,10 +397,7 @@ class PublicFeedDownloadView(APIView):
 
     def get(self, request, pk=None, filename=None):
         if pk is None:
-            return Response(
-                {'code': 'feeds.feed_id_required', 'details': {}},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            raise CodedError('feeds.feed_id_required')
 
         submission = self._get_submission_or_404(pk)
 
@@ -454,10 +447,7 @@ class RealtimePublicFeedDownloadView(APIView):
 
     def get(self, request, pk=None, endpoint_type=None, filename=None):
         if pk is None:
-            return Response(
-                {'code': 'feeds.feed_id_required', 'details': {}},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            raise CodedError('feeds.feed_id_required')
 
         if pk not in completed_realtime_submission_ids():
             raise Http404("Realtime feed not found or not published.")
@@ -586,10 +576,7 @@ class UserSubmissionsView(APIView):
     def get(self, request):
         user = request.user
         if not (can_add_feeds(user) or can_confirm_feeds(user)):
-            return Response(
-                {'code': 'feeds.submissions_forbidden', 'details': {}},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            raise CodedError('feeds.submissions_forbidden', status.HTTP_403_FORBIDDEN)
 
         static_qs = (
             FeedSubmission.objects.filter(submitted_by=user)
@@ -695,16 +682,10 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
 
         if not can_confirm_feeds(request.user):
             if request.data.get('stage') is not None or request.data.get('rejection_cause'):
-                return Response(
-                    {'code': 'feeds.review_forbidden', 'details': {}},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                raise CodedError('feeds.review_forbidden', status.HTTP_403_FORBIDDEN)
 
         if is_helper_reviewer(request.user) and patch_request_includes_submission_content(request):
-            return Response(
-                {'code': 'feeds.helper_content_edit_forbidden', 'details': {}},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            raise CodedError('feeds.helper_content_edit_forbidden', status.HTTP_403_FORBIDDEN)
 
         # Validate the stage transition input up front: content must not be
         # saved before a malformed 'stage' 400s.
@@ -771,10 +752,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         # branch was unreachable: submissions are born at stage 2.)
         if is_admin(request.user):
             return super().destroy(request, *args, **kwargs)
-        return Response(
-            {'code': 'feeds.delete_forbidden', 'details': {}},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        raise CodedError('feeds.delete_forbidden', status.HTTP_403_FORBIDDEN)
 
     @action(detail=True, methods=['get'], url_path='download/static/(?P<endpoint_pk>[0-9]+)')
     def download_static(self, request, pk=None, endpoint_pk=None):
@@ -947,18 +925,12 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         if not can_confirm_feeds(request.user):
             if request.data.get('stage') is not None or request.data.get('rejection_cause'):
-                return Response(
-                    {'code': 'feeds.review_forbidden', 'details': {}},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                raise CodedError('feeds.review_forbidden', status.HTTP_403_FORBIDDEN)
         # Early input check: content must not be saved before a bad 'stage' 400s.
         _validate_stage_value(request.data.get('stage'))
 
         if is_helper_reviewer(request.user) and patch_request_includes_submission_content(request):
-            return Response(
-                {'code': 'feeds.helper_content_edit_forbidden', 'details': {}},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            raise CodedError('feeds.helper_content_edit_forbidden', status.HTTP_403_FORBIDDEN)
 
         restricted_realtime = not can_edit_realtime_submission_content(request.user, instance)
         ctx = self.get_serializer_context()
@@ -989,9 +961,8 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                             obj = instance.endpoints.get(endpoint_type=ep['endpoint_type'])
                         except RealtimeEndpointRT.DoesNotExist:
                             # Only intervals of existing endpoints can change.
-                            raise ValidationError(
-                                {'endpoints': ['realtime.endpoint_type_unknown']},
-                                code='realtime.endpoint_type_unknown',
+                            raise field_error(
+                                'endpoints', 'realtime.endpoint_type_unknown'
                             ) from None
                         if obj.interval != ep['interval']:
                             obj.interval = ep['interval']
@@ -1059,10 +1030,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         # (uploaded submissions belong to the review audit trail).
         if is_admin(request.user):
             return super().destroy(request, *args, **kwargs)
-        return Response(
-            {'code': 'feeds.delete_forbidden', 'details': {}},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        raise CodedError('feeds.delete_forbidden', status.HTTP_403_FORBIDDEN)
 
     @action(detail=True, methods=['get'], url_path='fetch-errors')
     def fetch_errors(self, request, pk=None):
@@ -1092,34 +1060,22 @@ class StaticFeedEntryViewSet(viewsets.ReadOnlyModelViewSet):
 
     def _require_operator(self, request):
         if not can_confirm_feeds(request.user):
-            return Response(
-                {'code': 'feeds.fetch_control_forbidden', 'details': {}},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        return None
+            raise CodedError('feeds.fetch_control_forbidden', status.HTTP_403_FORBIDDEN)
 
     @action(detail=True, methods=['post'], url_path='pause-fetch')
     def pause_fetch(self, request, pk=None):
-        denied = self._require_operator(request)
-        if denied:
-            return denied
+        self._require_operator(request)
         entry = self.get_object()
-        denied = _require_proxy_managed(entry)
-        if denied:
-            return denied
+        _require_proxy_managed(entry)
         reason = (request.data.get('reason') or '').strip()
         entry.pause_fetch(reason=reason)
         return Response(self.get_serializer(entry).data)
 
     @action(detail=True, methods=['post'], url_path='resume-fetch')
     def resume_fetch(self, request, pk=None):
-        denied = self._require_operator(request)
-        if denied:
-            return denied
+        self._require_operator(request)
         entry = self.get_object()
-        denied = _require_proxy_managed(entry)
-        if denied:
-            return denied
+        _require_proxy_managed(entry)
         entry.resume_fetch()
         return Response(self.get_serializer(entry).data)
 
@@ -1141,21 +1097,13 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
 
     def _require_operator(self, request):
         if not can_confirm_feeds(request.user):
-            return Response(
-                {'code': 'feeds.fetch_control_forbidden', 'details': {}},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        return None
+            raise CodedError('feeds.fetch_control_forbidden', status.HTTP_403_FORBIDDEN)
 
     @action(detail=True, methods=['post'], url_path='pause-fetch')
     def pause_fetch(self, request, pk=None):
-        denied = self._require_operator(request)
-        if denied:
-            return denied
+        self._require_operator(request)
         endpoint = self.get_object()
-        denied = _require_proxy_managed(endpoint)
-        if denied:
-            return denied
+        _require_proxy_managed(endpoint)
         reason = (request.data.get('reason') or '').strip()
         endpoint.pause_fetch(reason=reason)
         from django.core.cache import cache
@@ -1167,13 +1115,9 @@ class RealtimeEndpointRTViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='resume-fetch')
     def resume_fetch(self, request, pk=None):
-        denied = self._require_operator(request)
-        if denied:
-            return denied
+        self._require_operator(request)
         endpoint = self.get_object()
-        denied = _require_proxy_managed(endpoint)
-        if denied:
-            return denied
+        _require_proxy_managed(endpoint)
         endpoint.resume_fetch()
         from django.core.cache import cache
 

@@ -464,7 +464,7 @@ Field errors:
 | `feeds.static_source_missing` | `static_entry`, `static_entry.__all__` | Neither a URL nor a file was given. |
 | `feeds.static_source_url_and_file` | `static_entry.__all__` | Both a URL and a file were given. |
 | `feeds.download_time_required` | `static_entry.download_time_1` | A URL source needs `download_time_1`. |
-| `feeds.download_time_with_file` | `static_entry.download_time_1`, `static_entry.download_time_2`, `static_entry.__all__` | An uploaded file has no download schedule. |
+| `feeds.download_time_with_file` | `static_entry.download_time_1`, `static_entry.download_time_2` | An uploaded file has no download schedule. |
 | `feeds.hide_original_with_file` | `static_entry.hide_original` | `hide_original` (or `auth_type`) applies only to a URL source. |
 | `feeds.cached_file_with_upload` | `static_entry.__all__` | A server-downloaded copy exists for an uploaded file; not expected from clients. |
 | `feeds.gtfs_not_zip` | `static_entry.file` | The uploaded GTFS file is not a ZIP archive. |

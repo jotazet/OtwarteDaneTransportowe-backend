@@ -17,6 +17,7 @@ from blog.api.serializers import (
     reaction_count_annotations,
 )
 from blog.models import Post, Reaction
+from OtwarteDaneTransportowe.api_errors import CodedError
 from OtwarteDaneTransportowe.auth_roles import IsEditorOrOwnBloggerOrReadOnly
 from OtwarteDaneTransportowe.request_ip import get_client_ip
 
@@ -135,11 +136,11 @@ class ReactionViewSet(viewsets.ModelViewSet):
         """
         client_ip = self.get_client_ip(request)
         if not client_ip:
-            return Response({'code': 'blog.client_ip_unknown', 'details': {}}, status=400)
+            raise CodedError('blog.client_ip_unknown')
 
         post_id = kwargs.get('post_id')
         if not post_id:
-            return Response({'code': 'blog.post_id_required', 'details': {}}, status=400)
+            raise CodedError('blog.post_id_required')
         post = get_object_or_404(Post, pk=post_id)
 
         serializer = self.get_serializer(data=request.data)
@@ -166,10 +167,7 @@ class ReactionViewSet(viewsets.ModelViewSet):
             )
 
             if reactions_today >= 10:
-                return Response(
-                    {'code': 'blog.reaction_daily_limit', 'details': {}},
-                    status=status.HTTP_429_TOO_MANY_REQUESTS,
-                )
+                raise CodedError('blog.reaction_daily_limit', status.HTTP_429_TOO_MANY_REQUESTS)
 
             try:
                 # Savepoint: a failed INSERT must not poison an outer transaction

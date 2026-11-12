@@ -579,8 +579,6 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         if has_url:
             if self.download_time_1 is None:
                 raise _coded('feeds.download_time_required', 'download_time_1')
-            if self.download_time_2 is not None and self.download_time_1 is None:
-                raise _coded('feeds.download_time_required', 'download_time_1')
         if has_file:
             if self.download_time_1 is not None:
                 raise _coded('feeds.download_time_with_file', 'download_time_1')
@@ -596,8 +594,6 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
             # file upload – URL-only fields must not be filled
             if self.hide_original:
                 raise _coded('feeds.hide_original_with_file', 'hide_original')
-            if self.download_time_1 or self.download_time_2:
-                raise _coded('feeds.download_time_with_file')
             if self.cached_file or self.cached_at:
                 raise _coded('feeds.cached_file_with_upload')
 

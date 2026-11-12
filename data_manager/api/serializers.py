@@ -120,13 +120,13 @@ FIELD_LOCKED = 'feeds.field_locked'
 URL_BLOCKED = 'feeds.url_blocked'
 
 
-def _field_error(field: str, code: str) -> serializers.ValidationError:
+def field_error(field: str, code: str) -> serializers.ValidationError:
     return serializers.ValidationError({field: [code]}, code=code)
 
 
 def _locked(field: str) -> serializers.ValidationError:
     """A field that cannot change while the submission is in review or published."""
-    return _field_error(field, FIELD_LOCKED)
+    return field_error(field, FIELD_LOCKED)
 
 
 def _locked_static_entry_fields(fields) -> serializers.ValidationError:
@@ -700,17 +700,17 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
         ss = data.get('static_submission', inst.static_submission if inst else None)
         endpoints = data.get('endpoints')
         if (endpoints is not None and not endpoints) or (endpoints is None and inst is None):
-            raise _field_error('endpoints', 'realtime.endpoints_required')
+            raise field_error('endpoints', 'realtime.endpoints_required')
 
         if restricted and inst is not None and endpoints is not None:
             existing_by = {e.endpoint_type: e for e in inst.endpoints.all()}
             if len(endpoints) != len(existing_by):
-                raise _field_error('endpoints', 'realtime.endpoints_locked')
+                raise field_error('endpoints', 'realtime.endpoints_locked')
             for ep in endpoints:
                 t = ep['endpoint_type']
                 ex = existing_by.get(t)
                 if ex is None:
-                    raise _field_error('endpoints', 'realtime.endpoint_type_unknown')
+                    raise field_error('endpoints', 'realtime.endpoint_type_unknown')
                 for field in ('url', 'auth_type', 'hide_original', 'is_original'):
                     if ep.get(field) != getattr(ex, field):
                         raise _locked('endpoints')
@@ -721,28 +721,28 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
 
         if protocol == RealtimeSubmission.PROTOCOL_GBFS:
             if ss is not None:
-                raise _field_error('static_submission', 'realtime.static_submission_not_allowed')
+                raise field_error('static_submission', 'realtime.static_submission_not_allowed')
         elif protocol in (RealtimeSubmission.PROTOCOL_GTFS_RT, RealtimeSubmission.PROTOCOL_SIRI):
             if ss is None:
-                raise _field_error('static_submission', 'realtime.static_submission_required')
+                raise field_error('static_submission', 'realtime.static_submission_required')
             if org and ss.transport_organization_id != org.id:
-                raise _field_error(
+                raise field_error(
                     'static_submission', 'realtime.static_submission_other_organization'
                 )
             allowed_protocols = RealtimeSubmission.allowed_protocols_for_static_data_type(
                 ss.data_type
             )
             if protocol not in allowed_protocols:
-                raise _field_error('static_submission', 'realtime.static_submission_type_mismatch')
+                raise field_error('static_submission', 'realtime.static_submission_type_mismatch')
             if ss.id not in completed_submission_ids():
-                raise _field_error('static_submission', 'realtime.static_submission_not_published')
+                raise field_error('static_submission', 'realtime.static_submission_not_published')
             # Matches eligible-static-submissions: a provider links realtime only
             # to its own static feed; the (static_submission, protocol) slot is
             # unique, so another provider's link would block the owner's.
             if (inst is None or ss.pk != inst.static_submission_id) and not (
                 is_submitter_or_reviewer(self.context['request'].user, ss)
             ):
-                raise _field_error('static_submission', 'realtime.static_submission_not_owned')
+                raise field_error('static_submission', 'realtime.static_submission_not_owned')
         tmp = RealtimeSubmission(protocol=protocol)
         allowed = tmp.allowed_endpoint_types()
         if endpoints is not None:
@@ -750,15 +750,15 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
             for ep in endpoints:
                 t = ep.get('endpoint_type', '')
                 if t not in allowed:
-                    raise _field_error('endpoints', 'realtime.endpoints_invalid_for_protocol')
+                    raise field_error('endpoints', 'realtime.endpoints_invalid_for_protocol')
                 if t in seen:
-                    raise _field_error('endpoints', 'realtime.endpoint_type_duplicate')
+                    raise field_error('endpoints', 'realtime.endpoint_type_duplicate')
                 seen.add(t)
         elif inst is not None and protocol != inst.protocol:
             # A protocol change without new endpoints keeps the stored ones,
             # so they must fit the new protocol too.
             if any(e.endpoint_type not in allowed for e in inst.endpoints.all()):
-                raise _field_error('protocol', 'realtime.endpoints_invalid_for_protocol')
+                raise field_error('protocol', 'realtime.endpoints_invalid_for_protocol')
 
         return data
 
@@ -1015,7 +1015,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 
         if self.instance is None:
             if not static_entry.get('url') and not static_entry.get('file'):
-                raise _field_error('static_entry', 'feeds.static_source_missing')
+                raise field_error('static_entry', 'feeds.static_source_missing')
             return attrs
 
         try:
@@ -1025,7 +1025,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 
         if entry is None:
             if not static_entry.get('url') and not static_entry.get('file'):
-                raise _field_error('static_entry', 'feeds.static_source_missing')
+                raise field_error('static_entry', 'feeds.static_source_missing')
             return attrs
 
         return attrs

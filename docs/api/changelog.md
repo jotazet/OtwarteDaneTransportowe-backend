@@ -21,7 +21,7 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 | `Provide a URL or file for the static feed entry.`, `Provide a URL or file when adding a static feed entry to this submission.`, `Either a URL or a file upload must be provided.` | `feeds.static_source_missing` | field `static_entry` |
 | `Provide either a URL or a file upload, not both.` | `feeds.static_source_url_and_file` | field `static_entry` |
 | `This field is required when a URL is provided.` | `feeds.download_time_required` | field `static_entry.download_time_1` |
-| `This field must be empty when a file is provided.`, `Download schedule is only applicable when a URL is provided, not a file upload.` | `feeds.download_time_with_file` | field `static_entry` |
+| `This field must be empty when a file is provided.` | `feeds.download_time_with_file` | field `static_entry.download_time_1` / `download_time_2` |
 | `"Hide original" is only applicable when a URL is provided, not a file upload.` | `feeds.hide_original_with_file` (now on `static_entry.hide_original`) | field |
 | `Server-downloaded static file fields cannot be used for a manual file upload.` | `feeds.cached_file_with_upload` | field `static_entry` |
 | `Uploaded GTFS file is not a ZIP archive.` | `feeds.gtfs_not_zip` | field `static_entry.file` |

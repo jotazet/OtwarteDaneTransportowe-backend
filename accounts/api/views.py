@@ -1,7 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -18,6 +17,7 @@ from accounts.services import (
     set_password_and_end_sessions,
     would_remove_last_admin,
 )
+from OtwarteDaneTransportowe.api_errors import CodedError
 from OtwarteDaneTransportowe.auth_roles import CanManageUserAccount, RequiresAdminGroup
 from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairSerializer
 
@@ -55,9 +55,9 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         if instance.pk == self.request.user.pk:
-            raise ValidationError({'code': 'users.cannot_delete_self', 'details': {}})
+            raise CodedError('users.cannot_delete_self')
         if would_remove_last_admin(instance, new_roles=None):
-            raise ValidationError({'code': 'users.last_admin', 'details': {}})
+            raise CodedError('users.last_admin')
         instance.delete()
 
     def update(self, request, *args, **kwargs):
@@ -76,7 +76,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if (roles is not None or is_active is not None) and would_remove_last_admin(
             instance, new_roles=roles, new_is_active=is_active
         ):
-            raise ValidationError({'code': 'users.last_admin', 'details': {}})
+            raise CodedError('users.last_admin')
         serializer.save()
 
     @action(detail=True, methods=['post'], url_path='reset-password')
