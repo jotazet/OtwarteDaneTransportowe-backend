@@ -11,7 +11,16 @@ x-app-env: &app-env
   # work across web + worker processes (per-process LocMemCache would break them).
   REDIS_CACHE_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/2
 
+# Docker's default json-file driver never rotates, and the realtime worker logs every poll.
+# At most 5 files of 10 MB per container.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
 x-app-service: &app-service
+  logging: *logging
   build:
     context: .
     # Dev image includes pytest and ruff; docker-compose.prod.yml turns it off.
@@ -43,12 +52,16 @@ x-worker-healthcheck: &worker-healthcheck
   start_period: 60s
   start_interval: 5s
 
+# mem_limit: per-service ceilings, not reservations. A runaway process is killed inside its own
+# container instead of draining the shared host, where the memory guard would pick OTP.
+# Sizing: docs/deployment.md, section 1.
 services:
   # Bind-mounted project dir often yields root-owned uploaded_data; app runs as UID:GID.
   init_uploads:
     image: alpine:3.20
     container_name: odt-init-uploads
     restart: "no"
+    logging: *logging
     volumes:
       - .:/app
     environment:
@@ -61,6 +74,8 @@ services:
     image: postgres:16
     container_name: odt-postgres
     restart: unless-stopped
+    logging: *logging
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
     env_file:
       - path: .env.example
         required: false
@@ -80,6 +95,8 @@ services:
     image: redis:7-alpine
     container_name: odt-redis
     restart: unless-stopped
+    logging: *logging
+    mem_limit: 512m
     # An empty REDIS_PASSWORD (development) leaves Redis without authentication.
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
@@ -112,6 +129,7 @@ services:
     <<: *app-service
     container_name: odt-web
     command: python manage.py runserver 0.0.0.0:8000
+    mem_limit: ${WEB_MEM_LIMIT:-1g}
     # 'planner' lets the journey planner's OTP poll realtime files from here.
     networks: [default, planner]
     depends_on:
@@ -135,6 +153,7 @@ services:
       --loglevel=info
       --queues=default
       --concurrency=${CELERY_DEFAULT_CONCURRENCY:-2}
+    mem_limit: ${CELERY_DEFAULT_MEM_LIMIT:-1g}
     healthcheck: *worker-healthcheck
     depends_on:
       migrate:
@@ -146,6 +165,7 @@ services:
     # The schedule is kept in PostgreSQL (PeriodicTask). The healthcheck reads the file that
     # CELERY_BEAT_SCHEDULER touches after every tick (HEARTBEAT_FILE in celery_beat.py).
     command: celery -A OtwarteDaneTransportowe beat --loglevel=info
+    mem_limit: 256m
     healthcheck:
       test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/celery-beat-heartbeat') > 60)"]
       interval: 30s
@@ -171,6 +191,7 @@ services:
     image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: odt-docker-socket-proxy
     restart: unless-stopped
+    logging: *logging
     environment:
       # Allowed: list/inspect/create/start/wait/logs/remove containers + image pull.
       CONTAINERS: 1
@@ -196,6 +217,7 @@ services:
       --loglevel=info
       --queues=feeds
       --concurrency=${CELERY_FEEDS_CONCURRENCY:-1}
+    mem_limit: ${CELERY_FEEDS_MEM_LIMIT:-1g}
     healthcheck: *worker-healthcheck
     depends_on:
       migrate:
@@ -237,6 +259,7 @@ services:
       --loglevel=info
       --queues=planner
       --concurrency=2
+    mem_limit: 1g
     healthcheck: *worker-healthcheck
     depends_on:
       migrate:
@@ -262,6 +285,7 @@ services:
     container_name: odt-otp
     profiles: [planner]
     restart: unless-stopped
+    logging: *logging
     user: "${UID:-1000}:${GID:-1000}"
     security_opt:
       - no-new-privileges:true
