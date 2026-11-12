@@ -973,7 +973,9 @@ COMPOSE_PROFILES=planner
 #### Moving host settings out of GitHub (once)
 
 Releases from before this restriction took every setting from GitHub. Before the next
-release, on the server as `rocky`, from the checkout:
+release, on the server as `rocky`, from the checkout, in this order: the old `odt-deploy`
+passes the job's `.env` through unmerged, so deleting the variables before step 2 would
+deploy with the development settings of `.env.example`.
 
 1. Write the host file from the current `.env`, with the names that GitHub may no longer
    set (as of 2026-11-12: `DJANGO_SETTINGS_MODULE`, `UID`, `GID`, `HOST_PROJECT_PATH`,

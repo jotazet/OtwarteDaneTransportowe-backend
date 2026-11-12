@@ -115,7 +115,8 @@ jobs:
         with:
           persist-credentials: false
       # Every variable of the environment and its named secrets: keep this list in step
-      # with REQUIRED_SECRETS and OPTIONAL_SECRETS in scripts/deploy/envfile.py.
+      # with REQUIRED_SECRETS and OPTIONAL_SECRETS in scripts/deploy/envfile.py. The server
+      # refuses a variable outside RELEASE_VARIABLES there (docs/deployment.md section 20).
       - name: Write .env from the environment's variables and secrets
         env:
           VARS_JSON: ${{ toJSON(vars) }}
