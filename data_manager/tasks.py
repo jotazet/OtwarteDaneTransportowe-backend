@@ -1,35 +1,44 @@
 """
-Celery tasks — pobieranie i odswiezanie cache feedow.
+Celery tasks: fetching and refreshing the feed cache.
 
-Architektura taskow:
+Task layout:
 ─────────────────────────────────────────────────────────────
-  STATYCZNE (download_time_1/2):
-  ┌─ Beat co minute ──▶ refresh_static_feeds_task()
-  │                        sprawdza download_time_1/2 == teraz
-  │                        └─ .delay() ──▶ fetch_static_entry_task(id)
+  STATIC (download_time_1/2):
+  ┌─ Beat every minute ──▶ refresh_static_feeds_task()
+  │                          checks download_time_1/2 == now
+  │                          └─ .delay() ──▶ fetch_static_entry_task(id)
   └─────────────────────────────────────────────────────────
 
   REALTIME (interval per endpoint):
-  ┌─ Beat raz przy starcie ──▶ bootstrap_realtime_tasks()
-  │                              dla kazdego aktywnego endpointu
-  │                              └─ fetch_realtime_endpoint_task.apply_async(
-  │                                     countdown=stagger)  ← rozlozony start
+  ┌─ Beat every 5 min ──▶ bootstrap_realtime_tasks()
+  │                         for each active endpoint without a live loop
+  │                         (and each delayed one whose next_fetch_after passed)
+  │                         └─ fetch_realtime_endpoint_task.apply_async(
+  │                                (id, token), countdown=stagger)
   │
-  │  fetch_realtime_endpoint_task(id)
-  │    1. pobierz plik
-  │    2. zapisz cached_file
-  │    3. .apply_async(countdown=endpoint.interval)  ← zaplanuj siebie na pozniej
+  │  fetch_realtime_endpoint_task(id, token)
+  │    0. exit at once unless token == the endpoint's alive marker
+  │    1. fetch the body
+  │    2. store cached_file
+  │    3. active: new token in the marker, .apply_async(countdown=interval)
+  │       delayed/paused: clear the marker and stop; bootstrap resumes a
+  │       delayed endpoint once next_fetch_after passes
   └─────────────────────────────────────────────────────────
 
-Zalety self-scheduling:
-  • Brak pollingu DB co 10 s — Beat nie jest potrzebny dla RT po bootstrapie.
-  • Kazdy endpoint respektuje swoj interval (np. 15 s, 30 s, 60 s).
-  • Skalowalnosc — wiele endpointow moze pracowac niezaleznie.
+Each endpoint has at most one effective loop. The alive marker
+``rt-endpoint-alive:{id}`` holds the token of the one queued message allowed to
+run next, and every run hands a fresh token to its successor. Any other copy
+(a second seed after the marker expired under a lagging queue, a Redis
+redelivery of an ETA message, a message left over from before a pause/resume)
+carries a token that no longer matches and exits without fetching or
+rescheduling. Back-off delays (up to 6 h) are never queued as ETAs, so no
+message waits longer than the endpoint's interval.
 """
 
 import os
 import random
 import time
+import uuid
 
 from celery import shared_task
 from celery.utils.log import get_task_logger
@@ -39,16 +48,19 @@ from django.utils import timezone
 
 logger = get_task_logger(__name__)
 
-# Lekki lock per endpoint, aby unikac nakladania fetchy dla tego samego RT.
+# Light per-endpoint lock so that two runs for the same endpoint never overlap.
 RT_ENDPOINT_LOCK_TTL_SECONDS = 300
-# Ogranicza burst po starcie: endpointy sa uruchamiane z malym odstepem.
+# Spreads the start of endpoints after a bootstrap to avoid a burst.
 RT_BOOTSTRAP_STAGGER_SECONDS = 3
 RT_BOOTSTRAP_JITTER_MAX_SECONDS = 2
-# Marker "zywej" petli self-scheduling. Odswiezany przy kazdym zaplanowaniu
-# kolejnego wykonania (TTL = interval + bufor). Gdy petla padnie i marker
-# wygasnie, bootstrap moze ja ponownie zasiac — bez tworzenia duplikatow,
-# dopoki marker istnieje.
+# Alive marker of a self-scheduling loop: holds the token of the next queued run
+# and lives for that run's countdown plus this buffer. Once a loop dies and the
+# marker expires, bootstrap may seed a new loop; a late message of the old loop
+# then carries a stale token and exits.
 RT_ALIVE_TTL_BUFFER_SECONDS = 120
+# Marker value written before loop tokens existed; messages queued then carry no
+# token. Lets those loops survive the deploy. Remove after the next release.
+RT_LEGACY_ALIVE_MARKER = '1'
 # Ile minut wstecz dispatcher statyczny nadrabia zgubione tiki Beata.
 STATIC_DISPATCH_CATCHUP_MINUTES = 10
 
@@ -93,8 +105,8 @@ def _rt_alive_key(endpoint_id: int) -> str:
     return f'rt-endpoint-alive:{endpoint_id}'
 
 
-def _seconds_until(dt) -> int:
-    return max(0, int((dt - timezone.now()).total_seconds()))
+def _new_rt_token() -> str:
+    return uuid.uuid4().hex
 
 
 def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
@@ -120,24 +132,22 @@ def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
     ).values_list('id', 'interval'):
         interval = interval or 60
         reserve_ttl = interval + RT_ALIVE_TTL_BUFFER_SECONDS
-        if not cache.add(_rt_alive_key(endpoint_id), '1', timeout=reserve_ttl):
+        token = _new_rt_token()
+        if not cache.add(_rt_alive_key(endpoint_id), token, timeout=reserve_ttl):
             continue
         # Called from requests: a broker outage must not fail the write, nor hold
         # it up once per endpoint. Release the reservation and stop; the periodic
         # bootstrap seeds this loop and the remaining (never reserved) ones.
-        if not enqueue(fetch_realtime_endpoint_task, endpoint_id):
+        if not enqueue(fetch_realtime_endpoint_task, endpoint_id, token):
             cache.delete(_rt_alive_key(endpoint_id))
             break
         scheduled += 1
     return scheduled
 
 
-def _mark_rt_alive(endpoint_id: int, interval: int) -> None:
-    cache.set(
-        _rt_alive_key(endpoint_id),
-        '1',
-        timeout=int(interval) + RT_ALIVE_TTL_BUFFER_SECONDS,
-    )
+def _rt_token_is_current(endpoint_id: int, token: str | None) -> bool:
+    """Whether this message is the one the endpoint's loop is waiting for."""
+    return cache.get(_rt_alive_key(endpoint_id)) == (token or RT_LEGACY_ALIVE_MARKER)
 
 
 def _scheduler():
@@ -268,21 +278,22 @@ def fetch_static_entry_task(self, entry_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# REALTIME — self-scheduling, bez pollingu
+# REALTIME — self-scheduling, no polling
 # ---------------------------------------------------------------------------
 
 
 @shared_task(name='data_manager.bootstrap_realtime_tasks')
 def bootstrap_realtime_tasks() -> dict:
     """
-    Uruchamiany cyklicznie przez Beat (co kilka minut) jako mechanizm
-    samonaprawy: zasiewa petle self-scheduling dla aktywnych endpointow RT,
-    ktore NIE maja jeszcze zywej petli.
+    Run by Beat every few minutes as self-healing: seeds a self-scheduling loop
+    for every active realtime endpoint that has no live loop, and resumes every
+    delayed endpoint whose next_fetch_after has passed (the loop does not queue
+    back-off delays itself).
 
-    Deduplikacja: dla kazdego endpointu istnieje marker `rt-endpoint-alive:{id}`
-    odswiezany przy kazdym zaplanowaniu kolejnego wykonania. Bootstrap pomija
-    endpointy z aktywnym markerem, dzieki czemu nie mnozy rownoleglych petli.
-    `cache.add` rezerwuje slot atomowo (odporne na rownolegle bootstrapy).
+    Deduplication: an endpoint with a live loop has the marker
+    `rt-endpoint-alive:{id}`, so bootstrap skips it. `cache.add` reserves the
+    slot atomically (safe against concurrent bootstraps) and stores the token
+    the seeded message must present.
     """
     from django.db.models import Q
 
@@ -306,16 +317,17 @@ def bootstrap_realtime_tasks() -> dict:
     scheduled = 0
     for index, (endpoint_id, interval) in enumerate(endpoints):
         interval = interval or 60
-        # Rozloz start endpointow, aby uniknac jednoczesnego burstu.
+        # Spread the start of endpoints to avoid a simultaneous burst.
         stagger = (index * RT_BOOTSTRAP_STAGGER_SECONDS) + random.randint(
             0, RT_BOOTSTRAP_JITTER_MAX_SECONDS
         )
         reserve_ttl = stagger + interval + RT_ALIVE_TTL_BUFFER_SECONDS
-        # Atomowo rezerwuj slot: jesli marker juz istnieje, petla zyje -> pomijamy.
-        if not cache.add(_rt_alive_key(endpoint_id), '1', timeout=reserve_ttl):
+        token = _new_rt_token()
+        # Reserve the slot atomically: an existing marker means a live loop.
+        if not cache.add(_rt_alive_key(endpoint_id), token, timeout=reserve_ttl):
             continue
         fetch_realtime_endpoint_task.apply_async(
-            args=[endpoint_id],
+            args=[endpoint_id, token],
             countdown=stagger,
         )
         scheduled += 1
@@ -331,27 +343,32 @@ def bootstrap_realtime_tasks() -> dict:
 @shared_task(
     name='data_manager.fetch_realtime_endpoint',
 )
-def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
+def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> dict:
     """
-    Pobiera cache dla jednego RealtimeEndpointRT, a nastepnie planuje
-    siebie na za `interval` sekund (self-scheduling loop).
+    Fetch the cache for one RealtimeEndpointRT, then schedule itself again in
+    `interval` seconds (self-scheduling loop).
 
-    Bledy sieciowe sa zapisywane do FeedFetchError. Petla kontynuuje zgodnie
-    z utrwalonym stanem feedu: stale interval po sukcesie, next_fetch_after po
-    bledzie, stop dla pauzy automatycznej lub recznej.
+    `token` must match the endpoint's alive marker; otherwise this message is a
+    stale copy of the loop and exits without fetching or rescheduling.
+
+    Network errors are recorded as FeedFetchError. The loop follows the stored
+    fetch state: the interval after success, stop on a delay (bootstrap resumes
+    the endpoint once next_fetch_after passes) and stop on an automatic or
+    manual pause.
     """
     from data_manager.models import (
         FETCH_STATUS_ACTIVE,
-        FETCH_STATUS_AUTO_PAUSED,
-        FETCH_STATUS_DELAYED,
-        FETCH_STATUS_MANUAL_PAUSED,
         RealtimeEndpointRT,
     )
+
+    if not _rt_token_is_current(endpoint_id, token):
+        logger.info('RealtimeEndpointRT id=%d stale loop token, exiting', endpoint_id)
+        return {'status': 'stale', 'endpoint_id': endpoint_id}
 
     _, _fetch, _, _completed_rt = _scheduler()
 
     lock_key = f'rt-endpoint-lock:{endpoint_id}'
-    # cache.add zwroci False, jesli lock juz istnieje.
+    # cache.add returns False when the lock already exists.
     lock_acquired = cache.add(lock_key, '1', timeout=RT_ENDPOINT_LOCK_TTL_SECONDS)
     if not lock_acquired:
         logger.info('RealtimeEndpointRT id=%d already running, skipping overlap', endpoint_id)
@@ -383,27 +400,18 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
             return {'status': 'skipped_not_proxied', 'endpoint_id': endpoint_id}
 
         now = timezone.now()
-        if endpoint.fetch_status in (FETCH_STATUS_AUTO_PAUSED, FETCH_STATUS_MANUAL_PAUSED):
+        if not endpoint.fetch_is_due(now):
+            # Paused, or delayed before next_fetch_after: stop. Bootstrap resumes
+            # a delayed endpoint once next_fetch_after passes.
             logger.info(
                 'RealtimeEndpointRT id=%d fetch status=%s, stopping loop',
                 endpoint_id,
                 endpoint.fetch_status,
             )
             cache.delete(_rt_alive_key(endpoint_id))
-            return {'status': endpoint.fetch_status, 'endpoint_id': endpoint_id}
-
-        if (
-            endpoint.fetch_status == FETCH_STATUS_DELAYED
-            and endpoint.next_fetch_after
-            and endpoint.next_fetch_after > now
-        ):
-            countdown = _seconds_until(endpoint.next_fetch_after)
-            _mark_rt_alive(endpoint_id, countdown)
-            fetch_realtime_endpoint_task.apply_async(args=[endpoint_id], countdown=countdown)
             return {
-                'status': 'deferred',
+                'status': endpoint.fetch_status,
                 'endpoint_id': endpoint_id,
-                'next_in': countdown,
                 'next_fetch_after': endpoint.next_fetch_after,
             }
 
@@ -421,30 +429,31 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
                 'interval',
             ]
         )
-        if endpoint.fetch_status == FETCH_STATUS_ACTIVE:
-            countdown = endpoint.interval
-        elif endpoint.fetch_status == FETCH_STATUS_DELAYED and endpoint.next_fetch_after:
-            countdown = _seconds_until(endpoint.next_fetch_after)
-        else:
-            cache.delete(_rt_alive_key(endpoint_id))
-            return {
-                'status': result,
-                'endpoint_id': endpoint_id,
-                'fetch_status': endpoint.fetch_status,
-                'fetch_failure_count': endpoint.fetch_failure_count,
-            }
-
-        _mark_rt_alive(endpoint_id, countdown)
-        fetch_realtime_endpoint_task.apply_async(args=[endpoint_id], countdown=countdown)
-
-        return {
+        outcome = {
             'status': result,
             'endpoint_id': endpoint_id,
             'fetch_status': endpoint.fetch_status,
             'fetch_failure_count': endpoint.fetch_failure_count,
-            'next_in': countdown,
             'next_fetch_after': endpoint.next_fetch_after,
         }
+        if endpoint.fetch_status != FETCH_STATUS_ACTIVE:
+            # Delayed (bootstrap resumes it once next_fetch_after passes) or
+            # paused. Never queue the back-off itself: an ETA beyond the Redis
+            # visibility timeout (1 h) would be redelivered.
+            cache.delete(_rt_alive_key(endpoint_id))
+            return outcome
+
+        countdown = endpoint.interval
+        next_token = _new_rt_token()
+        cache.set(
+            _rt_alive_key(endpoint_id),
+            next_token,
+            timeout=countdown + RT_ALIVE_TTL_BUFFER_SECONDS,
+        )
+        fetch_realtime_endpoint_task.apply_async(
+            args=[endpoint_id, next_token], countdown=countdown
+        )
+        return {**outcome, 'next_in': countdown}
     finally:
         cache.delete(lock_key)
 
