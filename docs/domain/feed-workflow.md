@@ -144,6 +144,8 @@ Static and realtime feeds also return fetch health fields in their serializers (
 - `last_fetch_error_message`
 - `fetch_error_count_7d`
 
+`fetch_pause_reason`, `last_fetch_error_message` and the server logs show the source URL without userinfo (`user:pass@`), query string and fragment, where providers put credentials (`data_manager.net_security.redact_url`).
+
 After consecutive failed fetches the system automatically postpones the next attempts:
 
 | Consecutive error | Behaviour |
