@@ -9,6 +9,8 @@ ODT downloads proxied static feeds on a daily schedule, polls realtime endpoints
 
 ## Decision
 
+> **Update 2026-11-12:** the journey planner added a fourth queue, `planner`, for OpenTripPlanner graph builds and serving (`run_graph_build`, `ensure_serving`, `refresh_index`, `download_osm`). A build runs for minutes to hours and drives Docker, so it has its own worker (`celery_planner_worker`, compose profile `planner`) and never delays validations on `feeds`. See [ADR 0009](0009-planner-graph-build-pipeline.md).
+
 - **Celery** with **Redis** as broker and no result backend (`CELERY_TASK_IGNORE_RESULT`): every task records its outcome in the database and nothing reads task results, so storing one per realtime poll only filled Redis (issue #75). Redis also backs Django's cache, so locks and throttling are shared between web and worker processes.
 - **Beat** with `django-celery-beat`'s database scheduler: `refresh_static_feeds` every minute and `bootstrap_realtime_tasks` every 5 minutes, both on the `default` queue.
 - **Queues:** `default` for the dispatchers and other short tasks; `realtime` for `fetch_realtime_endpoint` and `validate_realtime_submission`, which may each run for up to 90 s and would otherwise hold back the dispatchers (issue #47); `feeds` for `fetch_static_entry` and `validate_gtfs_feed`, served by a dedicated validator worker. Each queue has its own worker.

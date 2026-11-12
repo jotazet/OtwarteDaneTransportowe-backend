@@ -78,12 +78,13 @@ RT_LEGACY_ALIVE_MARKER = '1'
 # would stretch it to up to 5 min; longer ones wait for bootstrap. Either way
 # every ETA stays far below Redis's 1 h visibility timeout.
 RT_BOOTSTRAP_PERIOD_SECONDS = 300
-# Ile minut wstecz dispatcher statyczny nadrabia zgubione tiki Beata.
+# How many minutes back the static dispatcher catches up on missed Beat ticks.
 STATIC_DISPATCH_CATCHUP_MINUTES = 10
 # One wall-clock budget for every download of a realtime verification (link
 # checks, then first cache fetches): GBFS allows 9 endpoints at up to
-# REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS each, and the task runs on 'default'
-# next to the dispatchers, so the total is capped rather than sized to the sum.
+# REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS each, and the task holds a slot of the
+# realtime worker that also runs every endpoint's fetches, so the total is
+# capped rather than sized to the sum.
 RT_VERIFICATION_BUDGET_SECONDS = 240
 # Less than this left counts as none: a download clipped to a second or two
 # would only time out and be recorded as a fetch failure of the endpoint.
@@ -207,7 +208,7 @@ def _scheduler():
 
 
 # ---------------------------------------------------------------------------
-# STATYCZNE — dispatch co minutę przez Beat
+# STATIC — dispatched every minute by Beat
 # ---------------------------------------------------------------------------
 
 

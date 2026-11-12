@@ -7,7 +7,7 @@ This README intentionally stays **high-level**. Detailed API docs and deployment
 ## What's in this repo
 
 - **Backend**: Django + Django REST Framework
-- **Runtime**: Docker Compose (web + PostgreSQL) for local development
+- **Runtime**: Docker Compose for local development (web, PostgreSQL, Redis, Celery workers and beat; the journey planner with `COMPOSE_PROFILES=planner`)
 
 ## Documentation
 

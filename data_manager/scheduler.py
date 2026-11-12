@@ -1,13 +1,17 @@
 """
-Niskopoziomowe funkcje pobierania feedów.
+Low-level feed fetching functions.
 
-Wywoływane wyłącznie przez Celery tasks (data_manager/tasks.py):
-  - _fetch_static_entry(entry)          ← fetch_static_entry_task
-  - _fetch_realtime_endpoint_rt(ep, now)   ← fetch_realtime_endpoint_task
-  - _completed_submission_ids()         ← bootstrap_realtime_tasks, dispatch
-  - _completed_realtime_submission_ids()
+Called from the Celery tasks (data_manager/tasks.py) and the refresh_feeds
+management command:
+  - _fetch_static_entry(entry)             <- fetch_static_entry_task, refresh_feeds
+  - _fetch_realtime_endpoint_rt(ep, now)   <- fetch_realtime_endpoint_task,
+                                              validate_realtime_submission_task
+  - _completed_submission_ids()            <- refresh_static_feeds_task, refresh_feeds
+  - _completed_realtime_submission_ids()   <- bootstrap_realtime_tasks,
+                                              fetch_realtime_endpoint_task
 
-Nie wywoływać bezpośrednio — logika harmonogramu należy do tasków.
+They fetch once and record the result; when to fetch (schedules, retries,
+back-off) is decided by the tasks.
 """
 
 import hashlib
@@ -109,15 +113,15 @@ def _http_error_outcome(code: int | None) -> str:
 
 
 def _fetch_static_entry(entry: StaticFeedEntry) -> str:
-    """Pobiera plik z URL i zapisuje jako cached_file. Błędy trafiają do FeedFetchError.
+    """Download the file from its URL and save it as cached_file. Errors go to FeedFetchError.
 
     An upstream file identical to the cached copy (a ``304`` to a conditional
     request, or the same SHA-256) is a successful fetch that keeps the copy and
     queues no validation. Without stored validators (see
     ``StaticFeedEntry.CACHE_VALIDATOR_FIELDS``) the file is always saved.
 
-    Zwraca kod wyniku (``FETCH_OK`` / ``FETCH_TRANSIENT`` / ``FETCH_PERMANENT``),
-    aby task mógł ponowić tylko błędy przejściowe.
+    Returns a result code (``FETCH_OK`` / ``FETCH_TRANSIENT`` / ``FETCH_PERMANENT``)
+    so that the task retries only transient errors.
     """
     if not entry.is_proxy_managed:
         logger.info('Skipping static entry=%d — not proxy-managed (hide_original=False)', entry.pk)
