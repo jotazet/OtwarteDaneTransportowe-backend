@@ -1,6 +1,6 @@
 """Admin API of the public access layer, and the request log retention."""
 
-from datetime import timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from django.utils import timezone
@@ -203,3 +203,85 @@ def test_daily_stats_show_days_not_yet_summarised(admin_client):
     days = admin_client.get(f'{BASE}/stats/daily/').data['results']
 
     assert [day['requests'] for day in days] == [1]
+
+
+def _log_at(*instants: datetime):
+    for n, instant in enumerate(instants):
+        PlannerRequestLog.objects.create(
+            endpoint='a', status_code=200, latency_ms=10 + n, created_at=instant
+        )
+
+
+def test_rollup_assigns_rows_at_day_boundaries_to_their_utc_day(settings):
+    settings.PLANNER_REQUEST_LOG_RETENTION_DAYS = 30
+    day = datetime(2026, 11, 10, tzinfo=UTC)
+    _log_at(
+        day - timedelta(microseconds=1),  # last instant of the 9th
+        day,  # first instant of the 10th
+        day + timedelta(days=1) - timedelta(microseconds=1),  # last instant of the 10th
+        day + timedelta(days=1),  # the 11th, "today": not summarised
+    )
+
+    request_logs.roll_up_and_purge(today=date(2026, 11, 11))
+    request_logs.roll_up_and_purge(today=date(2026, 11, 11))  # idempotent
+
+    stats = {s.date: (s.requests, s.latency_ms_max) for s in PlannerDailyStat.objects.all()}
+    assert stats == {date(2026, 11, 9): (1, 10), date(2026, 11, 10): (2, 12)}
+
+
+def test_rollup_skips_summarised_days_but_fills_gaps_around_them(settings):
+    settings.PLANNER_REQUEST_LOG_RETENTION_DAYS = 10_000
+    _log_at(*(datetime(2026, 11, d, 12, tzinfo=UTC) for d in (8, 9, 10)))
+    PlannerDailyStat.objects.create(
+        date=date(2026, 11, 9),
+        endpoint='kept',
+        status_code=200,
+        requests=5,
+        latency_ms_sum=5,
+        latency_ms_max=1,
+    )
+
+    request_logs.roll_up_and_purge(today=date(2026, 11, 11))
+
+    assert sorted(PlannerDailyStat.objects.values_list('date', 'endpoint')) == [
+        (date(2026, 11, 8), 'a'),
+        (date(2026, 11, 9), 'kept'),
+        (date(2026, 11, 10), 'a'),
+    ]
+
+
+def test_daily_stats_cut_the_log_at_utc_midnight():
+    first = datetime(2026, 11, 10, tzinfo=UTC)
+    _log_at(
+        first - timedelta(microseconds=1),  # the 9th, outside the range
+        first,
+        first + timedelta(days=1) - timedelta(microseconds=1),
+        first + timedelta(days=1),  # the 11th, outside the range
+    )
+
+    days = request_logs.daily_stats(date(2026, 11, 10), date(2026, 11, 10))
+
+    assert [(day['date'], day['requests']) for day in days] == [(date(2026, 11, 10), 2)]
+
+
+def test_daily_stats_prefer_a_summary_over_the_log_of_the_same_day_only_in_range():
+    PlannerDailyStat.objects.create(
+        date=date(2026, 11, 10),
+        endpoint='a',
+        status_code=200,
+        requests=7,
+        latency_ms_sum=7,
+        latency_ms_max=1,
+    )
+    _log_at(datetime(2026, 11, 10, 8, tzinfo=UTC), datetime(2026, 11, 11, 8, tzinfo=UTC))
+
+    days = request_logs.daily_stats(date(2026, 11, 10), date(2026, 11, 11))
+
+    assert [(day['date'], day['requests']) for day in days] == [
+        (date(2026, 11, 10), 7),
+        (date(2026, 11, 11), 1),
+    ]
+
+
+def test_daily_stats_accept_the_last_representable_day():
+    assert request_logs.daily_stats(date(9999, 12, 30), date.max) == []
