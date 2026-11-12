@@ -7,7 +7,10 @@ from cases.api.serializers import (
     TransportOrganizationSerializer,
 )
 from cases.models import CaseStatus, DataProvider, TransportOrganization
-from OtwarteDaneTransportowe.auth_roles import IsCaseManagerOrReadOnly
+from OtwarteDaneTransportowe.auth_roles import (
+    IsCaseManagerOrReadOnly,
+    IsTransportOrganizationManagerOrReadOnly,
+)
 
 
 class DataProviderViewSet(viewsets.ModelViewSet):
@@ -29,7 +32,7 @@ class TransportOrganizationViewSet(viewsets.ModelViewSet):
         .order_by('region', 'transport_organization')
     )
     serializer_class = TransportOrganizationSerializer
-    permission_classes = [IsCaseManagerOrReadOnly]
+    permission_classes = [IsTransportOrganizationManagerOrReadOnly]
 
     def get_serializer_class(self):
         # Use detail serializer for retrieve (single object), base serializer for list

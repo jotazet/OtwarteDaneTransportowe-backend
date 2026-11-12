@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: only Admin deletes transport organizations
+
+**Breaking** for `Helper` accounts. `DELETE /api/cases/transport-organizations/{id}/` now needs the `Admin` role; a `Helper` gets `403`. Creating and updating organizations stays open to `Helper` and `Admin`. Deleting an organization also deletes all its feed submissions, and deleting a submission was already `Admin` only. Clients should offer the delete action to `Admin` only. See [TransportOrganization](cases.md#transportorganization).
+
+---
+
 ## 2026-10-17: entity types of a realtime endpoint
 
 Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).
