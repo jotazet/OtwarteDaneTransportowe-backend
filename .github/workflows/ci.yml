@@ -122,6 +122,7 @@ jobs:
           DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           FEED_AUTH_ENCRYPTION_KEY: ${{ secrets.FEED_AUTH_ENCRYPTION_KEY }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           PLANNER_INTERNAL_TOKEN: ${{ secrets.PLANNER_INTERNAL_TOKEN }}
         run: python3 -I scripts/deploy/envfile.py write "$RUNNER_TEMP/production.env"
       # odt-deploy takes the tag as its only argument and the .env on standard input.

@@ -19,11 +19,17 @@ To change either on purpose, follow docs/deployment.md (section 20).
 
 import json
 import os
+import re
 import sys
 
 # Secrets of the environment; each becomes a .env line under the same name. The deploy
 # job in .github/workflows/ci.yml passes each one by name: change both together.
-REQUIRED_SECRETS = ("DJANGO_SECRET_KEY", "POSTGRES_PASSWORD", "FEED_AUTH_ENCRYPTION_KEY")
+REQUIRED_SECRETS = (
+    "DJANGO_SECRET_KEY",
+    "POSTGRES_PASSWORD",
+    "FEED_AUTH_ENCRYPTION_KEY",
+    "REDIS_PASSWORD",
+)
 OPTIONAL_SECRETS = ("PLANNER_INTERNAL_TOKEN",)
 # Without these the containers fall back to the development values in .env.example (also
 # an env_file) and the release still looks healthy, so a missing one stops it.
@@ -38,6 +44,8 @@ REQUIRED_VARIABLES = (
 # Changing these in GitHub alone breaks production (see the module docstring).
 PINNED = ("FEED_AUTH_ENCRYPTION_KEY", "POSTGRES_PASSWORD")
 DEPLOY_PREFIX = "DEPLOY_"
+# docker-compose.yml puts REDIS_PASSWORD into redis:// URLs unencoded.
+URL_SAFE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def fail(message):
@@ -70,6 +78,8 @@ def render(variables, secrets):
             if name in REQUIRED_SECRETS:
                 fail(f"The production environment has no secret {name}.")
             continue
+        if name == "REDIS_PASSWORD" and not URL_SAFE.fullmatch(value):
+            fail(f"{name} may hold only letters, digits, - and _.")
         lines.append(f"{name}={quote(name, value)}")
     return "\n".join(lines) + "\n"
 

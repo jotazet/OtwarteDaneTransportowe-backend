@@ -32,6 +32,15 @@ x-prod-app: &prod-app
     - ./planner_data:/app/planner_data
 
 services:
+  # No host ports for the data services: the host is shared, so a port on 127.0.0.1 is
+  # still reachable by every local user and process. The application reaches them over
+  # the Compose network; for maintenance use `./scripts/deploy.sh exec postgres ...`.
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
   web:
     <<: *prod-app
     command: >
