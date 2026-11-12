@@ -123,7 +123,7 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
         logger.info('Skipping static entry=%d — not proxy-managed (hide_original=False)', entry.pk)
         return FETCH_PERMANENT
 
-    from data_manager.tasks import validate_gtfs_feed_task
+    from data_manager.tasks import enqueue, validate_gtfs_feed_task
 
     # Only a cached copy can stand in for the upstream file.
     compare = bool(entry.cached_file)
@@ -207,17 +207,14 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
                 'Static entry=%d unchanged upstream  url=%s', entry.pk, redact_url(entry.url)
             )
             # A validation the validator could not finish is still retried daily.
-            if entry.validation_status in (
+            validate = entry.validation_status in (
                 StaticFeedEntry.VALIDATION_PENDING,
                 StaticFeedEntry.VALIDATION_ERROR,
-            ):
-                validate_gtfs_feed_task.delay(entry.pk)
-            return FETCH_OK
-        _delete_stale_cache_file(entry.cached_file, old_cached_name)
-        logger.info('Refreshed static entry=%d  url=%s', entry.pk, redact_url(entry.url))
-
-        validate_gtfs_feed_task.delay(entry.pk)
-        return FETCH_OK
+            )
+        else:
+            _delete_stale_cache_file(entry.cached_file, old_cached_name)
+            logger.info('Refreshed static entry=%d  url=%s', entry.pk, redact_url(entry.url))
+            validate = True
 
     except CredentialUndecryptable as exc:
         _log_static_error(entry, FeedFetchError.ERROR_AUTH, exc)
@@ -238,6 +235,13 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
     except Exception as exc:
         _log_static_error(entry, FeedFetchError.ERROR_INVALID_CONTENT, exc)
         return FETCH_PERMANENT
+
+    # Outside the try: a broker error is not a failed fetch (enqueue() logs it;
+    # see retry_gtfs_validation). Callers run in autocommit, so the rows above
+    # are committed already.
+    if validate:
+        enqueue(validate_gtfs_feed_task, entry.pk)
+    return FETCH_OK
 
 
 def _log_static_error(entry, error_type, exc, http_code=None) -> None:

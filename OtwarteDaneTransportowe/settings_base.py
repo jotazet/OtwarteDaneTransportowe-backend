@@ -353,6 +353,9 @@ CELERY_BEAT_SCHEDULE = {
 CELERY_TASK_QUEUES = {
     'default': {},
     'feeds': {},
+    # Realtime fetches and verifications may each hold a worker for up to 90 s;
+    # on 'default' they could hold back the dispatchers above (issue #47).
+    'realtime': {},
     # Graph builds run for minutes to hours and drive Docker, so they get their
     # own worker (celery_planner_worker) and never delay validations on 'feeds'.
     'planner': {},
@@ -361,6 +364,8 @@ CELERY_TASK_DEFAULT_QUEUE = 'default'
 CELERY_TASK_ROUTES = {
     'data_manager.validate_gtfs_feed': {'queue': 'feeds'},
     'data_manager.fetch_static_entry': {'queue': 'feeds'},
+    'data_manager.fetch_realtime_endpoint': {'queue': 'realtime'},
+    'data_manager.validate_realtime_submission': {'queue': 'realtime'},
     'planner.run_graph_build': {'queue': 'planner'},
     'planner.ensure_serving': {'queue': 'planner'},
     'planner.refresh_index': {'queue': 'planner'},

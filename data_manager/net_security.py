@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import atexit
+import hashlib
 import os
 import re
 import socket
+import stat
 import tempfile
 import threading
 import time
@@ -275,24 +276,36 @@ def _pinned_dns(hostname: str, allowed_ips: set[str]):
 # Incomplete TLS chains (AIA completion)
 # ---------------------------------------------------------------------------
 
-# Per-process cache: hostname -> path of a CA bundle extended with the host's
-# AIA-fetched intermediates. Realtime loops hit the same hosts every few
+# Per-process cache: (hostname, port) -> path of a CA bundle extended with the
+# host's AIA-fetched intermediates. Realtime loops hit the same hosts every few
 # seconds; the chain must not be re-fetched each time.
-_AIA_BUNDLE_CACHE: dict[str, str] = {}
+_AIA_BUNDLE_CACHE: dict[tuple[str, int], str] = {}
 _AIA_INTERMEDIATE_MAX_BYTES = 100_000
+# requests' ``verify`` takes a path, so the bundles are files, named after
+# their content: a recycled worker child rewrites the same file instead of
+# leaving another behind (billiard children may skip atexit cleanup).
+_AIA_BUNDLE_DIR = os.path.join(tempfile.gettempdir(), 'odt-ca-aia')
 
 
-def _purge_aia_bundles() -> None:
-    """Remove the generated CA bundles (they are NamedTemporaryFile(delete=False))."""
-    for path in list(_AIA_BUNDLE_CACHE.values()):
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-    _AIA_BUNDLE_CACHE.clear()
-
-
-atexit.register(_purge_aia_bundles)
+def _write_aia_bundle(pem: str) -> str | None:
+    """Path of the file holding ``pem``; None unless the directory is ours alone
+    (a bundle is a trust anchor, so nobody else may plant a root in it)."""
+    try:
+        os.makedirs(_AIA_BUNDLE_DIR, mode=0o700, exist_ok=True)
+        info = os.lstat(_AIA_BUNDLE_DIR)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            return None
+        path = os.path.join(_AIA_BUNDLE_DIR, f'{hashlib.sha256(pem.encode()).hexdigest()}.pem')
+        if not os.path.exists(path):
+            with tempfile.NamedTemporaryFile(
+                'w', dir=_AIA_BUNDLE_DIR, suffix='.tmp', delete=False
+            ) as tmp:
+                tmp.write(pem)
+            # Atomic: a concurrent reader never sees a half-written bundle.
+            os.replace(tmp.name, path)
+        return path
+    except OSError:
+        return None
 
 
 def _ca_bundle_with_aia_intermediates(
@@ -308,12 +321,11 @@ def _ca_bundle_with_aia_intermediates(
     they only help verification succeed if they genuinely link the leaf to a
     trusted root, so this cannot make a forged certificate pass.
     """
-    cached = _AIA_BUNDLE_CACHE.get(hostname)
-    if cached:
+    cached = _AIA_BUNDLE_CACHE.get((hostname, port))
+    if cached and os.path.exists(cached):
         return cached
 
     import ssl
-    import tempfile
 
     import certifi
     from cryptography import x509
@@ -367,13 +379,10 @@ def _ca_bundle_with_aia_intermediates(
 
     with open(certifi.where(), encoding='utf-8') as fh:
         roots = fh.read()
-    bundle = tempfile.NamedTemporaryFile(
-        'w', suffix='.pem', prefix=f'ca-aia-{hostname}-', delete=False
-    )
-    bundle.write(roots + '\n' + '\n'.join(intermediate_pems))
-    bundle.close()
-    _AIA_BUNDLE_CACHE[hostname] = bundle.name
-    return bundle.name
+    bundle = _write_aia_bundle(roots + '\n' + '\n'.join(intermediate_pems))
+    if bundle:
+        _AIA_BUNDLE_CACHE[(hostname, port)] = bundle
+    return bundle
 
 
 # ---------------------------------------------------------------------------

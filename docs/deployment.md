@@ -47,7 +47,8 @@ define the following services:
 | `web` | Django (gunicorn in prod) | `127.0.0.1:8000` |
 | `postgres` | Database | none in production; `127.0.0.1:5420` in development |
 | `redis` | Celery broker + cache | none in production; `127.0.0.1:6379` in development |
-| `celery_worker` | `default` queue | — |
+| `celery_worker` | `default` queue: the dispatchers and other short tasks | — |
+| `celery_realtime_worker` | `realtime` queue: realtime fetches and verifications | — |
 | `celery_validator_worker` | `feeds` queue + GTFS validator (via socket-proxy) | — |
 | `docker-socket-proxy` | Least-privilege access to the host's Docker API | — |
 | `celery_beat` | Scheduler (django-celery-beat) | — |
@@ -62,6 +63,7 @@ flowchart LR
   web --> redis[(Redis cache + broker)]
   beat[celery_beat] --> redis
   redis --> worker[celery_worker]
+  redis --> rtworker[celery_realtime_worker]
   redis --> vworker[celery_validator_worker]
   vworker -->|DOCKER_HOST tcp| sockproxy[docker-socket-proxy]
   sockproxy -->|docker.sock ro| host[Host Docker]
@@ -80,7 +82,8 @@ use as much swap as its `mem_limit`.
 | Service | Limit | Variable | What it has to fit |
 | --- | --- | --- | --- |
 | `web` | 1 GB | `WEB_MEM_LIMIT` | gunicorn master + `GUNICORN_WORKERS` (3) Django processes |
-| `celery_worker` | 1 GB | `CELERY_DEFAULT_MEM_LIMIT` | main process + `CELERY_DEFAULT_CONCURRENCY` (2) children, each recycled above `CELERY_WORKER_MAX_MEMORY_PER_CHILD` (~300 MB) after its task; a realtime body of up to 32 MB is parsed in full |
+| `celery_worker` | 1 GB | `CELERY_DEFAULT_MEM_LIMIT` | main process + `CELERY_DEFAULT_CONCURRENCY` (2) children, each recycled above `CELERY_WORKER_MAX_MEMORY_PER_CHILD` (~300 MB) after its task |
+| `celery_realtime_worker` | 1 GB | `CELERY_REALTIME_MEM_LIMIT` | main process + `CELERY_REALTIME_CONCURRENCY` (2) children, recycled like the above; a realtime body of up to 32 MB is parsed in full |
 | `celery_validator_worker` | 1 GB | `CELERY_FEEDS_MEM_LIMIT` | main process + one child that loads the validator's JSON report (the validator itself runs in its own container, `GTFS_VALIDATOR_MEM_LIMIT`) |
 | `celery_planner_worker` | 6 GB | `CELERY_PLANNER_MEM_LIMIT` | `osmium` filtering and cropping the OSM extract for a new street graph, in this container: for all of Poland (2.1 GB PBF) the crop was killed at 4 GB and fit in 5 GB without swap (measured 2026-11-12). It runs while the serving OTP is stopped. Graph builds run in their own containers (`PLANNER_OTP_*_LIMIT`) |
 | `celery_beat` | 256 MB | — | one Django process |
@@ -98,7 +101,7 @@ real usage (`./scripts/deploy.sh stats --no-stream`) and raise one in the
 
 Every service logs through Docker's `json-file` driver with rotation: at most 5 files of
 10 MB per container, the rotated ones gzipped, so `docker compose logs` keeps the last ~50 MB
-of log lines of each in well under that on disk. The busiest is `celery_worker`: Celery logs
+of log lines of each in well under that on disk. The busiest is `celery_realtime_worker`: Celery logs
 two INFO lines per realtime poll. Containers that the workers start themselves (the
 validator, graph builds) use the Docker daemon's default log settings, which do not rotate
 unless `/etc/docker/daemon.json` sets `log-opts`; they run for minutes and are removed with
@@ -253,6 +256,9 @@ GUNICORN_WORKERS=3
 # so threads keep the other endpoints answering meanwhile.
 GUNICORN_THREADS=4
 CELERY_DEFAULT_CONCURRENCY=2
+# Realtime fetches and verifications (each may take up to 90 s) run on their own worker,
+# so they never hold back the dispatchers on the default queue.
+CELERY_REALTIME_CONCURRENCY=2
 # The feeds queue only handles static downloads and GTFS validations — a few tasks per
 # feed per day. Each additional process is ~90 MB of RAM when idle.
 CELERY_FEEDS_CONCURRENCY=1
@@ -300,7 +306,7 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `UID` / `GID` | User the application containers run as, and the user of the GTFS validator container, so it can write its report into `uploaded_data/`. Default `1000`. |
 | `HOST_PROJECT_PATH` / `HOST_MEDIA_ROOT` | Host paths of the project and of `uploaded_data/`. The validator is started by the host's Docker daemon, so its bind mounts need host paths. Compose passes `${PWD}` and `${PWD}/uploaded_data` when unset; outside compose `HOST_MEDIA_ROOT` defaults to `HOST_PROJECT_PATH/uploaded_data`. |
 | `GTFS_VALIDATOR_MEM_LIMIT`, `GTFS_VALIDATOR_PIDS_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS` | Resource limits of the validator container. Defaults `2g`, `512` and two cores (`2000000000`; `1000000000` = one core, `0` = no cap). Two of the production VPS's six vCPUs leave the rest to OpenTripPlanner, the web and the other workers; a validation then takes longer but still has to fit the 10-minute budget below. Docker refuses a cap above the host's CPU count, so set `1000000000` (or `0`) on a single-CPU machine. |
-| `WEB_MEM_LIMIT`, `CELERY_DEFAULT_MEM_LIMIT`, `CELERY_FEEDS_MEM_LIMIT`, `CELERY_PLANNER_MEM_LIMIT`, `POSTGRES_MEM_LIMIT` | `mem_limit` of `web`, `celery_worker`, `celery_validator_worker`, `celery_planner_worker` and `postgres`. Default `1g` each, `6g` for the planner worker (it crops the OSM extract); raise the web and worker ones together with `GUNICORN_WORKERS` and the Celery concurrencies, the planner one with a larger OSM extract. See [section 1](#memory-limits-and-logs). |
+| `WEB_MEM_LIMIT`, `CELERY_DEFAULT_MEM_LIMIT`, `CELERY_REALTIME_MEM_LIMIT`, `CELERY_FEEDS_MEM_LIMIT`, `CELERY_PLANNER_MEM_LIMIT`, `POSTGRES_MEM_LIMIT` | `mem_limit` of `web`, `celery_worker`, `celery_realtime_worker`, `celery_validator_worker`, `celery_planner_worker` and `postgres`. Default `1g` each, `6g` for the planner worker (it crops the OSM extract); raise the web and worker ones together with `GUNICORN_WORKERS` and the Celery concurrencies, the planner one with a larger OSM extract. See [section 1](#memory-limits-and-logs). |
 | `CELERY_BROKER_URL` | Redis database of the Celery broker. `docker-compose.yml` sets it (database `0`), which overrides `.env`; the default `redis://localhost:6379/0` is for running outside Docker. Celery has no result backend: nothing reads task results (`CELERY_TASK_IGNORE_RESULT`). |
 | `POSTGRES_CONN_MAX_AGE` | Seconds a web (gunicorn) thread keeps its database connection open for the next request. Default `60`; `0` opens a new connection for every request. A dead connection is replaced before use (`CONN_HEALTH_CHECKS`). See [section 6](#6-postgresql) for the connection count. |
 | `POSTGRES_HOST` / `POSTGRES_PORT` | Database address. `docker-compose.yml` sets `postgres` and `5432`; the defaults `127.0.0.1` and `5420` (the port published on the host in development) are for running on the host. |
@@ -325,8 +331,9 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
   its connection open between requests: 12 with the defaults (`GUNICORN_WORKERS` 3 ×
   `GUNICORN_THREADS` 4). Celery workers still open a connection per task (Celery's Django
   fixup closes it before and after each task), at most one per process: 2 for
-  `celery_worker`, 1 for `celery_validator_worker`, 2 for `celery_planner_worker`, plus 1
-  for `celery_beat` and one-off `migrate`, backup and shell sessions. That is about 20 of
+  `celery_worker`, 2 for `celery_realtime_worker`, 1 for `celery_validator_worker`, 2 for
+  `celery_planner_worker`, plus 1 for `celery_beat` and one-off `migrate`, backup and shell
+  sessions. That is about 22 of
   PostgreSQL's default `max_connections` of 100; raise it only if the gunicorn workers and
   threads and the Celery concurrencies together approach it.
 
@@ -807,7 +814,7 @@ odt-backup:<directory>/<time>/ ~/backups/scheduled/<time>/`, or `rclone copy
 ```bash
 b=~/backups/scheduled/<time>
 # On a new server, start only the database first: ./scripts/deploy.sh up -d postgres
-./scripts/deploy.sh stop web celery_worker celery_beat celery_validator_worker celery_planner_worker
+./scripts/deploy.sh stop web celery_worker celery_realtime_worker celery_beat celery_validator_worker celery_planner_worker
 ./scripts/deploy.sh exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' \
   < "$b/db.dump"
 rsync -a "$b/uploaded_data/" uploaded_data/
@@ -1395,7 +1402,7 @@ application services (`./scripts/deploy.sh up -d`).
   release, then redeploy the previous tag:
 
   ```bash
-  ./scripts/deploy.sh stop web celery_worker celery_beat celery_validator_worker celery_planner_worker
+  ./scripts/deploy.sh stop web celery_worker celery_realtime_worker celery_beat celery_validator_worker celery_planner_worker
   ./scripts/deploy.sh exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' \
     < ~/backups/release-<time>-<failed tag>/db.dump
   ```
