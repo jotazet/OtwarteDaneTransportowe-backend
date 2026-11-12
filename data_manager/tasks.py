@@ -491,13 +491,39 @@ def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> 
 # GTFS VALIDATION TASK
 # ---------------------------------------------------------------------------
 
+# One budget for the whole task: for a URL feed it also covers the download
+# (up to FEED_FETCH_TOTAL_TIMEOUT_SECONDS), so the container gets what is left.
+GTFS_VALIDATION_SOFT_TIME_LIMIT = 600
+GTFS_VALIDATION_TIME_LIMIT = GTFS_VALIDATION_SOFT_TIME_LIMIT + 60
+# Kept free between the container wait and the soft limit, so a validator that
+# runs too long is removed and recorded here rather than by SoftTimeLimitExceeded.
+GTFS_VALIDATOR_STOP_MARGIN_SECONDS = 30
+# Label of every validator container; its value is the Unix time after which the
+# task that started it has certainly been killed, so the container is an orphan.
+GTFS_VALIDATOR_EXPIRES_LABEL = 'odt.gtfs-validator.expires'
+
+
+def _remove_expired_validators(client) -> None:
+    """Remove validator containers left behind by a task killed at its hard time limit.
+
+    Only expired ones: another feeds worker may be running a validator right now.
+    """
+    now = time.time()
+    # The low-level list carries the labels: one API call, no inspect per container.
+    for container in client.api.containers(
+        all=True, filters={'label': GTFS_VALIDATOR_EXPIRES_LABEL}
+    ):
+        if int(container['Labels'][GTFS_VALIDATOR_EXPIRES_LABEL]) < now:
+            logger.warning('Removing orphaned GTFS validator container %s', container['Names'])
+            client.api.remove_container(container['Id'], force=True)
+
 
 @shared_task(
     name='data_manager.validate_gtfs_feed',
     bind=True,
     queue='feeds',
-    soft_time_limit=600,
-    time_limit=660,
+    soft_time_limit=GTFS_VALIDATION_SOFT_TIME_LIMIT,
+    time_limit=GTFS_VALIDATION_TIME_LIMIT,
 )
 def validate_gtfs_feed_task(self, entry_id: int):
     """
@@ -514,6 +540,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
     import shutil
 
     import docker
+    import requests
     from celery.exceptions import SoftTimeLimitExceeded
     from django.conf import settings
 
@@ -525,6 +552,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
         StaticFeedEntry,
     )
 
+    started = time.monotonic()
     logger.info(f"Starting GTFS validation for StaticFeedEntry id={entry_id}")
 
     try:
@@ -622,8 +650,6 @@ def validate_gtfs_feed_task(self, entry_id: int):
         if not file_field and entry.url:
             from urllib.parse import urlparse
 
-            import requests
-
             from data_manager.net_security import OutboundURLBlocked, safe_download
             from data_manager.scheduler import _build_auth_headers
 
@@ -705,6 +731,18 @@ def validate_gtfs_feed_task(self, entry_id: int):
         logger.info(f"Validating {filename}...")
         logger.info(f"Host Input: {host_input_dir}, Host Output: {host_output_dir}")
 
+        def _seconds_left() -> float:
+            return (
+                started
+                + GTFS_VALIDATION_SOFT_TIME_LIMIT
+                - GTFS_VALIDATOR_STOP_MARGIN_SECONDS
+                - time.monotonic()
+            )
+
+        if _seconds_left() <= 0:
+            _record_infra_error(ve.TIMEOUT, 'no time left for the validator after the download')
+            return
+
         try:
             client = docker.from_env()
         except docker.errors.DockerException as e:
@@ -715,6 +753,19 @@ def validate_gtfs_feed_task(self, entry_id: int):
             return
 
         try:
+            _remove_expired_validators(client)
+        except (
+            docker.errors.DockerException,
+            requests.exceptions.RequestException,
+            KeyError,
+            ValueError,  # a hand-made container with a malformed label
+        ) as e:
+            logger.warning('Cannot remove orphaned GTFS validator containers: %s', e)
+
+        # Detached with a unique name, so the finally below can remove it whatever
+        # interrupts the wait, including SoftTimeLimitExceeded.
+        container_name = f'odt-gtfs-validator-{entry.id}-{uuid.uuid4().hex[:8]}'
+        try:
             volumes = {
                 host_input_dir: {'bind': '/input', 'mode': 'ro'},
                 host_output_dir: {'bind': '/output', 'mode': 'rw'},
@@ -723,12 +774,15 @@ def validate_gtfs_feed_task(self, entry_id: int):
             command = ["-i", f"/input/{filename}", "-o", "/output"]
 
             # Bound resource usage so a malicious/zip-bomb feed cannot exhaust the host.
-            run_kwargs = dict(
+            container = client.containers.run(
                 image=settings.GTFS_VALIDATOR_IMAGE,
                 command=command,
                 volumes=volumes,
-                remove=True,
-                detach=False,
+                detach=True,
+                name=container_name,
+                labels={
+                    GTFS_VALIDATOR_EXPIRES_LABEL: str(int(time.time()) + GTFS_VALIDATION_TIME_LIMIT)
+                },
                 user=f"{settings.GTFS_VALIDATOR_UID}:{settings.GTFS_VALIDATOR_GID}",
                 network_disabled=True,
                 mem_limit=settings.GTFS_VALIDATOR_MEM_LIMIT,
@@ -737,20 +791,44 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 cap_drop=['ALL'],
                 security_opt=['no-new-privileges:true'],
             )
-
-            client.containers.run(**run_kwargs)
+            # Measured after run(), which may have pulled the image first.
+            wait_seconds = max(_seconds_left(), 1)
+            wait_started = time.monotonic()
+            try:
+                exit_code = container.wait(timeout=wait_seconds).get('StatusCode', -1)
+            except requests.exceptions.RequestException:
+                # Through docker-socket-proxy a timed-out wait raises ConnectionError,
+                # not ReadTimeout, so only the elapsed time tells it from a lost proxy.
+                if time.monotonic() - wait_started < wait_seconds:
+                    raise
+                _record_infra_error(
+                    ve.TIMEOUT, f'validator still running after {wait_seconds:.0f} s'
+                )
+                return
+            if exit_code != 0:
+                # E.g. 137 when the memory limit killed it.
+                stderr = container.logs(stdout=False, stderr=True, tail=20)
+                _record_infra_error(
+                    ve.VALIDATOR_FAILED,
+                    f'container exited with {exit_code}: {stderr.decode("utf-8", "replace")}',
+                )
+                return
 
             logger.info("Validation container finished.")
 
-        except docker.errors.ContainerError as e:
-            # Non-zero exit, e.g. 137 when the memory limit killed it.
-            _record_infra_error(ve.VALIDATOR_FAILED, f'container failed: {e}')
-            return
         except SoftTimeLimitExceeded:
             raise
         except Exception as e:
             _record_infra_error(ve.VALIDATOR_UNAVAILABLE, f'Docker execution error: {e}')
             return
+        finally:
+            # force=True kills it first if it is still running.
+            try:
+                client.api.remove_container(container_name, force=True)
+            except docker.errors.NotFound:
+                pass  # never created
+            except (docker.errors.DockerException, requests.exceptions.RequestException) as e:
+                logger.error('Cannot remove GTFS validator container %s: %s', container_name, e)
 
         # Parse results
         # The validator writes files into the host_output_dir (bound to /output in the
