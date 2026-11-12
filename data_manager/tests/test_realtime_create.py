@@ -313,8 +313,8 @@ def test_interval_below_5_seconds_is_rejected(interval, provider, org, post_as):
     response = post_as(provider, _gbfs_payload(org, endpoints=[endpoint]))
 
     assert response.status_code == 400, response.data
-    codes = [error.code for error in response.data['endpoints'][0]['interval']]
-    assert codes == ['realtime.interval_too_short']
+    # The JSON keys endpoint errors by the endpoint's index.
+    assert response.json()['endpoints']['0']['interval'] == ['realtime.interval_too_short']
     assert not RealtimeSubmission.objects.exists()
 
 

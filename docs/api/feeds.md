@@ -410,7 +410,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
 - `endpoints` are required and cannot be empty.
 - Two endpoints of the same `endpoint_type` cannot be added to one submission.
 - The endpoint type must match the protocol.
-- `interval` (refresh interval in seconds, default `60`) must be at least **5**; a lower value returns `400` with field code `realtime.interval_too_short` on the endpoint's `interval`, also when only the interval is changed from stage 2.
+- `interval` (refresh interval in seconds, default `60`) must be at least **5**; a lower value returns `400` with the code as the field message, `{"endpoints": {"0": {"interval": ["realtime.interval_too_short"]}}}` (keyed by the endpoint's index), also when only the interval is changed from stage 2.
 - `auth_value` is write-only.
 - If `auth_type` is non-empty (anything but `""`), the backend automatically sets `hide_original=True`; `null` is rejected with `400`.
 - `hide_original=true` **does not require** authorization — the endpoint can be fetched by the server from a public URL without `auth_type` / `auth_value`.

@@ -192,10 +192,8 @@ def validate_feed_file_size(value):
 def validate_realtime_interval(value):
     """Reject a realtime refresh interval below ``REALTIME_MIN_INTERVAL_SECONDS``.
 
-    Raised with an error code (ADR 0006); ModelSerializer copies it into the API field.
+    The message is the error code itself (ADR 0006), so the API response carries it;
+    ModelSerializer copies this validator into the API field.
     """
     if value < REALTIME_MIN_INTERVAL_SECONDS:
-        raise ValidationError(
-            f'Interval must be at least {REALTIME_MIN_INTERVAL_SECONDS} seconds.',
-            code='realtime.interval_too_short',
-        )
+        raise ValidationError('realtime.interval_too_short', code='realtime.interval_too_short')
