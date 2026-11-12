@@ -11,13 +11,14 @@ x-app-env: &app-env
   # work across web + worker processes (per-process LocMemCache would break them).
   REDIS_CACHE_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/2
 
-# Docker's default json-file driver never rotates, and the realtime worker logs every poll.
-# At most 5 files of 10 MB per container.
+# Docker's default json-file driver never rotates, and the realtime worker logs every poll
+# (Celery's received/succeeded lines). At most 5 files of 10 MB per container, older ones gzipped.
 x-logging: &logging
   driver: json-file
   options:
     max-size: 10m
     max-file: "5"
+    compress: "true"
 
 x-app-service: &app-service
   logging: *logging

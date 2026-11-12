@@ -97,9 +97,12 @@ real usage (`./scripts/deploy.sh stats --no-stream`) and raise one in the
 `OOMKilled=true` in `docker inspect --format '{{.State.OOMKilled}}' <container>`.
 
 Every service logs through Docker's `json-file` driver with rotation: at most 5 files of
-10 MB per container, so `docker compose logs` keeps the last ~50 MB of each. Containers that
-the workers start themselves (the validator, graph builds) are removed when they finish and
-take their logs with them.
+10 MB per container, the rotated ones gzipped, so `docker compose logs` keeps the last ~50 MB
+of log lines of each in well under that on disk. The busiest is `celery_worker`: Celery logs
+two INFO lines per realtime poll. Containers that the workers start themselves (the
+validator, graph builds) use the Docker daemon's default log settings, which do not rotate
+unless `/etc/docker/daemon.json` sets `log-opts`; they run for minutes and are removed with
+their logs when they finish.
 
 ---
 
