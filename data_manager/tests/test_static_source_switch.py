@@ -55,6 +55,9 @@ def _proxied_entry(org, owner, history=None):
         hide_original=True,
         download_time_1=time(3, 0),
         cached_at=timezone.now(),
+        cached_etag='"v1"',
+        cached_last_modified='Wed, 11 Nov 2026 03:00:00 GMT',
+        cached_sha256='0' * 64,
     )
     entry.cached_file.save('cached.zip', ContentFile(b'PK\x03\x04cached'), save=True)
     return submission, entry
@@ -142,6 +145,9 @@ def test_url_change_drops_cache_and_refetches(
 
     assert response.status_code == 200, response.data
     _assert_cache_dropped(entry, old_cache)
+    entry.refresh_from_db()
+    # The new URL must not be asked for, or compared with, the old copy.
+    assert (entry.cached_etag, entry.cached_last_modified, entry.cached_sha256) == ('', '', '')
     fetch.assert_called_once_with(entry.pk)
 
 
@@ -193,7 +199,7 @@ def test_fetch_finishing_after_a_switch_does_not_restore_the_cache(monkeypatch, 
         StaticFeedEntry.objects.filter(pk=entry.pk).update(
             url='', hide_original=False, cached_file='', cached_at=None
         )
-        yield MagicMock(), io.BytesIO(b'PK\x03\x04late')
+        yield MagicMock(status_code=200, headers={}), io.BytesIO(b'PK\x03\x04late')
 
     monkeypatch.setattr('data_manager.scheduler.safe_download', download_while_switching)
     monkeypatch.setattr('data_manager.scheduler.validate_static_feed_stream', lambda *a: None)

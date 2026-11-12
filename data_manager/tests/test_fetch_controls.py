@@ -158,6 +158,7 @@ def test_static_fetch_errors_apply_pause_sequence_and_success_resets(
         # Minimal ZIP magic: fetched GTFS content must look like a ZIP archive.
         content = b'PK\x03\x04feed-bytes'
         status_code = 200
+        headers = {}
 
         def raise_for_status(self):
             return None
@@ -205,6 +206,8 @@ def _mock_static_download(monkeypatch, fail=False):
     downloads = []
 
     class Response:
+        headers = {}
+
         def raise_for_status(self):
             return None
 

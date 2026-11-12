@@ -1110,6 +1110,11 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
         if entry.is_proxy_managed:
             from data_manager.tasks import enqueue_on_commit, fetch_static_entry_task
 
+            # A resubmitted source is validated again even when the upstream
+            # file matches the cached copy: forget what that copy was.
+            StaticFeedEntry.objects.filter(pk=entry.pk).update(
+                **dict.fromkeys(StaticFeedEntry.CACHE_VALIDATOR_FIELDS, '')
+            )
             enqueue_on_commit(fetch_static_entry_task, entry.pk)
         elif entry.submission.data_type == 'gtfs':
             if getattr(entry, '_gtfs_validation_queued', False):
@@ -1177,7 +1182,13 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     if url_changed or not entry.is_proxy_managed:
                         entry.cached_file = None
                         entry.cached_at = None
-                        update_fields |= {'cached_file', 'cached_at'}
+                        for name in StaticFeedEntry.CACHE_VALIDATOR_FIELDS:
+                            setattr(entry, name, '')
+                        update_fields |= {
+                            'cached_file',
+                            'cached_at',
+                            *StaticFeedEntry.CACHE_VALIDATOR_FIELDS,
+                        }
                     try:
                         entry.full_clean()
                     except DjangoValidationError as exc:
