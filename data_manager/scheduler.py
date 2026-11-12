@@ -30,7 +30,7 @@ from data_manager.models import (
     completed_realtime_submission_ids,
     completed_submission_ids,
 )
-from data_manager.net_security import OutboundURLBlocked, safe_download
+from data_manager.net_security import OutboundURLBlocked, redact_url, redact_urls, safe_download
 from data_manager.validators import (
     InvalidFeedContent,
     validate_realtime_feed_stream,
@@ -197,7 +197,9 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
             return FETCH_PERMANENT
         entry.mark_fetch_success(now)
         if unchanged:
-            logger.info('Static entry=%d unchanged upstream  url=%s', entry.pk, entry.url)
+            logger.info(
+                'Static entry=%d unchanged upstream  url=%s', entry.pk, redact_url(entry.url)
+            )
             # A validation the validator could not finish is still retried daily.
             if entry.validation_status in (
                 StaticFeedEntry.VALIDATION_PENDING,
@@ -206,7 +208,7 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
                 validate_gtfs_feed_task.delay(entry.pk)
             return FETCH_OK
         _delete_stale_cache_file(entry.cached_file, old_cached_name)
-        logger.info('Refreshed static entry=%d  url=%s', entry.pk, entry.url)
+        logger.info('Refreshed static entry=%d  url=%s', entry.pk, redact_url(entry.url))
 
         validate_gtfs_feed_task.delay(entry.pk)
         return FETCH_OK
@@ -230,15 +232,17 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
 
 
 def _log_static_error(entry, error_type, exc, http_code=None) -> None:
+    # Requests put the URL, query string included, in their exception texts.
+    message = redact_urls(str(exc))
     FeedFetchError.objects.create(
         static_entry=entry,
         error_type=error_type,
         http_status_code=http_code,
-        message=str(exc),
+        message=message,
         url_attempted=entry.url,
     )
-    entry.mark_fetch_failure(str(exc))
-    logger.warning('Fetch error static entry=%d type=%s: %s', entry.pk, error_type, exc)
+    entry.mark_fetch_failure(message)
+    logger.warning('Fetch error static entry=%d type=%s: %s', entry.pk, error_type, message)
 
 
 # ---------------------------------------------------------------------------
@@ -321,15 +325,17 @@ def _fetch_realtime_endpoint_rt(
 
 def _log_endpoint_rt_error(endpoint, error_type, exc, outcome, http_code=None) -> str:
     """Record the error and back off on the ladder of its class; returns ``outcome``."""
+    # Requests put the URL, query string included, in their exception texts.
+    message = redact_urls(str(exc))
     FeedFetchError.objects.create(
         endpoint_rt=endpoint,
         error_type=error_type,
         http_status_code=http_code,
-        message=str(exc),
+        message=message,
         url_attempted=endpoint.url,
     )
     transient = outcome == FETCH_TRANSIENT
     delays = REALTIME_TRANSIENT_RETRY_DELAYS if transient else FETCH_RETRY_DELAYS
-    endpoint.mark_fetch_failure(str(exc), delays=delays)
-    logger.warning('Fetch error endpoint_rt=%d type=%s: %s', endpoint.pk, error_type, exc)
+    endpoint.mark_fetch_failure(message, delays=delays)
+    logger.warning('Fetch error endpoint_rt=%d type=%s: %s', endpoint.pk, error_type, message)
     return outcome

@@ -6,7 +6,7 @@ Everything per IP, per minute or per hour comes from the raw rows.
 """
 
 import math
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 from django.conf import settings
 from django.db import transaction
@@ -208,17 +208,36 @@ def user_agents(rows):
     )
 
 
+def _day_start(day: date) -> datetime:
+    """Midnight UTC starting ``day``: days are UTC, and a plain ``created_at`` range
+    (unlike ``created_at__date``, which casts the column) can use the BRIN index."""
+    return datetime.combine(day, time.min, tzinfo=UTC)
+
+
+def _summarised_days(first: date, last: date) -> set[date]:
+    return set(
+        PlannerDailyStat.objects.filter(date__range=(first, last))
+        .values_list('date', flat=True)
+        .distinct()
+    )
+
+
 def roll_up_and_purge(today: date | None = None) -> None:
     """Summarise every finished day not summarised yet, then drop expired rows. Idempotent."""
     today = today or timezone.now().date()
-    summarised = set(PlannerDailyStat.objects.values_list('date', flat=True).distinct())
-    for day in PlannerRequestLog.objects.filter(created_at__date__lt=today).dates(
-        'created_at', 'day'
-    ):
+    days = list(
+        PlannerRequestLog.objects.filter(created_at__lt=_day_start(today)).dates(
+            'created_at', 'day'
+        )
+    )
+    summarised = _summarised_days(days[0], days[-1]) if days else set()
+    for day in days:
         if day in summarised:
             continue
         rows = (
-            PlannerRequestLog.objects.filter(created_at__date=day)
+            PlannerRequestLog.objects.filter(
+                created_at__gte=_day_start(day), created_at__lt=_day_start(day + timedelta(days=1))
+            )
             .values('endpoint', 'api_key', 'status_code')
             .annotate(
                 requests=Count('id'),
@@ -273,14 +292,13 @@ def daily_stats(date_from: date, date_to: date, endpoint=None, api_key=None) -> 
         row['requests'] = row.pop('total')
     # Days not summarised yet (today, and yesterday until the nightly rollup)
     # come from the raw log.
-    summarised = set(PlannerDailyStat.objects.values_list('date', flat=True).distinct())
+    summarised = _summarised_days(date_from, date_to)
+    logged = PlannerRequestLog.objects.filter(created_at__gte=_day_start(date_from), **filters)
+    if date_to < date.max:  # date.max has no next day; its range is open-ended
+        logged = logged.filter(created_at__lt=_day_start(date_to + timedelta(days=1)))
     rows += [
         {**row, 'date': row.pop('created_at__date')}
-        for row in PlannerRequestLog.objects.filter(
-            created_at__date__range=(date_from, date_to), **filters
-        )
-        .values('created_at__date')
-        .annotate(
+        for row in logged.values('created_at__date').annotate(
             requests=Count('id'),
             **_class_counts(),
             latency_ms_sum=Sum('latency_ms'),

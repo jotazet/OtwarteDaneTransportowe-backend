@@ -54,6 +54,7 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
+from data_manager.net_security import redact_urls
 from data_manager.validators import REALTIME_MIN_INTERVAL_SECONDS
 
 logger = get_task_logger(__name__)
@@ -457,7 +458,9 @@ def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> 
         try:
             result = _fetch(endpoint, now)
         except Exception as exc:
-            logger.warning('fetch_realtime_endpoint_rt id=%d error: %s', endpoint_id, exc)
+            logger.warning(
+                'fetch_realtime_endpoint_rt id=%d error: %s', endpoint_id, redact_urls(str(exc))
+            )
             result = 'error'
 
         endpoint.refresh_from_db(
@@ -571,6 +574,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
         FeedSubmissionHistory,
         FeedValidationReport,
         StaticFeedEntry,
+        lock_submission,
     )
 
     started = time.monotonic()
@@ -598,13 +602,10 @@ def validate_gtfs_feed_task(self, entry_id: int):
     _set_validation_status(StaticFeedEntry.VALIDATION_PENDING)
 
     def _lock_submission() -> FeedSubmission:
-        # Overlapping runs (upload signal, proxy refresh, retry command) must read
-        # the stage one at a time: read it from the returned row, in the same atomic block.
-        return (
-            FeedSubmission.objects.select_for_update()
-            .prefetch_related('history')
-            .get(pk=entry.submission_id)
-        )
+        # Overlapping runs (upload signal, proxy refresh, retry command) and
+        # reviewers must read the stage one at a time: read it from the returned
+        # row, in the same atomic block.
+        return lock_submission(FeedSubmission, entry.submission_id)
 
     def _record_infra_error(code: str, detail) -> None:
         # Validation could not run (our side, not the feed): no rejection, the
@@ -703,7 +704,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 _reject_submission(str(exc))
                 return
             except requests.exceptions.RequestException as exc:
-                _reject_submission(f'Failed to download feed for validation: {exc}')
+                _reject_submission(
+                    f'Failed to download feed for validation: {redact_urls(str(exc))}'
+                )
                 return
         elif not file_field:
             _record_infra_error(ve.FILE_MISSING, 'no file, cached file or URL')
@@ -1042,6 +1045,7 @@ def _verify_realtime_submission(submission_id: int) -> dict:
         RealtimeSubmission,
         RealtimeSubmissionHistory,
         completed_submission_ids,
+        lock_submission,
     )
     from data_manager.net_security import OutboundURLBlocked, ResponseTooLarge, safe_get
     from data_manager.scheduler import _build_auth_headers, _fetch_realtime_endpoint_rt
@@ -1063,13 +1067,10 @@ def _verify_realtime_submission(submission_id: int) -> dict:
         return {'status': 'not_found', 'id': submission_id}
 
     def _lock_submission() -> RealtimeSubmission:
-        # Overlapping runs (create, resubmission, retry command) must read the
-        # stage one at a time: read it from the returned row, in the same atomic block.
-        return (
-            RealtimeSubmission.objects.select_for_update()
-            .prefetch_related('history')
-            .get(pk=submission_id)
-        )
+        # Overlapping runs (create, resubmission, retry command) and reviewers
+        # must read the stage one at a time: read it from the returned row, in
+        # the same atomic block.
+        return lock_submission(RealtimeSubmission, submission_id)
 
     def _reject(reasons: list[dict]) -> dict:
         with transaction.atomic():
@@ -1183,7 +1184,7 @@ def _verify_realtime_submission(submission_id: int) -> dict:
                 submission_id,
                 ep.pk,
                 code,
-                exc,
+                redact_urls(str(exc)),
             )
             extra = {}
             if code == rr.ENDPOINT_CONTENT_INVALID:

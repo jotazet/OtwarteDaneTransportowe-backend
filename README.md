@@ -62,5 +62,6 @@ Dependencies are managed with [uv](https://docs.astral.sh/uv/): `uv add <package
 ## Configuration notes
 
 - Environment variables are managed via `.env` (see `.env.example` for a baseline).
+- Settings: `docker compose` uses the development settings from `.env.example`, and `manage.py` and pytest default to them on the host. The image, `wsgi.py`, `asgi.py` and `celery.py` default to `settings_prod`, which refuses to start without production secrets: set `DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_dev` to run them elsewhere for development.
 - Service/port mapping for local development is defined in `docker-compose.yml`.
 

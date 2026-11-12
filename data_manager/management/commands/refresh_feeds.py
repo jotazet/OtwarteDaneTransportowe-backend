@@ -17,6 +17,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from data_manager.models import FETCH_STATUS_ACTIVE, StaticFeedEntry, fetch_retry_due
+from data_manager.net_security import redact_url
 from data_manager.scheduler import _completed_submission_ids, _fetch_static_entry
 
 
@@ -39,7 +40,7 @@ class Command(BaseCommand):
 
         count = 0
         for entry in entries:
-            self.stdout.write(f'  → Pobieranie entry id={entry.pk}  {entry.url}')
+            self.stdout.write(f'  → Fetching entry id={entry.pk}  {redact_url(entry.url)}')
             _fetch_static_entry(entry)
             count += 1
 
