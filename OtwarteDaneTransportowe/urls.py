@@ -29,10 +29,13 @@ from drf_spectacular.views import (
 from rest_framework.permissions import AllowAny
 
 from data_manager.api.views import PublicFeedDownloadView, RealtimePublicFeedDownloadView
+from OtwarteDaneTransportowe.admin_login import throttled_admin_login
 from OtwarteDaneTransportowe.auth_roles import AdminGroupOrDebug
 from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairView, ThrottledTokenRefreshView
 
 urlpatterns = [
+    # Before admin.site.urls so it replaces the admin's own login view.
+    path('admin/login/', throttled_admin_login),
     path('admin/', admin.site.urls),
     path('feed/', PublicFeedDownloadView.as_view(), name='feed-download-base'),
     path('feed/<int:pk>/', PublicFeedDownloadView.as_view(), name='feed-download-info'),
