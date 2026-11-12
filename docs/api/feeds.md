@@ -191,7 +191,7 @@ In `static_entry`:
 - `validation_status` is `pending`, `valid`, `invalid` or `error`. `validation_message` depends on it:
   - `pending`, `valid`: empty.
   - `invalid`: the feed failed validation and the submission was rejected; the same text as the rejection cause (validator notice codes as `code: count`, or English text when the provider's URL could not be downloaded).
-  - `error`: validation **could not run** because of a problem on ODT's side; the feed was not judged. The submission keeps its stage (no rejection) and ODT re-runs the validation. `validation_message` is one of the codes below, which the frontend translates ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
+  - `error`: validation **could not run** because of a problem on ODT's side; the feed was not judged. The submission keeps its stage (no rejection); the ODT team re-runs the validation (`manage.py retry_gtfs_validation`), and a proxied feed is also re-validated at its next fetch. `validation_message` is one of the codes below, which the frontend translates ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
 
 | Code | Meaning |
 |---|---|
