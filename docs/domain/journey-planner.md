@@ -18,7 +18,7 @@ ODT's journey planner routes over the published feeds with [OpenTripPlanner](htt
 | `stale` | The newest file failed (or could not be fetched); the last good version is in the graph instead (`failure_policy = keep_last_good`). It gets no realtime updaters, because live data refers to the newest schedule. |
 | `excluded` | Not in the graph: unpublished, failed with `failure_policy = exclude`, or failed without any good version. |
 
-Error codes stored per feed: `planner.feed_not_published`, `planner.feed_source_unavailable`, `planner.feed_invalid`, `planner.feed_no_service_in_period` (OTP found no trips in the service window). Realtime endpoints skipped by the configuration carry `planner.rt_url_blocked`.
+Error codes stored per feed: `planner.feed_not_published`, `planner.feed_source_unavailable`, `planner.feed_invalid`, `planner.feed_no_service_in_period` (OTP found no trips in the service window). Realtime endpoints skipped by the configuration carry `planner.rt_url_blocked` (private address) or `planner.rt_url_unsupported` (the provider's URL contains `${`, see [ADR 0009](../architecture/decisions/0009-planner-graph-build-pipeline.md)).
 
 ## Realtime
 

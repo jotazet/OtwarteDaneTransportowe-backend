@@ -143,6 +143,8 @@ After consecutive failed fetches the system automatically postpones the next att
 
 The first successful fetch resets the error counter to zero and sets `fetch_status=active`.
 
+A delayed realtime endpoint has no fetch queued: the periodic realtime bootstrap (every 5 minutes) resumes it once `next_fetch_after` has passed, so the actual retry comes up to 5 minutes after the time in the table. Static feeds are retried by the per-minute dispatcher.
+
 `Helper` or `Admin` can manually pause or resume a single **proxied** feed (`is_proxy_managed=true`). The `proxy-feeds` list is available to any logged-in user (a `DataProvider` sees only its own feeds), but `pause-fetch` / `resume-fetch` return `403` for anyone other than `Helper`/`Admin`:
 
 ```http

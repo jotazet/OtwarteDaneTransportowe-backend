@@ -103,7 +103,7 @@ DELETE /api/planner/admin/rental-sources/{id}/
 | --- | --- |
 | `submission` | A published `RealtimeSubmission` with protocol `gbfs` and a `gbfs` (main file) endpoint. |
 | `network` | OTP's rental network, the prefix of every station and vehicle ID (`dott-oswiecim:…`). Same format as `feed_id`. **Cannot change** after creation. |
-| `active_result` | This source's entry in the build being served: `outcome` `included` or `skipped` with `error_code` `planner.rental_source_not_published`, `planner.rental_source_without_gbfs`, `planner.rental_source_requires_auth` or `planner.rt_url_blocked`. |
+| `active_result` | This source's entry in the build being served: `outcome` `included` or `skipped` with `error_code` `planner.rental_source_not_published`, `planner.rental_source_without_gbfs`, `planner.rental_source_requires_auth`, `planner.rt_url_blocked` or `planner.rt_url_unsupported`. |
 
 Field error codes: `planner.feed_not_gbfs`, `planner.feed_not_published`, `planner.rental_source_without_gbfs`, `planner.rental_source_requires_auth` (on `submission`); `planner.invalid_network`, `planner.network_immutable`, `unique` (on `network`). Changes take effect at the next build. Sources that need credentials cannot be used: OTP follows the provider's links inside `gbfs.json` itself.
 
@@ -187,7 +187,7 @@ POST /api/planner/admin/builds/{id}/activate/
 | `indexed_at` | When stop and line search was refreshed from this build's graph; `null` until then (retried every 5 minutes while the build is active). |
 | `feed_results[].outcome` | `fresh`, `stale`, `excluded` (see [journey planner](../domain/journey-planner.md#build-outcomes-per-feed)) |
 | `feed_results[].error_code` | `planner.feed_not_published`, `planner.feed_source_unavailable`, `planner.feed_invalid`, `planner.feed_no_service_in_period` |
-| `feed_results[].realtime_skipped` | `[{feed_id, endpoint_type, error_code: "planner.rt_url_blocked"}]` |
+| `feed_results[].realtime_skipped` | `[{feed_id, endpoint_type, error_code}]`, `error_code` `planner.rt_url_blocked` (private address) or `planner.rt_url_unsupported` (the URL contains `${`) |
 | `feed_results[].realtime_polled` | OTP updaters configured for the feed: `stop-time-updater`, `vehicle-positions`, `real-time-alerts` (empty for a `stale` feed). |
 | `error_code` (build) | `planner.no_feeds`, `planner.osm_missing`, `planner.osm_preparation_failed`, `planner.street_build_failed`, `planner.graph_build_failed`, `planner.build_out_of_memory`, `planner.graph_missing`, `planner.activation_failed`, `planner.docker_unavailable`, `planner.build_interrupted`, `planner.build_failed` |
 

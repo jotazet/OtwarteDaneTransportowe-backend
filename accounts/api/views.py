@@ -18,7 +18,7 @@ from accounts.services import (
     set_password_and_end_sessions,
     would_remove_last_admin,
 )
-from OtwarteDaneTransportowe.auth_roles import RequiresAdminGroup
+from OtwarteDaneTransportowe.auth_roles import CanManageUserAccount, RequiresAdminGroup
 from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairSerializer
 
 User = get_user_model()
@@ -26,14 +26,14 @@ User = get_user_model()
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.prefetch_related('groups').order_by('username')
-    permission_classes = [IsAuthenticated, RequiresAdminGroup]
+    permission_classes = [IsAuthenticated, RequiresAdminGroup, CanManageUserAccount]
     # Unthrottled by default; declared so that @action can set a scope.
     throttle_scope = None
 
     def get_permissions(self):
         if self.action in ('me', 'change_email', 'change_password'):
             return [IsAuthenticated()]
-        return [IsAuthenticated(), RequiresAdminGroup()]
+        return super().get_permissions()
 
     def get_serializer_class(self):
         if self.action == 'create':

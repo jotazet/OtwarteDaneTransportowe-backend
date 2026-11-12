@@ -266,3 +266,92 @@ def test_can_deactivate_admin_when_another_remains(api_client, admin_user, admin
         format='json',
     )
     assert response.status_code == 200
+
+
+# Accounts with Django-level flags are managed only by superusers
+# (OtwarteDaneTransportowe.auth_roles.can_manage_user_account).
+
+PROTECTED_FLAGS = [
+    pytest.param({'is_superuser': True}, id='superuser'),
+    pytest.param({'is_staff': True}, id='staff'),
+]
+
+# (method, path suffix, body)
+MANAGE_ACTIONS = [
+    pytest.param('post', 'reset-password/', None, id='reset-password'),
+    pytest.param('patch', '', {'first_name': 'Changed'}, id='patch-profile'),
+    pytest.param('put', '', {'first_name': 'Changed'}, id='put-profile'),
+    pytest.param('patch', '', {'roles': [ROLE_DATA_PROVIDER]}, id='patch-roles'),
+    pytest.param('patch', '', {'is_active': False}, id='deactivate'),
+    pytest.param('delete', '', None, id='delete'),
+]
+
+
+def _manage(api_client, method, target, suffix, body):
+    return getattr(api_client, method)(f'/api/users/{target.pk}/{suffix}', body, format='json')
+
+
+def _success_status(method):
+    return 204 if method == 'delete' else 200
+
+
+@pytest.fixture
+def superuser_admin(admin_group):
+    user = User.objects.create_user('root_admin', 'root@example.com', 'rootpass', is_superuser=True)
+    user.groups.add(admin_group)
+    return user
+
+
+@pytest.mark.parametrize('flags', PROTECTED_FLAGS)
+@pytest.mark.parametrize('method, suffix, body', MANAGE_ACTIONS)
+def test_admin_cannot_manage_protected_account(
+    api_client, admin_user, admin_group, flags, method, suffix, body
+):
+    target = User.objects.create_user('protected', 'p@example.com', 'protectedpass', **flags)
+    target.groups.add(admin_group)
+    api_client.force_authenticate(user=admin_user)
+
+    response = _manage(api_client, method, target, suffix, body)
+
+    assert response.status_code == 403
+    assert response.json() == {'code': 'users.protected_account', 'details': {}}
+    target.refresh_from_db()
+    assert target.check_password('protectedpass')
+    assert target.first_name == ''
+    assert target.is_active
+    assert list(target.groups.values_list('name', flat=True)) == [ROLE_ADMIN]
+
+
+@pytest.mark.parametrize('flags', PROTECTED_FLAGS)
+@pytest.mark.parametrize('method, suffix, body', MANAGE_ACTIONS)
+def test_superuser_admin_can_manage_protected_account(
+    api_client, superuser_admin, admin_user, flags, method, suffix, body
+):
+    # admin_user stays the remaining Admin, so the last-admin guard never trips.
+    target = User.objects.create_user('protected', 'p@example.com', 'protectedpass', **flags)
+    api_client.force_authenticate(user=superuser_admin)
+
+    response = _manage(api_client, method, target, suffix, body)
+
+    assert response.status_code == _success_status(method), response.data
+
+
+@pytest.mark.parametrize('method, suffix, body', MANAGE_ACTIONS)
+def test_admin_can_manage_regular_account(
+    api_client, admin_user, regular_user, method, suffix, body
+):
+    api_client.force_authenticate(user=admin_user)
+
+    response = _manage(api_client, method, regular_user, suffix, body)
+
+    assert response.status_code == _success_status(method), response.data
+
+
+def test_admin_can_read_protected_account_flags(api_client, admin_user, superuser_admin):
+    api_client.force_authenticate(user=admin_user)
+
+    response = api_client.get(f'/api/users/{superuser_admin.pk}/')
+
+    assert response.status_code == 200
+    assert response.data['is_superuser'] is True
+    assert response.data['is_staff'] is False
