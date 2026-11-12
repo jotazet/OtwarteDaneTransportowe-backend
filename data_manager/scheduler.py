@@ -79,7 +79,7 @@ def _completed_realtime_submission_ids() -> list[int]:
 def _delete_stale_cache_file(field_file, old_name: str | None) -> None:
     """Remove the previous cache file when a fetch stored it under a new name.
 
-    Same-name refreshes are rewritten in place by OverwriteStorage and must
+    Same-name refreshes are replaced atomically by OverwriteStorage and must
     not be deleted here.
     """
     if old_name and old_name != field_file.name and field_file.storage.exists(old_name):
@@ -133,10 +133,22 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
             old_cached_name = entry.cached_file.name if entry.cached_file else None
             entry.cached_file.save(filename, File(body), save=False)
 
-        StaticFeedEntry.objects.filter(pk=entry.pk).update(
-            cached_file=entry.cached_file.name,
-            cached_at=now,
-        )
+        # Only while the entry still proxies the URL just downloaded: a source
+        # change during the download drops the cache, and this copy of the
+        # old URL must not come back.
+        updated = StaticFeedEntry.objects.filter(
+            pk=entry.pk, url=entry.url, hide_original=True
+        ).update(cached_file=entry.cached_file.name, cached_at=now)
+        if not updated:
+            current = (
+                StaticFeedEntry.objects.filter(pk=entry.pk)
+                .values_list('cached_file', flat=True)
+                .first()
+            )
+            if current != entry.cached_file.name:
+                entry.cached_file.storage.delete(entry.cached_file.name)
+            logger.info('Discarded fetch of static entry=%d: source changed', entry.pk)
+            return FETCH_PERMANENT
         _delete_stale_cache_file(entry.cached_file, old_cached_name)
         entry.mark_fetch_success(now)
         logger.info('Refreshed static entry=%d  url=%s', entry.pk, entry.url)

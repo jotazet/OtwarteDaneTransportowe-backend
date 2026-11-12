@@ -24,7 +24,13 @@ from data_manager.models import (
     RealtimeSubmissionHistory,
     StaticFeedEntry,
 )
-from data_manager.scheduler import FETCH_OK, _fetch_static_entry
+from data_manager.scheduler import (
+    FETCH_OK,
+    FETCH_TRANSIENT,
+    _fetch_realtime_endpoint_rt,
+    _fetch_static_entry,
+)
+from data_manager.tests.test_flow import fake_download
 
 pytestmark = pytest.mark.django_db
 
@@ -186,12 +192,111 @@ def test_static_dispatch_skips_paused_and_future_delayed_entries(monkeypatch, or
 
     calls = []
     monkeypatch.setattr(
-        tasks.fetch_static_entry_task, 'delay', lambda entry_id: calls.append(entry_id)
+        tasks.fetch_static_entry_task, 'delay', lambda entry_id, **kwargs: calls.append(entry_id)
     )
 
     result = tasks.refresh_static_feeds_task()
     assert result['dispatched'] == 1
     assert calls == [due.id]
+
+
+def _mock_static_download(monkeypatch, fail=False):
+    """Count downloads; succeed with a minimal ZIP body or time out."""
+    downloads = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+    @contextmanager
+    def _download(url, **kwargs):
+        downloads.append(url)
+        if fail:
+            raise requests.exceptions.Timeout('timeout')
+        yield Response(), io.BytesIO(b'PK\x03\x04feed-bytes')
+
+    monkeypatch.setattr('data_manager.scheduler.safe_download', _download)
+    monkeypatch.setattr('data_manager.tasks.validate_gtfs_feed_task.delay', lambda *a, **kw: None)
+    return downloads
+
+
+def _dispatch_ticks(monkeypatch, ticks):
+    """Run the dispatcher `ticks` times; return the queued (args, kwargs)."""
+    queued = []
+    monkeypatch.setattr(
+        tasks.fetch_static_entry_task,
+        'delay',
+        lambda *args, **kwargs: queued.append((args, kwargs)),
+    )
+    for _ in range(ticks):
+        tasks.refresh_static_feeds_task()
+    return queued
+
+
+def _run_queued(queued):
+    return [tasks.fetch_static_entry_task(*args, **kwargs)['status'] for args, kwargs in queued]
+
+
+def test_static_dispatch_ticks_before_first_fetch_download_once(monkeypatch, org, provider_user):
+    _published_static_entry(org, provider_user)
+    downloads = _mock_static_download(monkeypatch)
+
+    # The feeds worker is busy: three ticks queue copies before any of them runs.
+    queued = _dispatch_ticks(monkeypatch, 3)
+    assert len(queued) == 3
+
+    assert _run_queued(queued) == [FETCH_OK, 'already_fetched', 'already_fetched']
+    assert len(downloads) == 1
+    # Once the fetch succeeded the window stops dispatching it.
+    assert _dispatch_ticks(monkeypatch, 1) == []
+
+
+def test_static_retry_dispatch_ticks_download_once(monkeypatch, org, provider_user):
+    entry = _published_static_entry(org, provider_user)
+    entry.fetch_status = FETCH_STATUS_DELAYED
+    entry.next_fetch_after = timezone.now() - timedelta(minutes=1)
+    entry.save(update_fields=['fetch_status', 'next_fetch_after'])
+    downloads = _mock_static_download(monkeypatch)
+
+    queued = _dispatch_ticks(monkeypatch, 2)
+    assert len(queued) == 2
+
+    assert _run_queued(queued) == [FETCH_OK, 'already_fetched']
+    assert len(downloads) == 1
+
+
+def test_static_failed_fetch_is_retried_in_a_later_window(monkeypatch, org, provider_user):
+    entry = _published_static_entry(org, provider_user)
+    entry.last_fetch_success_at = timezone.now() - timedelta(days=1)
+    entry.save(update_fields=['last_fetch_success_at'])
+    downloads = _mock_static_download(monkeypatch, fail=True)
+
+    queued = _dispatch_ticks(monkeypatch, 2)
+    # The first copy fails and schedules a retry; the second waits for it.
+    assert _run_queued(queued) == [FETCH_TRANSIENT, 'deferred']
+    assert len(downloads) == 1
+
+    entry.refresh_from_db()
+    assert entry.fetch_status == FETCH_STATUS_DELAYED
+    entry.next_fetch_after = timezone.now() - timedelta(seconds=1)
+    entry.save(update_fields=['next_fetch_after'])
+    downloads = _mock_static_download(monkeypatch)
+
+    queued = _dispatch_ticks(monkeypatch, 1)
+    assert _run_queued(queued) == [FETCH_OK]
+    assert len(downloads) == 1
+    entry.refresh_from_db()
+    assert entry.fetch_status == FETCH_STATUS_ACTIVE
+
+
+def test_direct_static_fetch_ignores_recent_success(monkeypatch, org, provider_user):
+    # A changed URL queues the task without the dispatcher's cutoff.
+    entry = _published_static_entry(org, provider_user)
+    entry.mark_fetch_success()
+    downloads = _mock_static_download(monkeypatch)
+
+    assert tasks.fetch_static_entry_task(entry.id)['status'] == FETCH_OK
+    assert len(downloads) == 1
 
 
 def test_fetch_error_api_and_manual_static_pause_resume(
@@ -529,3 +634,138 @@ def test_proxy_feeds_list_combines_static_and_realtime(api_client, org, provider
 
     filtered = api_client.get('/api/data_manager/proxy-feeds/')
     assert filtered.data['count'] == 2
+
+
+# Content-Length promises 1000 bytes; the server sends 10 and hangs up.
+TRUNCATED = (1000, [b'PK\x03\x04part'])
+
+
+def test_truncated_static_body_is_a_transient_connection_error(local_server, org, provider_user):
+    entry = _published_static_entry(org, provider_user, url=local_server(*TRUNCATED))
+
+    assert _fetch_static_entry(entry) == FETCH_TRANSIENT
+    error = FeedFetchError.objects.get(static_entry=entry)
+    assert error.error_type == FeedFetchError.ERROR_CONNECTION
+
+
+def test_truncated_realtime_body_is_a_transient_connection_error(local_server, org, provider_user):
+    endpoint = _published_realtime_endpoint(org, provider_user)
+    endpoint.url = local_server(*TRUNCATED)
+    endpoint.save(update_fields=['url'])
+
+    assert _fetch_realtime_endpoint_rt(endpoint, timezone.now()) == FETCH_TRANSIENT
+    error = FeedFetchError.objects.get(endpoint_rt=endpoint)
+    assert error.error_type == FeedFetchError.ERROR_CONNECTION
+
+
+def _download_pausing(model, pk, body=b'', exc=None):
+    """safe_download stand-in: a Helper pauses the feed while it is in flight."""
+
+    @contextmanager
+    def _download(*args, **kwargs):
+        model.objects.get(pk=pk).pause_fetch('maintenance')
+        if exc is not None:
+            raise exc
+        with fake_download(body)() as result:
+            yield result
+
+    return _download
+
+
+@pytest.mark.parametrize('fails', [False, True], ids=['success', 'failure'])
+def test_static_pause_during_fetch_survives_its_outcome(monkeypatch, org, provider_user, fails):
+    entry = _published_static_entry(org, provider_user)
+    monkeypatch.setattr(
+        'data_manager.scheduler.safe_download',
+        _download_pausing(
+            StaticFeedEntry,
+            entry.pk,
+            body=b'PK\x03\x04feed-bytes',
+            exc=requests.exceptions.Timeout('timeout') if fails else None,
+        ),
+    )
+    monkeypatch.setattr('data_manager.tasks.validate_gtfs_feed_task.delay', lambda *a, **k: None)
+
+    result = tasks.fetch_static_entry_task(entry.pk)
+
+    entry.refresh_from_db()
+    assert result['fetch_status'] == FETCH_STATUS_MANUAL_PAUSED
+    assert entry.fetch_status == FETCH_STATUS_MANUAL_PAUSED
+    assert entry.fetch_pause_reason == 'maintenance'
+    assert entry.fetch_failure_count == 0
+    assert entry.next_fetch_after is None
+    # The outcome itself is still recorded.
+    if fails:
+        assert entry.last_fetch_error_at is not None
+        assert entry.last_fetch_success_at is None
+    else:
+        assert entry.last_fetch_success_at is not None
+        assert entry.last_fetch_error_at is None
+
+
+@pytest.mark.parametrize('fails', [False, True], ids=['success', 'failure'])
+def test_realtime_pause_during_fetch_survives_and_stops_loop(
+    monkeypatch, org, provider_user, fails
+):
+    endpoint = _published_realtime_endpoint(org, provider_user)
+    monkeypatch.setattr(
+        'data_manager.scheduler.safe_download',
+        _download_pausing(
+            RealtimeEndpointRT,
+            endpoint.pk,
+            body=b'{}',
+            exc=requests.exceptions.ConnectionError('down') if fails else None,
+        ),
+    )
+    monkeypatch.setattr(
+        'data_manager.scheduler.validate_realtime_feed_stream', lambda *a, **k: set()
+    )
+    rescheduled = []
+    monkeypatch.setattr(
+        tasks.fetch_realtime_endpoint_task,
+        'apply_async',
+        lambda *a, **k: rescheduled.append(k),
+    )
+
+    result = tasks.fetch_realtime_endpoint_task(endpoint.pk)
+
+    endpoint.refresh_from_db()
+    assert result['fetch_status'] == FETCH_STATUS_MANUAL_PAUSED
+    assert endpoint.fetch_status == FETCH_STATUS_MANUAL_PAUSED
+    assert endpoint.fetch_failure_count == 0
+    assert rescheduled == []
+    if fails:
+        assert endpoint.last_fetch_error_at is not None
+    else:
+        assert endpoint.last_fetch_success_at is not None
+
+
+def test_proxy_feeds_pages_list_every_feed_once_with_polish_names(
+    api_client, org, provider_user, helper_user
+):
+    # Polish letters and mixed case sort differently under the database's
+    # linguistic collation and Python's code-point order; paging must still
+    # return each feed exactly once, in the order of the single-page list.
+    expected = set()
+    for region in ['śląskie', 'łódzkie', 'lubelskie', 'Mazowieckie', 'mazowieckie', 'zachodnie']:
+        region_org = TransportOrganization.objects.create(
+            region=region, transport_organization=f'Ździebło {region}'
+        )
+        static_entry = _published_static_entry(region_org, provider_user)
+        rt_endpoint = _published_realtime_endpoint(region_org, provider_user)
+        expected |= {('static', static_entry.id), ('realtime', rt_endpoint.id)}
+
+    api_client.force_authenticate(user=helper_user)
+    url = '/api/data_manager/proxy-feeds/?page_size=2'
+    paged = []
+    while url:
+        response = api_client.get(url)
+        assert response.status_code == 200
+        assert response.data['count'] == len(expected)
+        paged.extend((row['source'], row['id']) for row in response.data['results'])
+        url = response.data['next']
+
+    single_page = api_client.get('/api/data_manager/proxy-feeds/?page_size=100')
+    assert len(paged) == len(set(paged))
+    assert set(paged) == expected
+    assert paged == [(row['source'], row['id']) for row in single_page.data['results']]

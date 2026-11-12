@@ -45,8 +45,8 @@ define the following services:
 | Service | Role | Port (host) |
 | --- | --- | --- |
 | `web` | Django (gunicorn in prod) | `127.0.0.1:8000` |
-| `postgres` | Database | `127.0.0.1:5420` (local only) |
-| `redis` | Celery broker + cache | `127.0.0.1:6379` (local only) |
+| `postgres` | Database | none in production; `127.0.0.1:5420` in development |
+| `redis` | Celery broker + cache | none in production; `127.0.0.1:6379` in development |
 | `celery_worker` | `default` queue | — |
 | `celery_validator_worker` | `feeds` queue + GTFS validator (via socket-proxy) | — |
 | `docker-socket-proxy` | Least-privilege access to the host's Docker API | — |
@@ -74,8 +74,9 @@ flowchart LR
 
 - A Linux VPS (e.g. Debian/Ubuntu) with a public IP and a domain pointing to this server.
 - Docker Engine + the `docker compose` plugin (v2).
-- Ports `80` and `443` open (for the reverse proxy). The database/redis/web ports should
-  **not** be exposed publicly (in compose they are bound to `127.0.0.1`).
+- Ports `80` and `443` open (for the reverse proxy). The web port is bound to `127.0.0.1`;
+  the production overlay publishes no port for the database and Redis
+  ([section 6](#6-postgresql)).
 - The host's Docker socket is mounted only by the `docker-socket-proxy` service (the GTFS
   validator uses it via `DOCKER_HOST`; nothing needs to be configured).
 
@@ -105,6 +106,9 @@ python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().
 
 # POSTGRES_PASSWORD (strong database password)
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# REDIS_PASSWORD (letters, digits, - and _ only: it goes into redis:// URLs)
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 > Note: `FEED_AUTH_ENCRYPTION_KEY` encrypts feed API keys/tokens "at rest".
@@ -117,8 +121,10 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ## 5. The `.env` file — full configuration
 
 > Once releases deploy automatically ([section 20](#20-releases-automatic-deployment-from-github)),
-> the server's `.env` is **generated** from the GitHub environment `production` on every
-> release: set the variables below there, not in the file. A hand edit lasts until the next release.
+> the server's `.env` is **generated** on every release from the GitHub environment
+> `production` (application settings and secrets) and the server's host file
+> `/etc/odt/backend-host.env` (everything else): set the variables below there, not in the
+> file. A hand edit lasts until the next release.
 
 Copy the template and fill in real values:
 
@@ -144,13 +150,12 @@ DJANGO_ALLOWED_HOSTS=api.example.org
 POSTGRES_DB=otwarte_dane_transportowe
 POSTGRES_USER=odt
 POSTGRES_PASSWORD=<wklej-silne-haslo-bazy>
-# Port exposed on the host (127.0.0.1 only). Can be omitted in prod.
-POSTGRES_HOST_PORT=5420
+# POSTGRES_HOST_PORT / REDIS_HOST_PORT are for development: the production overlay
+# publishes no port for postgres or redis.
 
 # ───────────────────────── Redis (broker + cache) ─────────────────────────
-REDIS_HOST_PORT=6379
-# Shared cache (realtime lock + throttling). Do NOT change the host name:
-REDIS_CACHE_URL=redis://redis:6379/2
+# Compose builds the broker, result and cache URLs from it (see the table below).
+REDIS_PASSWORD=<wklej-haslo-redis>
 
 # ───────────────────────── CORS / CSRF ─────────────────────────
 # Frontend origins (scheme + host, no path), comma-separated:
@@ -210,7 +215,8 @@ CELERY_FEEDS_CONCURRENCY=1
 # MAX_IMAGE_FILE_SIZE_BYTES=10485760       # 10 MB
 # DATA_UPLOAD_MAX_MEMORY_SIZE=10485760
 # FILE_UPLOAD_MAX_MEMORY_SIZE=5242880
-# THROTTLE_LOGIN=10/min
+# THROTTLE_LOGIN=10/min                   # token + refresh + admin login POSTs, one budget per client IP
+# THROTTLE_ACCOUNT_CHANGE=5/min      # me/change-password, me/change-email; per user
 # THROTTLE_FEED_DOWNLOAD=120/min
 # THROTTLE_REACTION=30/min
 # JWT_ACCESS_MINUTES=15
@@ -239,15 +245,16 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `CORS_ALLOWED_ORIGINS` | Frontend browser origins (whitelist). |
 | `CSRF_TRUSTED_ORIGINS` | Required for POST behind a TLS proxy. |
 | `FEED_AUTH_ENCRYPTION_KEY` | At-rest encryption of feed credentials. |
-| `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). |
+| `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). Set by `docker-compose.yml` (database `2`), which overrides `.env`. |
+| `REDIS_PASSWORD` | Password of the Redis server; `docker-compose.yml` builds the broker, result backend and cache URLs from it (`redis://:${REDIS_PASSWORD}@redis:6379/<db>`). Required in production: the Docker bridge network is reachable from the host, so an unpublished Redis without a password is still open to local processes. Letters, digits, `-` and `_` only, because it goes into the URLs unencoded (`envfile.py` refuses anything else). Empty in development (no authentication). |
 | `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks, and the client IP is its rightmost address that is not inside them (entries to the left are whatever the client sent). List **every** proxy hop, including a CDN in front of nginx, or its address becomes the client IP of everyone behind it; keep the networks as narrow as possible, because any address inside them is treated as a proxy. DRF throttling (`THROTTLE_*`) counts requests per this client IP too. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit, and all visitors share one login, feed download and planner limit. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
 | `ALLOW_UNTRUSTED_PROXY_IPS` | Default `False`. Set to `True` only when the app is served directly to clients without a reverse proxy: it disables the startup check for an empty `TRUSTED_PROXY_CIDRS`, and the client IP is then taken from the socket address (`REMOTE_ADDR`). |
 | `PUBLIC_BASE_URL` | Currently unused (defined in settings, not read by any code). |
 | `UID` / `GID` | User the application containers run as, and the user of the GTFS validator container, so it can write its report into `uploaded_data/`. Default `1000`. |
 | `HOST_PROJECT_PATH` / `HOST_MEDIA_ROOT` | Host paths of the project and of `uploaded_data/`. The validator is started by the host's Docker daemon, so its bind mounts need host paths. Compose passes `${PWD}` and `${PWD}/uploaded_data` when unset; outside compose `HOST_MEDIA_ROOT` defaults to `HOST_PROJECT_PATH/uploaded_data`. |
 | `GTFS_VALIDATOR_MEM_LIMIT`, `GTFS_VALIDATOR_PIDS_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS` | Resource limits of the validator container. Defaults `2g`, `512` and no CPU cap (`1000000000` = one core). |
-| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis databases of the Celery broker and result backend. `docker-compose.yml` sets them to `redis://redis:6379/0` and `/1`, which overrides `.env`; the defaults (`redis://localhost:6379/0`, `/1`) are for running outside Docker. |
-| `POSTGRES_HOST` / `POSTGRES_PORT` | Database address. `docker-compose.yml` sets `postgres` and `5432`; the defaults `127.0.0.1` and `5420` (the port published on the host) are for running on the host. |
+| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis databases of the Celery broker and result backend. `docker-compose.yml` sets them (databases `0` and `1`), which overrides `.env`; the defaults (`redis://localhost:6379/0`, `/1`) are for running outside Docker. |
+| `POSTGRES_HOST` / `POSTGRES_PORT` | Database address. `docker-compose.yml` sets `postgres` and `5432`; the defaults `127.0.0.1` and `5420` (the port published on the host in development) are for running on the host. |
 | `DJANGO_MEDIA_ROOT` | Directory of uploaded and cached feed files and blog images inside the containers. Default `uploaded_data/` in the project directory; if you change it, `HOST_MEDIA_ROOT` must still point to the same directory on the host. |
 | `DJANGO_SECURE_REFERRER_POLICY` | `Referrer-Policy` header in `settings_prod`. Default `same-origin`. |
 | `DJANGO_SECURE_COOP` | `Cross-Origin-Opener-Policy` header in `settings_prod`. Default `same-origin`. |
@@ -260,9 +267,10 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 - On the Docker network the application connects via `POSTGRES_HOST=postgres:5432` (hard-coded
   in compose). The `POSTGRES_DB/USER/PASSWORD` variables are injected into both
   the database container and the application.
-- On the host the database is exposed only on `127.0.0.1:${POSTGRES_HOST_PORT:-5420}`
-  (not visible from the internet). In prod you can remove the port mapping entirely if you
-  do not need access from the host.
+- In development the database is published on `127.0.0.1:${POSTGRES_HOST_PORT:-5420}`
+  (for `uv run pytest` on the host). The production overlay publishes no port for it or for
+  Redis, because a `127.0.0.1` port is still open to every local user and process of a
+  shared host: use `./scripts/deploy.sh exec postgres psql ...` (or `pg_dump`) instead.
 - Data is kept in the `odt_pgdata` volume (it survives container restarts/recreation).
 
 ### Changing the password of an existing database
@@ -271,8 +279,9 @@ If you change `POSTGRES_PASSWORD` **after** the first startup, the environment v
 alone will not change the password in an already initialized volume. Run:
 
 ```bash
-docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -c "ALTER USER \"$POSTGRES_USER\" WITH PASSWORD 'NOWE_HASLO';"
+# Single quotes: the variables are expanded in the container, where .env sets them.
+./scripts/deploy.sh exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+# at the psql prompt: \password   (asks for the new password twice, keeps it out of the shell history)
 # then update .env and restart the application services
 ```
 
@@ -306,10 +315,13 @@ CORS is handled by `django-cors-headers`. Rules:
 ## 8. Docker API for the validator (docker-socket-proxy)
 
 The `celery_validator_worker` service runs the GTFS validator as a container through the
-`docker-socket-proxy` service (`tecnativa/docker-socket-proxy`). Only the proxy
-mounts `/var/run/docker.sock` (read-only); the worker connects via
+`docker-socket-proxy` service (`tecnativa/docker-socket-proxy`); `celery_planner_worker`
+also uses it ([section 19](#19-journey-planner-opentripplanner)). Only the proxy
+mounts `/var/run/docker.sock` (read-only); the workers connect via
 `DOCKER_HOST=tcp://docker-socket-proxy:2375`, and only the
-`CONTAINERS`/`IMAGES` (+`POST`) endpoints are allowed. Nothing needs to be configured on the host.
+`CONTAINERS`/`IMAGES` (+`POST`) endpoints are allowed. The proxy is only on the internal
+`docker-api` network, joined by these two workers alone; a service that needs the Docker
+API must join it explicitly. Nothing needs to be configured on the host.
 
 Both images are pinned: the proxy in `docker-compose.yml`, the validator through
 `GTFS_VALIDATOR_IMAGE` (default in `OtwarteDaneTransportowe/settings_base.py`). A new
@@ -384,7 +396,8 @@ docker compose ps
 > **Passwords and keys in `.env`:** the values are loaded via `env_file`, so they may
 > contain the `$` character without double escaping. Avoid writing secrets as
 > `${POSTGRES_PASSWORD}` in compose files — this caused warnings such as
-> `The "o" variable is not set`.
+> `The "o" variable is not set`. `REDIS_PASSWORD` is the exception: Compose interpolates
+> it into the Redis URLs, which is why it is limited to letters, digits, `-` and `_`.
 
 The startup order is enforced by dependencies: `init_uploads` → `postgres`/`redis`
 (healthcheck) → `migrate` → `web`/workers.
@@ -521,7 +534,8 @@ in compose (`WEB_HOST_BIND` / `WEB_HOST_PORT`) so that it is reachable by the pr
 
 ### Client IP: CDN and the frontend
 
-Anonymous clients are told apart by IP: DRF throttling of login and feed downloads, the blog reaction
+Anonymous clients are told apart by IP: DRF throttling of login (the token views and the
+Django admin login form) and feed downloads, the blog reaction
 limits and the journey planner's limits, bans and request log (section 19). Two hops can hide it ([ADR 0011](architecture/decisions/0011-client-ip-behind-cloudflare-and-ssr.md)):
 
 - **A CDN in front of Caddy (Cloudflare).** Caddy ignores an incoming `X-Forwarded-For`
@@ -574,7 +588,7 @@ docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB
 ## 14. Deployment verification
 
 ```bash
-# Service status and healthcheck
+# Service status and healthcheck: web, the workers and beat should be (healthy)
 docker compose ps
 
 # Application and worker logs
@@ -604,6 +618,9 @@ git fetch --tags && git checkout --detach vX.Y.Z
 cp -p .env ~/odt.env && sh scripts/deploy/release.sh vX.Y.Z ~/odt.env && rm ~/odt.env   # keeps the current .env
 ```
 
+That `.env` must hold `REDIS_PASSWORD`: only the GitHub deployment refuses to run without
+it, and Compose starts Redis without a password when it is empty.
+
 The application services run the code built into the image, not the checkout, so code
 changes always need a build (`release.sh` does it; `./scripts/deploy.sh up -d --build` works too).
 
@@ -617,26 +634,137 @@ release-specific steps.
 
 ## 16. Backups and restore
 
-### Database
+`scripts/deploy/backup.sh` backs up what cannot be recreated, and `odt-backup.timer` runs it
+every day at 00:15 Europe/Warsaw (before FeedsODT's night jobs and the default planner build;
+[ADR 0014](architecture/decisions/0014-daily-backups-with-a-configurable-off-host-copy.md)):
+
+| Backed up | Not backed up (recreatable) |
+| --- | --- |
+| The database (`pg_dump -Fc`, checked with `pg_restore --list`) | Planner graphs, the street graph and the OSM extract (rebuilt or downloaded again) |
+| `uploaded_data/`: submitted and cached feed files, validation reports, blog images | `uploaded_data/*/dynamic/`: the realtime proxy cache, refetched from the source |
+| `planner_data/snapshots/`: the last good version of each planner feed | Redis: the cache and the queue; Celery beat queues the periodic tasks again |
+
+Each run writes `~/backups/scheduled/<UTC time>/` (`db.dump`, `uploaded_data/`,
+`planner_data/snapshots/` and an empty `complete`, mode `700`) and keeps the newest 7. Files unchanged since the
+previous backup (compared by content) are hard links to it, so a day costs the dump plus the
+changed files (`du -sh ~/backups/scheduled` counts each file once). A failed or empty dump, a failed copy or
+a failed off-host upload stops the run with a non-zero exit and `backup: ... FAILED` in the
+journal; an unfinished run leaves nothing that looks like a backup, and off the host a backup
+without its `complete` file is unfinished. One run at a time; a run that hangs is stopped after
+6 hours. The files are copied a few
+minutes after the dump, so a submission saved in between may be in one and not the other.
+The release backups (`~/backups/release-*`, [section 20](#20-releases-automatic-deployment-from-github))
+are separate.
+
+**Not in the backups: `.env`.** GitHub cannot show a secret again, so keep
+`FEED_AUTH_ENCRYPTION_KEY` (without it stored feed credentials cannot be decrypted after a
+restore) and the other secrets in a password vault. The release backups hold a copy of `.env`
+(`~/backups/release-*/env`), on this disk only.
+
+### Settings
+
+`odt-backup.service` reads `/etc/odt/backup.env` (root-owned; it may be empty or missing).
+Values are `KEY=value` lines:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `BACKUP_DIR` | `~/backups/scheduled` | Absolute path of the local backups. |
+| `BACKUP_KEEP` | `7` | How many local backups to keep. |
+| `BACKUP_REMOTE` | unset | Where each new backup is copied off the host, as `$BACKUP_REMOTE/<UTC time>/` (so name a directory: `host:` alone would mean `host:/<UTC time>/`). Unset: the backup exists on this disk only, and the journal says so every day. |
+| `BACKUP_REMOTE_TOOL` | `rsync` | `rsync` (`BACKUP_REMOTE` is `host:path` over SSH, or a mounted path) or `rclone` (`BACKUP_REMOTE` is `remote:path`, for object storage). |
+
+**Off-host copy.** A backup on the same disk does not survive the loss of the server; the
+destination is not chosen yet. Only the new backup is copied, and nothing is ever deleted
+there: remove old backups on the destination (a bucket lifecycle rule, a cron job on the
+backup machine), and give this server only the access it needs to add files, so an intruder
+here cannot delete them.
+
+- **rsync over SSH** (a storage box or another machine): as `rocky`, create a key without a
+  passphrase (`ssh-keygen -t ed25519 -f ~/.ssh/odt-backup -N ''`) and authorize it on the
+  destination; add a `Host odt-backup` entry with `HostName`, `User` and
+  `IdentityFile ~/.ssh/odt-backup` to `~/.ssh/config`; connect once by hand to accept the host
+  key; create the target directory; set `BACKUP_REMOTE=odt-backup:<directory>`. Unchanged files
+  are hard links there too, when the destination supports them.
+- **rclone** (object storage): install rclone, run `rclone config` as `rocky`, then set
+  `BACKUP_REMOTE_TOOL=rclone` and `BACKUP_REMOTE=<remote>:<bucket>/odt`. Every backup is
+  uploaded in full.
+
+### Installing the timer (once)
+
+On the server, in the checkout. The script itself runs from the checkout, so it changes with
+each release; reinstall the two unit files when they change.
 
 ```bash
-# Backup
-docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
-  | gzip > backup_$(date +%F).sql.gz
-
-# Restore
-gunzip -c backup_YYYY-MM-DD.sql.gz \
-  | docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+sudo mkdir -p /etc/odt
+[ -e /etc/odt/backup.env ] || sudo install -o root -g root -m 600 /dev/null /etc/odt/backup.env
+sudoedit /etc/odt/backup.env               # the settings above; empty is fine
+sudo install -o root -g root -m 644 scripts/deploy/odt-backup.service scripts/deploy/odt-backup.timer \
+  /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start odt-backup.service    # a first backup now
+journalctl -u odt-backup.service -n 20     # backup: ... complete
+sudo systemctl enable --now odt-backup.timer
+systemctl list-timers odt-backup.timer
 ```
 
-### Files (uploaded_data)
+The units name the user `rocky` and the checkout `/home/rocky/OtwarteDaneTransportowe-backend`;
+change both in `odt-backup.service` on another host. No alert is sent when a run fails: check
+`systemctl --failed` and `journalctl -u odt-backup.service`.
+
+### Backing up by hand
+
+`sudo systemctl start odt-backup.service` takes a backup with the settings above. A database
+dump alone:
 
 ```bash
-tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
+# Single quotes: the variables are expanded in the container, where .env sets them.
+./scripts/deploy.sh exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > db.dump
+./scripts/deploy.sh exec -T postgres pg_restore --list < db.dump > /dev/null && echo readable
 ```
 
-> Also secure `.env` (secrets) and the **`FEED_AUTH_ENCRYPTION_KEY` key** — without
-> it you will not be able to decrypt stored feed credentials after restoring the database.
+`.sql.gz` dumps made with the command documented here before 2026-11-12 are empty.
+
+### Restoring
+
+From the off-host copy, first fetch the newest backup that has its `complete` file into
+`~/backups/scheduled/` (`rsync -a
+odt-backup:<directory>/<time>/ ~/backups/scheduled/<time>/`, or `rclone copy
+<remote>:<bucket>/odt/<time> ~/backups/scheduled/<time>`). Then, in the checkout:
+
+```bash
+b=~/backups/scheduled/<time>
+# On a new server, start only the database first: ./scripts/deploy.sh up -d postgres
+./scripts/deploy.sh stop web celery_worker celery_beat celery_validator_worker celery_planner_worker
+./scripts/deploy.sh exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' \
+  < "$b/db.dump"
+rsync -a "$b/uploaded_data/" uploaded_data/
+rsync -a "$b/planner_data/snapshots/" planner_data/snapshots/
+./scripts/deploy.sh up -d
+```
+
+`.env` must hold the same `FEED_AUTH_ENCRYPTION_KEY` as when the backup was taken. Data
+written after the backup is lost. The planner rebuilds its graph at the next build.
+
+### Testing a restore
+
+Restore the newest backup into a scratch database next to the real one (the application keeps
+running; it needs free disk for one more copy of the database), at least after installing the
+timer, after changing its settings and every few months. Do it once from the off-host copy too.
+
+```bash
+b="$(ls -d ~/backups/scheduled/2* | tail -n 1)"
+./scripts/deploy.sh exec -T postgres sh -c 'createdb -U "$POSTGRES_USER" odt_restore_test'
+./scripts/deploy.sh exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d odt_restore_test --exit-on-error' \
+  < "$b/db.dump"
+./scripts/deploy.sh exec -T postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d odt_restore_test -c "SELECT count(*), max(updated_at) FROM data_manager_feedsubmission"'
+./scripts/deploy.sh exec -T postgres sh -c 'dropdb -U "$POSTGRES_USER" odt_restore_test'
+# The files: only what changed since the backup should differ.
+diff -rq --exclude=dynamic uploaded_data "$b/uploaded_data" | head
+diff -rq planner_data/snapshots "$b/planner_data/snapshots"
+```
+
+The count and the newest `updated_at` should match the backup's time.
 
 ---
 
@@ -651,13 +779,15 @@ tar czf uploaded_data_$(date +%F).tar.gz uploaded_data/
 - [ ] Reverse proxy forwards `X-Forwarded-Proto: https`
 - [ ] `TRUSTED_PROXY_CIDRS` set to the reverse proxy's addresses (production refuses to start without it)
 - [ ] Behind a CDN: Caddy trusts its ranges and sends `X-Forwarded-For {client_ip}` ([section 13](#client-ip-cdn-and-the-frontend))
-- [ ] `postgres`/`redis`/`web` ports not exposed publicly (`127.0.0.1` only)
+- [ ] `web` bound to `127.0.0.1` only; no host port for `postgres` and `redis`
+      (`./scripts/deploy.sh config` shows none)
+- [ ] `REDIS_PASSWORD` set
 - [ ] `docker-socket-proxy` running; rootless Docker / a separate validator microservice considered
 - [ ] `.env` with `600` permissions, outside the git repository
 - [ ] `python manage.py check --deploy` without `security.W*` warnings
 - [ ] `/static/` files accessible (200) locally and through the proxy (see
       [section 12](#12-static-files-static))
-- [ ] Backup of the database and `uploaded_data/` configured
+- [ ] `odt-backup.timer` enabled, `BACKUP_REMOTE` set and a restore tested ([section 16](#16-backups-and-restore))
 
 ---
 
@@ -678,6 +808,14 @@ directly to clients without a proxy, set `ALLOW_UNTRUSTED_PROXY_IPS=True` instea
 → Make sure you are using `./scripts/deploy.sh` (prod overlay). In older
 versions the cause was `SECURE_SSL_REDIRECT=True` (the healthcheck goes over HTTP) —
 it now defaults to `False` in `settings_prod`.
+
+**A Celery worker or `celery_beat` is `unhealthy`**
+→ A worker is healthy while it answers `celery inspect ping` over Redis (checked every
+2 minutes, unhealthy after 3 checks without a reply), also during a long task such as a
+graph build: look at its logs and at Redis. `celery_beat` is healthy while its scheduler
+finishes a tick at least once a minute (`/tmp/celery-beat-heartbeat`); a beat that waits on
+the database stops ticking. Docker does not restart an unhealthy container: restart it with
+`./scripts/deploy.sh restart <service>` once the cause is fixed.
 
 **`Control server error: Permission denied: '/.gunicorn'`**
 → Fixed in the image (`HOME=/app`, `--no-control-socket`). Rebuild the image:
@@ -703,7 +841,7 @@ so rebuild it; in development the `migrate` service collects them at startup. If
 **GTFS validation does not work / "Cannot connect to Docker"**
 → Check that the `docker-socket-proxy` service is running (`docker compose ps`,
 `docker compose logs docker-socket-proxy`) and that `celery_validator_worker`
-has `DOCKER_HOST=tcp://docker-socket-proxy:2375`.
+has `DOCKER_HOST=tcp://docker-socket-proxy:2375` and is on the `docker-api` network.
 
 **Files in `uploaded_data/` are owned by root / cannot write**
 → Set `UID`/`GID` in `.env` and reload (the `init_uploads` service will run `chown`).
@@ -750,6 +888,11 @@ needed; only the proxy mounts the socket (read-only).
    docker compose exec web python manage.py retry_gtfs_validation
    docker compose exec web python manage.py retry_gtfs_validation --submission-id 64
    ```
+   Without `--submission-id` it re-queues GTFS entries at stage 2 or 3 whose `validation_status` is
+   `error` (validation could not run: the submission was not rejected) or `pending` (the task was lost
+   or the worker was killed). Named submissions are re-queued whatever their status. Stage 1 and
+   published (stage 4) submissions are skipped. The cause of an `error` is in the worker log
+   (`could not run: gtfs_validation.<code>: <details>`).
 
 This applies to GTFS feeds only (NeTEx/other are not validated automatically and stay at stage 2
 until a Helper/Admin sets the stage). After successful validation the stage moves to **3**; after GTFS
@@ -839,14 +982,14 @@ The first build also builds the street graph. Until then `otp` waits for a graph
 
 - **Status and logs.** Build status, per-feed outcomes and OTP's log excerpts are in `GET /api/planner/admin/builds/{id}/`; worker logs are in `./scripts/deploy.sh logs celery_planner_worker`.
 - **Failed builds.** A failed build leaves the previous graph serving. `POST /api/planner/admin/builds/{id}/activate/` serves an earlier graph again (only the served one and the newest other one are kept).
-- **Deploys.** Do not deploy during the build window: `up -d` would start `otp` next to the build. If a worker dies mid-build anyway, the watchdog marks the build `build_interrupted` within ~15 minutes and restarts the active graph.
+- **Deploys.** Do not deploy during the build window: `up -d` would start `otp` next to the build. If a worker dies mid-build anyway, the watchdog marks the build `build_interrupted` within ~15 minutes and restarts the active graph. A build that was only slow (heartbeat older than 15 minutes) and is still running stops itself at its next heartbeat.
 - **New OSM.** `POST /api/planner/admin/osm/ {"url": …}` (Geofabrik publishes Poland daily). The planner worker downloads it next to the current file (at most `PLANNER_OSM_MAX_BYTES`, default 4 GiB), checks it is a PBF extract with osmium, and only then swaps it in; the next build rebuilds the street graph. A failed download keeps the current file. Builds and downloads exclude each other (`409` while the other runs; a scheduled build during a download retries every 10 minutes for up to an hour). Replacing the file by hand still works: write it under a temporary name, then `mv`.
 - **New OTP version.**
   1. Change `PLANNER_OTP_IMAGE` in `.env`.
   2. Run `up -d` so the serving container uses the new image too.
   3. Build now: the next build re-tests every feed and rebuilds the street graph, and graphs built with the old image can no longer be activated.
 - **Search index.** After each build the planner worker copies operators, lines, stops and which trips share a block from OTP into Postgres (~3 s for Małopolska with 85k block trips; all of Poland has ~93k stops and ~1.3M trips). If that fails, search keeps the previous data and the watchdog queues `planner.refresh_index` every 5 minutes until it succeeds; `GraphBuild.indexed_at` shows when it last did. The migration creates the `pg_trgm` extension, which needs `CREATE` on the database (the default `postgres` user has it).
-- **Backups.** Back up `planner_data/snapshots/` (the last good version of each feed cannot be recreated). Graphs, the street graph and the OSM extract can be rebuilt or downloaded again.
+- **Backups.** The daily backup ([section 16](#16-backups-and-restore)) includes `planner_data/snapshots/` (the last good version of each feed cannot be recreated). Graphs, the street graph and the OSM extract can be rebuilt or downloaded again.
 
 ---
 
@@ -860,6 +1003,7 @@ flowchart LR
   rel["GitHub Release vX.Y.Z"] --> ci["CI on the tag: tests, image, scripts"]
   ci --> job["deploy job on the server's runner (environment production)"]
   job -->|"sudo: tag + .env"| od["odt-deploy"]
+  host["/etc/odt/backend-host.env (root)"] --> od
   od --> rs["scripts/deploy/release.sh of that tag"]
 ```
 
@@ -870,16 +1014,19 @@ flowchart LR
 2. It runs `/usr/local/sbin/odt-deploy` through sudo as the owner of the checkout, the only
    command `odt-runner` may run that way. `odt-deploy` refuses a tag that is not `vX.Y.Z`
    and a checkout with local changes, fetches the tag, refuses it unless it is on `main`,
-   checks it out and runs that tag's `release.sh`.
+   merges the `.env` from the job with the server's host file (below), checks the tag out
+   and runs that tag's `release.sh`.
 3. **`release.sh`**: stops while a planner graph build or feed test is running (a container
    labelled `odt.planner`), refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
-   `POSTGRES_PASSWORD`, tags the running image `odt-backend:previous`, builds
-   `odt-backend:latest` with `--pull` (nothing running changes yet), dumps the database with
-   the current `.env` and commit into `~/backups/release-<UTC time>-<tag>/` (keeps the newest
-   10), installs the new `.env`, runs `up -d` (the `migrate` service first, then every
-   service is recreated), waits up to 3 minutes for the API to answer, then removes replaced
-   `odt-backend` images and build cache older than 7 days (of every project on the host).
-   Any failure stops it and the job turns red.
+   `POSTGRES_PASSWORD`, builds `odt-backend:latest` with `--pull` (nothing running changes
+   yet), dumps the database with the current `.env` and commit into
+   `~/backups/release-<UTC time>-<tag>/` (keeps the newest 10), installs the new `.env`,
+   runs `up -d --wait` (the `migrate` service first, then every service is recreated) and
+   waits up to 15 minutes, migrations included, for every service to pass its healthcheck
+   ([section 18](#18-troubleshooting)); one that exits, keeps restarting or turns unhealthy
+   fails the release. Only then is the image tagged `odt-backend:<tag>` (the newest 3 are
+   kept, for a rollback), and replaced `odt-backend` images and build cache older than 7
+   days (of every project on the host) are removed. Any failure stops it and the job turns red.
 
 A release during a **planner graph build** stops before it changes anything (the build takes
 up to 8 GB of RAM and swap, and the release would restart its worker): re-run the job when the
@@ -907,21 +1054,25 @@ deployment in *Actions*; the job's log shows `odt-deploy: <old> -> <new>` and
 
 - **Deployment branches and tags:** *Selected branches and tags*, add the tag rule `v*`.
   Then no branch, pull request or other workflow gets its secrets.
-- **Environment variables:** every `.env` setting, under the names from `.env.example` and
-  [section 5](#5-the-env-file--full-configuration) (`DJANGO_SETTINGS_MODULE`,
-  `DJANGO_ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`,
-  `TRUSTED_PROXY_CIDRS`, `POSTGRES_DB`, `POSTGRES_USER`, `UID`, `GID`, `HOST_PROJECT_PATH`,
-  `HOST_MEDIA_ROOT`, `COMPOSE_PROFILES`, `PLANNER_*`, ...). Optionally `DEPLOY_APP_USER`, the
-  owner of the checkout that `odt-deploy` runs as (default `rocky`).
+- **Environment variables:** the application settings of `RELEASE_VARIABLES` in
+  `scripts/deploy/envfile.py`, under the names from `.env.example` and
+  [section 5](#5-the-env-file--full-configuration) (`DJANGO_ALLOWED_HOSTS`,
+  `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `CORS_URLS_REGEX`, `TRUSTED_PROXY_CIDRS`,
+  `POSTGRES_DB`, `POSTGRES_USER`, `PUBLIC_BASE_URL`, size limits, throttles, ...). Optionally
+  `DEPLOY_APP_USER`, the owner of the checkout that `odt-deploy` runs as (default `rocky`).
+  Every other setting goes in the [host file](#the-host-file).
 - **Environment secrets:** `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`,
-  `FEED_AUTH_ENCRYPTION_KEY` and `PLANNER_INTERNAL_TOKEN` (with the planner).
+  `FEED_AUTH_ENCRYPTION_KEY`, `REDIS_PASSWORD` and `PLANNER_INTERNAL_TOKEN` (with the
+  planner).
 
 Also under *Settings → Actions → General → Fork pull request workflows from outside
 collaborators*, choose **Require approval for all outside collaborators**: a pull request can
 change `ci.yml` and send a job to the server's runner, so read a fork's workflow changes
 before approving its run.
 
-Rules of `envfile.py`: every variable becomes a `.env` line except `DEPLOY_*`; the secrets
+Rules of `envfile.py`: every variable becomes a `.env` line except `DEPLOY_*`; the server
+refuses the release, before it changes anything, if a line is not one of `RELEASE_VARIABLES`
+or the secrets (`A release may not set ...`); the secrets
 above must not also be variables (the job stops); a value cannot contain a line break;
 `POSTGRES_DB`, `POSTGRES_USER`, `DJANGO_ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`,
 `CORS_ALLOWED_ORIGINS` and `TRUSTED_PROXY_CIDRS` are required, because without them the
@@ -929,7 +1080,74 @@ containers would take the development values from `.env.example` and still look 
 Repository-level and organization variables are part of the same `vars` context, so they
 land in `.env` too: keep production settings in the environment. A secret not listed in
 `envfile.py` and the workflow's `deploy` job does not reach the server: a new secret needs
-both changed.
+both changed. A new application setting that releases should set needs adding to
+`RELEASE_VARIABLES`; `odt-deploy` uses the list of `main`, so it applies once merged.
+
+### The host file
+
+`/etc/odt/backend-host.env` holds the settings that decide what and how containers run on
+the host, and wins over the job's `.env`: `DJANGO_SETTINGS_MODULE`, `UID` and `GID`
+(required), `HOST_*`, `*_IMAGE`, `COMPOSE_*`, the ports and every other value Compose
+interpolates into `docker-compose*.yml` (`*_HOST_PORT`, `WEB_HOST_BIND`, `GUNICORN_*`,
+`CELERY_*_CONCURRENCY`, `PLANNER_OTP_SERVE_*`), container resource limits
+(`GTFS_VALIDATOR_*_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS`, `PLANNER_OTP_*_HEAP`,
+`PLANNER_OTP_*_LIMIT`), paths and internal addresses (`DJANGO_MEDIA_ROOT`,
+`PLANNER_DATA_DIR`, `PLANNER_OSM_FILE`, `PLANNER_OTP_CONTAINER`, `PLANNER_OTP_URL`,
+`PLANNER_ODT_INTERNAL_URL`, `REDIS_CACHE_URL`). It may also pin an application setting. It
+holds no secret. `odt-deploy` refuses to run unless the file and `/etc/odt` are owned by root
+and writable by nobody else; the format is that of `.env`. Change it as root, then deploy.
+
+```bash
+sudo install -d -o root -g root -m 755 /etc/odt
+sudoedit /etc/odt/backend-host.env    # then:
+sudo chown root:root /etc/odt/backend-host.env && sudo chmod 644 /etc/odt/backend-host.env
+```
+
+For example:
+
+```dotenv
+DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
+UID=1000
+GID=1000
+HOST_PROJECT_PATH=/home/rocky/OtwarteDaneTransportowe-backend
+HOST_MEDIA_ROOT=/home/rocky/OtwarteDaneTransportowe-backend/uploaded_data
+COMPOSE_PROFILES=planner
+```
+
+#### Moving host settings out of GitHub (once)
+
+Releases from before this restriction took every setting from GitHub. Before the next
+release, on the server as `rocky`, from the checkout, in this order: the old `odt-deploy`
+passes the job's `.env` through unmerged, so deleting the variables before step 2 would
+deploy with the development settings of `.env.example`.
+
+1. Write the host file from the current `.env`, with the names that GitHub may no longer
+   set (as of 2026-11-12: `DJANGO_SETTINGS_MODULE`, `UID`, `GID`, `HOST_PROJECT_PATH`,
+   `HOST_MEDIA_ROOT`, `HOST_PLANNER_DATA_DIR`, `COMPOSE_PROFILES`, `POSTGRES_HOST_PORT`,
+   `REDIS_HOST_PORT`, `WEB_HOST_PORT`, `GUNICORN_WORKERS`, `CELERY_DEFAULT_CONCURRENCY`,
+   `CELERY_FEEDS_CONCURRENCY`, `PLANNER_OTP_BUILD_MEMSWAP_LIMIT`, `REDIS_CACHE_URL`), then
+   check it:
+
+   ```bash
+   sudo install -d -o root -g root -m 755 /etc/odt
+   grep -E '^(DJANGO_SETTINGS_MODULE|UID|GID|HOST_[A-Z_]+|COMPOSE_[A-Z_]+|[A-Z_]+_HOST_PORT|GUNICORN_[A-Z_]+|CELERY_[A-Z]+_CONCURRENCY|PLANNER_OTP_[A-Z_]+|REDIS_CACHE_URL)=' .env \
+     | sudo tee /etc/odt/backend-host.env > /dev/null
+   sudo chmod 644 /etc/odt/backend-host.env && cat /etc/odt/backend-host.env
+   ```
+
+2. Reinstall `odt-deploy` from `main` once this change is merged there:
+
+   ```bash
+   git fetch origin main && git show origin/main:scripts/deploy/odt-deploy > /tmp/odt-deploy
+   sudo install -o root -g root -m 755 /tmp/odt-deploy /usr/local/sbin/odt-deploy && rm /tmp/odt-deploy
+   ```
+
+3. Delete those variables from the GitHub environment `production`, and
+   `GTFS_REALTIME_VALIDATOR_HOST_PORT`, which nothing reads any more:
+   `gh variable delete --env production <NAME>` for each, then `gh variable list --env
+   production` shows only application settings.
+4. Release. The job fails with `A release may not set ...` if a variable was missed: move it,
+   then re-run the job.
 
 ### One-time server setup
 
@@ -943,6 +1161,10 @@ sudo useradd --system --create-home --home-dir /home/odt-runner --shell /sbin/no
 
 # The deploy command, owned by root; reinstall it whenever scripts/deploy/odt-deploy changes.
 sudo install -o root -g root -m 755 scripts/deploy/odt-deploy /usr/local/sbin/odt-deploy
+
+# The host settings, written by root (see "The host file" above).
+sudo install -d -o root -g root -m 755 /etc/odt
+sudoedit /etc/odt/backend-host.env && sudo chmod 644 /etc/odt/backend-host.env
 
 # odt-runner may run exactly that command as rocky, nothing else.
 echo 'odt-runner ALL=(rocky) NOPASSWD: /usr/local/sbin/odt-deploy' \
@@ -981,9 +1203,11 @@ sudo -u odt-runner sudo -n -u rocky id   # a password is required: refused
 
 **Another ODT repository** (the frontend): another directory under `/opt/actions-runner/`,
 registered to that repository with the same user and its own label, and its own deploy
-command in `/etc/sudoers.d/odt-runner`. The runners of one user can read each other's
-files, which is acceptable while they all deploy ODT; a project outside ODT gets its own
-user.
+command in `/etc/sudoers.d/odt-runner`. The runners of one user can read and change each
+other's files, so code that reaches one runner also reaches the other repository's
+deployments and their secrets. The frontend's deploy command should take the same care as
+`odt-deploy` (only application settings from the job, host settings from a root-owned file);
+a separate user per repository keeps them apart. A project outside ODT gets its own user.
 
 ### Moving the current `.env` into GitHub (once)
 
@@ -992,7 +1216,7 @@ an empty directory that is not synced anywhere:
 
 ```bash
 scp rocky@<host>:OtwarteDaneTransportowe-backend/.env odt.env
-secrets='^(DJANGO_SECRET_KEY|POSTGRES_PASSWORD|FEED_AUTH_ENCRYPTION_KEY|PLANNER_INTERNAL_TOKEN)='
+secrets='^(DJANGO_SECRET_KEY|POSTGRES_PASSWORD|FEED_AUTH_ENCRYPTION_KEY|REDIS_PASSWORD|PLANNER_INTERNAL_TOKEN)='
 grep -E "$secrets" odt.env > secrets.env
 grep -vE "$secrets" odt.env | grep -vE '^\s*(#|$)' > variables.env
 gh secret set --env production -f secrets.env
@@ -1000,6 +1224,9 @@ gh variable set --env production -f variables.env
 shred -u odt.env secrets.env variables.env
 gh variable list --env production && gh secret list --env production
 ```
+
+Keep the host settings out of `variables.env` and put them in the
+[host file](#the-host-file) instead: the release refuses them from GitHub.
 
 `gh` reads these as dotenv files and expands `$VAR` in values (unverified for every
 case): check any value with a `$`, quotes or a `#` by hand in the web UI. Comments at the
@@ -1022,10 +1249,12 @@ Compose 2.24.4 or newer is required (`volumes: !override` in `docker-compose.pro
 
 ### Changing a setting or a secret
 
-Change it in the environment, then deploy: a new release, or *Re-run jobs* on the latest
-release's run (it uses the workflow of that tag and today's settings).
+Change it in the environment (a host setting: in `/etc/odt/backend-host.env`, as root), then
+deploy: a new release, or *Re-run jobs* on the latest release's run (it uses the workflow of
+that tag and today's settings).
 
 - `DJANGO_SECRET_KEY` may change: every session and JWT becomes invalid.
+- `REDIS_PASSWORD` may change: Redis and all its clients are recreated with the new value.
 - `POSTGRES_PASSWORD`: first change it in the database
   ([section 6](#6-postgresql)), then in the server's `.env` by hand, then in GitHub, then
   deploy. The release refuses a password that differs from the server's `.env`.
@@ -1047,6 +1276,13 @@ release's run (it uses the workflow of that tag and today's settings).
 
   Data written between the release and the restore is lost; reversing the migrations
   instead (section 15) keeps it, when the migrations are reversible.
-- **Emergency, code only:** `docker image tag odt-backend:previous odt-backend:latest &&
-  ./scripts/deploy.sh up -d` runs the previous image without a build. The checkout and
-  `.env` stay on the new release until the next deployment.
+- **Emergency, code only:** run the image of an earlier release without a build. Only a
+  release that passed its health checks has an image tag, so a failed release, retried or
+  not, never replaces one:
+
+  ```bash
+  docker image ls odt-backend          # vX.Y.Z of the last 3 releases that went live
+  docker image tag odt-backend:<last good vX.Y.Z> odt-backend:latest && ./scripts/deploy.sh up -d
+  ```
+
+  The checkout and `.env` stay on the new release until the next deployment.
