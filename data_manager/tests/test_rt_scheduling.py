@@ -162,6 +162,17 @@ def test_stale_token_exits_without_fetching_or_rescheduling(
     assert cache.get(tasks._rt_alive_key(published_gbfs_endpoint.id)) == 'current-token'
 
 
+def test_message_that_outlived_its_marker_keeps_the_loop(published_gbfs_endpoint, queued, fetches):
+    """Queue lag past the marker's TTL with no competing loop: the late message
+    re-claims the slot instead of leaving the feed idle until the next bootstrap."""
+    tasks.bootstrap_realtime_tasks()
+    cache.delete(tasks._rt_alive_key(published_gbfs_endpoint.id))  # marker expired
+
+    assert _replay(queued()[-1][0])['status'] == 'ok'
+    assert len(queued()) == 2
+    assert tasks.bootstrap_realtime_tasks()['bootstrapped'] == 0
+
+
 def test_each_run_hands_a_fresh_token_to_its_successor(published_gbfs_endpoint, queued, fetches):
     """A redelivered copy of an already executed message (Redis visibility
     timeout) carries the old token and must not fork the loop."""

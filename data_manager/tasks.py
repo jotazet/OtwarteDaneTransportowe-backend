@@ -17,7 +17,8 @@ Task layout:
   │                                (id, token), countdown=stagger)
   │
   │  fetch_realtime_endpoint_task(id, token)
-  │    0. exit at once unless token == the endpoint's alive marker
+  │    0. exit at once unless token holds the alive marker (or claims it
+  │       when it is vacant)
   │    1. fetch the body
   │    2. store cached_file
   │    3. active: new token in the marker, .apply_async(countdown=interval)
@@ -148,8 +149,15 @@ def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
 
 
 def _rt_token_is_current(endpoint_id: int, token: str | None) -> bool:
-    """Whether this message is the one the endpoint's loop is waiting for."""
-    return cache.get(_rt_alive_key(endpoint_id)) == (token or RT_LEGACY_ALIVE_MARKER)
+    """Whether this message is the one the endpoint's loop is waiting for.
+
+    A message that outlived its marker (queue lag, worker restart) re-claims the
+    vacant slot instead of leaving the endpoint idle until the next bootstrap;
+    it loses only to a loop that has claimed the slot meanwhile.
+    """
+    token = token or RT_LEGACY_ALIVE_MARKER
+    key = _rt_alive_key(endpoint_id)
+    return cache.get(key) == token or cache.add(key, token, timeout=RT_ENDPOINT_LOCK_TTL_SECONDS)
 
 
 def _scheduler():
