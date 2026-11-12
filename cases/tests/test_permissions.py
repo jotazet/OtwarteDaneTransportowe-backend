@@ -1,7 +1,9 @@
 """Cases write permissions per role (docs/api/cases.md).
 
 POST/PATCH/DELETE on data providers, case statuses and transport organizations
-need the case manager role: Helper or Admin. Everyone else is refused.
+need the case manager role: Helper or Admin. Everyone else is refused. The
+exception is DELETE of a transport organization, which cascades to its feed
+submissions and is therefore Admin only.
 """
 
 import pytest
@@ -26,6 +28,16 @@ ROLES = [
     (ROLE_BLOGGER, False),
     (ROLE_EDITOR, False),
     (ROLE_HELPER, True),
+    (ROLE_ADMIN, True),
+]
+
+# (role, may delete a transport organization)
+ORGANIZATION_DELETE_ROLES = [
+    (ANONYMOUS, False),
+    (ROLE_DATA_PROVIDER, False),
+    (ROLE_BLOGGER, False),
+    (ROLE_EDITOR, False),
+    (ROLE_HELPER, False),
     (ROLE_ADMIN, True),
 ]
 
@@ -92,7 +104,7 @@ def test_update_by_role(resource, role, allowed, org, make_user, client_as):
     assert getattr(obj, field) == (value if allowed else original)
 
 
-@pytest.mark.parametrize('resource', RESOURCES)
+@pytest.mark.parametrize('resource', ['data-providers', 'case-statuses'])
 @pytest.mark.parametrize('role, allowed', ROLES)
 def test_delete_by_role(resource, role, allowed, org, make_user, client_as):
     model, _, existing, _ = RESOURCES[resource]
@@ -102,6 +114,14 @@ def test_delete_by_role(resource, role, allowed, org, make_user, client_as):
 
     assert response.status_code == _expected(role, allowed, 204)
     assert model.objects.filter(pk=obj.pk).exists() is not allowed
+
+
+@pytest.mark.parametrize('role, allowed', ORGANIZATION_DELETE_ROLES)
+def test_delete_organization_by_role(role, allowed, org, make_user, client_as):
+    response = client_as(make_user(role)).delete(f'/api/cases/transport-organizations/{org.pk}/')
+
+    assert response.status_code == _expected(role, allowed, 204)
+    assert TransportOrganization.objects.filter(pk=org.pk).exists() is not allowed
 
 
 def test_created_organization_starts_with_status_none(make_user, client_as):
