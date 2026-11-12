@@ -37,6 +37,28 @@ def validate_production_secret_key(key: str | None) -> None:
         )
 
 
+def validate_feed_auth_encryption_keys(key: str | None, old_keys: list[str]) -> None:
+    """Fail fast unless the current feed credential key and every old key are Fernet keys."""
+    from cryptography.fernet import Fernet
+
+    if not key:
+        raise ImproperlyConfigured(
+            'FEED_AUTH_ENCRYPTION_KEY must be set in production: without it feed '
+            'credentials would be stored as plaintext. See docs/deployment.md.'
+        )
+    try:
+        Fernet(key)
+    except ValueError:
+        raise ImproperlyConfigured('FEED_AUTH_ENCRYPTION_KEY is not a Fernet key.') from None
+    try:
+        for old_key in old_keys:
+            Fernet(old_key)
+    except ValueError:
+        raise ImproperlyConfigured(
+            'FEED_AUTH_ENCRYPTION_OLD_KEYS holds a value that is not a Fernet key.'
+        ) from None
+
+
 # Path to the project root on the HOST machine.
 HOST_PROJECT_PATH = os.environ.get('HOST_PROJECT_PATH', str(BASE_DIR))
 
@@ -357,8 +379,11 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = int(os.getenv('CELERY_WORKER_PREFETCH_MULTIP
 
 # Fernet key used by data_manager.fields.EncryptedCharField to encrypt stored
 # feed auth credentials at rest. When unset, values fall back to plaintext
-# (development/testing only). Production MUST set this.
+# (development/testing only); settings_prod refuses to start without it.
+# FEED_AUTH_ENCRYPTION_OLD_KEYS (comma-separated) only decrypt: previous keys
+# during a rotation (docs/deployment.md, "Rotating FEED_AUTH_ENCRYPTION_KEY").
 FEED_AUTH_ENCRYPTION_KEY = os.getenv('FEED_AUTH_ENCRYPTION_KEY')
+FEED_AUTH_ENCRYPTION_OLD_KEYS = _env_list('FEED_AUTH_ENCRYPTION_OLD_KEYS')
 
 # Public base URL of this API (scheme://host, no trailing slash), e.g.
 # https://api.example.org. Used to hand the GTFS-RT validator a downloadable

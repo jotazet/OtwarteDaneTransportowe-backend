@@ -2,6 +2,20 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: coded errors for a source credential ODT cannot decrypt
+
+Not breaking. When ODT cannot decrypt a stored `auth_value` (a key configuration problem on ODT's side), the download is not attempted and the failure is reported as a code:
+
+- a fetch of a proxied feed fails with a `FeedFetchError` of `error_type` `auth_error` (defined before, written now) and `message` `fetch.credential_undecryptable`; `fetch_pause_reason` and `last_fetch_error_message` are that code too, and the usual backoff and auto-pause apply;
+- GTFS validation of a non-proxied URL ends with `validation_status` `error` and the new code `gtfs_validation.credential_undecryptable` (no rejection);
+- realtime verification stays at stage 2 instead of rejecting, and is retried.
+
+Input that starts with `fernet$` is now encrypted like any other value. See [Static feeds](feeds.md#static-feeds-feedsubmission) and [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+**Frontend:** translate `gtfs_validation.credential_undecryptable` for `validation_status: "error"`, and `fetch.credential_undecryptable` where fetch errors are shown.
+
+---
+
 ## 2026-11-12: faster realtime retries, daily retry of auto-paused feeds
 
 Not breaking. A proxied realtime endpoint that fails with a transient error (timeout, connection error, truncated body, HTTP 5xx or 429) is now retried after 30 s, 2 min, 10 min and 1 h before it is auto-paused (`fetch_status=delayed` with `next_fetch_after` set as before). Static feeds and permanent errors keep 5 min, 1 h, 6 h. An `auto_paused` feed now has `next_fetch_after` set 24 hours ahead (it used to be `null`) and is tried again then; a success returns it to `active`, a failure moves `next_fetch_after` another day ahead. Feeds auto-paused before this change are retried once right after the deploy. `manual_paused` feeds keep `next_fetch_after: null` and are never retried automatically. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).

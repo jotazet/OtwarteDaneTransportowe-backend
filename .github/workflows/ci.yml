@@ -89,6 +89,7 @@ jobs:
           -e DJANGO_SECRET_KEY=ci-placeholder-ci-placeholder-ci-placeholder-ci-placeholder
           -e DJANGO_ALLOWED_HOSTS=api.example.org
           -e POSTGRES_PASSWORD=ci-placeholder
+          -e FEED_AUTH_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
           -e TRUSTED_PROXY_CIDRS=172.16.0.0/12
           odt-backend python manage.py check
       - run: docker run --rm --entrypoint gunicorn odt-backend --version
@@ -130,6 +131,7 @@ jobs:
           FEED_AUTH_ENCRYPTION_KEY: ${{ secrets.FEED_AUTH_ENCRYPTION_KEY }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           PLANNER_INTERNAL_TOKEN: ${{ secrets.PLANNER_INTERNAL_TOKEN }}
+          FEED_AUTH_ENCRYPTION_OLD_KEYS: ${{ secrets.FEED_AUTH_ENCRYPTION_OLD_KEYS }}
         run: python3 -I scripts/deploy/envfile.py write "$RUNNER_TEMP/production.env"
       # odt-deploy takes the tag as its only argument and the .env on standard input.
       - name: Deploy

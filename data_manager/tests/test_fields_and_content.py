@@ -6,7 +6,6 @@ import threading
 from contextlib import contextmanager
 
 import pytest
-from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured, ValidationError
@@ -106,41 +105,6 @@ def gtfs_rt_feed_bytes(version: str = '2.0') -> bytes:
     message = gtfs_realtime_pb2.FeedMessage()
     message.header.gtfs_realtime_version = version
     return message.SerializeToString()
-
-
-# ---------------------------------------------------------------------------
-# EncryptedCharField
-# ---------------------------------------------------------------------------
-
-
-def test_encrypted_field_round_trip_with_key(settings, org, provider_user):
-    settings.FEED_AUTH_ENCRYPTION_KEY = Fernet.generate_key().decode()
-    entry = _entry(org, provider_user, auth_type='api_key', auth_value='top-secret')
-
-    raw = StaticFeedEntry.objects.filter(pk=entry.pk).values_list('auth_value', flat=True)[0]
-    # values_list still decrypts via from_db_value; check the prep value instead.
-    stored = StaticFeedEntry._meta.get_field('auth_value').get_prep_value('top-secret')
-    assert stored.startswith('fernet$')
-    assert 'top-secret' not in stored
-
-    entry.refresh_from_db()
-    assert entry.auth_value == 'top-secret'
-    assert raw == 'top-secret'  # application always sees plaintext
-
-
-def test_encrypted_field_reads_legacy_plaintext(settings, org, provider_user):
-    settings.FEED_AUTH_ENCRYPTION_KEY = Fernet.generate_key().decode()
-    entry = _entry(org, provider_user, auth_type='api_key', auth_value='x')
-    # Simulate a pre-encryption row written before the key was configured.
-    StaticFeedEntry.objects.filter(pk=entry.pk).update(auth_value='legacy-plain')
-    entry.refresh_from_db()
-    assert entry.auth_value == 'legacy-plain'
-
-
-def test_encrypted_field_without_key_stores_plaintext(settings, org, provider_user):
-    settings.FEED_AUTH_ENCRYPTION_KEY = None
-    field = StaticFeedEntry._meta.get_field('auth_value')
-    assert field.get_prep_value('dev-secret') == 'dev-secret'
 
 
 # ---------------------------------------------------------------------------

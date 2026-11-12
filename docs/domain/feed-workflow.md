@@ -94,7 +94,7 @@ GET /api/data_manager/realtime-submissions/{id}/fetch-errors/?days=7
 Available filters:
 
 - `days` - number of days back, default `7`, maximum `365`
-- `error_type` - e.g. `timeout`, `connection_error`, `http_error`, `invalid_content`
+- `error_type` - e.g. `timeout`, `connection_error`, `http_error`, `invalid_content`, `auth_error` (ODT cannot decrypt the stored credential, `message` `fetch.credential_undecryptable`; nothing is sent to the provider)
 - `source` - `static` or `realtime`
 - `endpoint_type` - realtime only, e.g. `trip_update`, `gbfs`
 

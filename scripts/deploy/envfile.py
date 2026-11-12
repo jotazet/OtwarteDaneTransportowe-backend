@@ -23,7 +23,9 @@ DJANGO_SETTINGS_MODULE.
 `check` refuses a new .env that changes or drops FEED_AUTH_ENCRYPTION_KEY or
 POSTGRES_PASSWORD: the first makes every stored feed credential undecryptable, the second
 does not change the password of an initialized database, so the app can no longer log in.
-To change either on purpose, follow docs/deployment.md (section 20).
+A new FEED_AUTH_ENCRYPTION_KEY passes when the previous one is in FEED_AUTH_ENCRYPTION_OLD_KEYS,
+which still decrypts: a key rotation. To change either on purpose, follow docs/deployment.md
+(section 20).
 """
 
 import json
@@ -39,7 +41,7 @@ REQUIRED_SECRETS = (
     "FEED_AUTH_ENCRYPTION_KEY",
     "REDIS_PASSWORD",
 )
-OPTIONAL_SECRETS = ("PLANNER_INTERNAL_TOKEN",)
+OPTIONAL_SECRETS = ("PLANNER_INTERNAL_TOKEN", "FEED_AUTH_ENCRYPTION_OLD_KEYS")
 SECRETS = REQUIRED_SECRETS + OPTIONAL_SECRETS
 # Without these the containers fall back to the development values in .env.example (also
 # an env_file) and the release still looks healthy, so a missing one stops it.
@@ -194,8 +196,11 @@ def check(old_path, new_path):
     if not os.path.exists(old_path):
         return
     old, new = load(old_path), load(new_path)
+    old_keys = [key.strip() for key in new.get("FEED_AUTH_ENCRYPTION_OLD_KEYS", "").split(",")]
     for name in PINNED:
         if old.get(name) and old[name] != new.get(name):
+            if name == "FEED_AUTH_ENCRYPTION_KEY" and old[name] in old_keys:
+                continue  # a rotation: the previous key still decrypts
             fail(f"{name} differs from the server's .env; see docs/deployment.md section 20.")
 
 
