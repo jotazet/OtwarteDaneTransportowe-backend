@@ -124,8 +124,8 @@ their logs when they finish.
 ## 3. Getting the code
 
 Production needs no clone: each release downloads its Compose files and deploy scripts
-into the **deployment directory** `~/odt-backend` of the admin user (`rocky` on the current
-VPS) and runs the image CI built for it
+into the **deployment directory** `/srv/odt-backend`, owned by the system user `odt`, and
+runs the image CI built for it
 ([section 20](#20-releases-automatic-deployment-from-github)). That directory also holds
 `.env`, `uploaded_data/` and `planner_data/`; the commands in this guide run from there.
 
@@ -255,8 +255,8 @@ FEED_AUTH_ENCRYPTION_KEY=<Fernet-key>
 # ───────────────────────── File permissions ─────────────────────────
 UID=1000
 GID=1000
-HOST_PROJECT_PATH=/home/rocky/odt-backend
-HOST_MEDIA_ROOT=/home/rocky/odt-backend/uploaded_data
+HOST_PROJECT_PATH=/srv/odt-backend
+HOST_MEDIA_ROOT=/srv/odt-backend/uploaded_data
 
 # ───────────────────────── Performance / Celery / gunicorn ─────────────────────────
 GUNICORN_WORKERS=3
@@ -730,22 +730,22 @@ every day at 00:15 Europe/Warsaw (before FeedsODT's night jobs and the default p
 | `uploaded_data/`: submitted and cached feed files, validation reports, blog images | `uploaded_data/*/dynamic/`: the realtime proxy cache, refetched from the source |
 | `planner_data/snapshots/`: the last good version of each planner feed | Redis: the cache and the queue; Celery beat queues the periodic tasks again |
 
-Each run writes `~/backups/scheduled/<UTC time>/` (`db.dump`, `uploaded_data/`,
+Each run writes `/var/lib/odt/backups/scheduled/<UTC time>/` (`db.dump`, `uploaded_data/`,
 `planner_data/snapshots/` and an empty `complete`, mode `700`) and keeps the newest 7. Files unchanged since the
 previous backup (compared by content) are hard links to it, so a day costs the dump plus the
-changed files (`du -sh ~/backups/scheduled` counts each file once). A failed or empty dump, a failed copy or
+changed files (`du -sh /var/lib/odt/backups/scheduled` counts each file once). A failed or empty dump, a failed copy or
 a failed off-host upload stops the run with a non-zero exit and `backup: ... FAILED` in the
 journal; an unfinished run leaves nothing that looks like a backup, and off the host a backup
 without its `complete` file is unfinished. One run at a time; a run that hangs is stopped after
 6 hours. The files are copied a few
 minutes after the dump, so a submission saved in between may be in one and not the other.
-The release backups (`~/backups/release-*`, [section 20](#20-releases-automatic-deployment-from-github))
+The release backups (`/var/lib/odt/backups/release-*`, [section 20](#20-releases-automatic-deployment-from-github))
 are separate.
 
 **Not in the backups: `.env`.** GitHub cannot show a secret again, so keep
 `FEED_AUTH_ENCRYPTION_KEY` (without it stored feed credentials cannot be decrypted after a
 restore) and the other secrets in a password vault. The release backups hold a copy of `.env`
-(`~/backups/release-*/env`), on this disk only.
+(`/var/lib/odt/backups/release-*/env`), on this disk only.
 
 ### Settings
 
@@ -754,7 +754,7 @@ Values are `KEY=value` lines:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `BACKUP_DIR` | `~/backups/scheduled` | Absolute path of the local backups. |
+| `BACKUP_DIR` | `/var/lib/odt/backups/scheduled` | Absolute path of the local backups. |
 | `BACKUP_KEEP` | `7` | How many local backups to keep. |
 | `BACKUP_REMOTE` | unset | Where each new backup is copied off the host, as `$BACKUP_REMOTE/<UTC time>/` (so name a directory: `host:` alone would mean `host:/<UTC time>/`). Unset: the backup exists on this disk only, and the journal says so every day. |
 | `BACKUP_REMOTE_TOOL` | `rsync` | `rsync` (`BACKUP_REMOTE` is `host:path` over SSH, or a mounted path) or `rclone` (`BACKUP_REMOTE` is `remote:path`, for object storage). |
@@ -765,13 +765,13 @@ there: remove old backups on the destination (a bucket lifecycle rule, a cron jo
 backup machine), and give this server only the access it needs to add files, so an intruder
 here cannot delete them.
 
-- **rsync over SSH** (a storage box or another machine): as `rocky`, create a key without a
+- **rsync over SSH** (a storage box or another machine): as `odt` (`sudo -u odt ...`), create a key without a
   passphrase (`ssh-keygen -t ed25519 -f ~/.ssh/odt-backup -N ''`) and authorize it on the
   destination; add a `Host odt-backup` entry with `HostName`, `User` and
   `IdentityFile ~/.ssh/odt-backup` to `~/.ssh/config`; connect once by hand to accept the host
   key; create the target directory; set `BACKUP_REMOTE=odt-backup:<directory>`. Unchanged files
   are hard links there too, when the destination supports them.
-- **rclone** (object storage): install rclone, run `rclone config` as `rocky`, then set
+- **rclone** (object storage): install rclone, run `rclone config` as `odt`, then set
   `BACKUP_REMOTE_TOOL=rclone` and `BACKUP_REMOTE=<remote>:<bucket>/odt`. Every backup is
   uploaded in full.
 
@@ -793,7 +793,7 @@ sudo systemctl enable --now odt-backup.timer
 systemctl list-timers odt-backup.timer
 ```
 
-The units name the user `rocky` and the deployment directory `/home/rocky/odt-backend`;
+The units name the user `odt` and the deployment directory `/srv/odt-backend`;
 change both in `odt-backup.service` on another host. No alert is sent when a run fails: check
 `systemctl --failed` and `journalctl -u odt-backup.service`.
 
@@ -813,12 +813,12 @@ dump alone:
 ### Restoring
 
 From the off-host copy, first fetch the newest backup that has its `complete` file into
-`~/backups/scheduled/` (`rsync -a
-odt-backup:<directory>/<time>/ ~/backups/scheduled/<time>/`, or `rclone copy
-<remote>:<bucket>/odt/<time> ~/backups/scheduled/<time>`). Then, in the deployment directory:
+`/var/lib/odt/backups/scheduled/` (`rsync -a
+odt-backup:<directory>/<time>/ /var/lib/odt/backups/scheduled/<time>/`, or `rclone copy
+<remote>:<bucket>/odt/<time> /var/lib/odt/backups/scheduled/<time>`). Then, in the deployment directory:
 
 ```bash
-b=~/backups/scheduled/<time>
+b=/var/lib/odt/backups/scheduled/<time>
 # On a new server, start only the database first: ./scripts/deploy.sh up -d postgres
 ./scripts/deploy.sh stop web celery_worker celery_realtime_worker celery_beat celery_validator_worker celery_planner_worker
 ./scripts/deploy.sh exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' \
@@ -838,7 +838,7 @@ running; it needs free disk for one more copy of the database), at least after i
 timer, after changing its settings and every few months. Do it once from the off-host copy too.
 
 ```bash
-b="$(ls -d ~/backups/scheduled/2* | tail -n 1)"
+b="$(ls -d /var/lib/odt/backups/scheduled/2* | tail -n 1)"
 ./scripts/deploy.sh exec -T postgres sh -c 'createdb -U "$POSTGRES_USER" odt_restore_test'
 ./scripts/deploy.sh exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d odt_restore_test --exit-on-error' \
   < "$b/db.dump"
@@ -1061,7 +1061,7 @@ Builds deliberately fill RAM and spill into swap, so the VPS has a last-resort g
 ```bash
 # 1. Secrets and settings in .env (see .env.example, "Journey planner")
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # -> PLANNER_INTERNAL_TOKEN
-# COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/home/rocky/odt-backend/planner_data
+# COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/srv/odt-backend/planner_data
 
 # 2. Start the services
 ./scripts/deploy.sh up -d --build
@@ -1111,7 +1111,7 @@ flowchart LR
   img --> job["deploy job on the server's runner (environment production)"]
   job -->|"sudo: tag + .env"| od["odt-deploy"]
   host["/etc/odt/backend-host.env (root)"] --> od
-  od -->|"Compose files and scripts of the tag"| rs["~/odt-backend: release.sh"]
+  od -->|"Compose files and scripts of the tag"| rs["/srv/odt-backend: release.sh"]
   img -.->|docker pull| rs
 ```
 
@@ -1121,8 +1121,8 @@ flowchart LR
    `main` gets `:main`). The `deploy` job runs only when all of them pass, on the self-hosted
    runner on the server (label `odt-production`, user `odt-runner`), and writes `.env` from
    the environment's variables and secrets (`scripts/deploy/envfile.py`).
-2. It runs `/usr/local/sbin/odt-deploy` through sudo as the owner of the deployment directory
-   `~/odt-backend`, the only command `odt-runner` may run that way. `odt-deploy` refuses a
+2. It runs `/usr/local/sbin/odt-deploy` through sudo as `odt`, the owner of the deployment
+   directory `/srv/odt-backend`, the only command `odt-runner` may run that way. `odt-deploy` refuses a
    tag that is not `vX.Y.Z`, asks GitHub's API for the tag's commit and refuses it unless it
    is on `main`, merges the `.env` from the job with the server's host file (below),
    downloads that commit's Compose files, `.env.example` and `scripts/deploy*` into the
@@ -1131,7 +1131,7 @@ flowchart LR
    labelled `odt.planner`), refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
    `POSTGRES_PASSWORD`, adds `ODT_VERSION=vX.Y.Z` to it and pulls that image (nothing running
    changes yet), dumps the database with the current `.env` into
-   `~/backups/release-<UTC time>-<tag>/` (keeps the newest 10), installs the new `.env`,
+   `/var/lib/odt/backups/release-<UTC time>-<tag>/` (keeps the newest 10), installs the new `.env`,
    runs `up -d --wait` (the `migrate` service first, then every service is recreated) and
    waits up to 15 minutes, migrations included, for every service to pass its healthcheck
    ([section 18](#18-troubleshooting)); one that exits, keeps restarting or turns unhealthy
@@ -1169,7 +1169,7 @@ deployment in *Actions*; the job's log shows `odt-deploy: <old> -> <new>` and
   [section 5](#5-the-env-file--full-configuration) (`DJANGO_ALLOWED_HOSTS`,
   `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `CORS_URLS_REGEX`, `TRUSTED_PROXY_CIDRS`,
   `POSTGRES_DB`, `POSTGRES_USER`, size limits, throttles, ...). Optionally
-  `DEPLOY_APP_USER`, the owner of the deployment directory that `odt-deploy` runs as (default `rocky`).
+  `DEPLOY_APP_USER`, the owner of the deployment directory that `odt-deploy` runs as (default `odt`).
   Every other setting goes in the [host file](#the-host-file).
 - **Environment secrets:** `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`,
   `FEED_AUTH_ENCRYPTION_KEY`, `REDIS_PASSWORD`, `PLANNER_INTERNAL_TOKEN` (with the
@@ -1219,11 +1219,11 @@ For example:
 
 ```dotenv
 DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
-UID=1000
-GID=1000
-HOST_PROJECT_PATH=/home/rocky/odt-backend
-HOST_MEDIA_ROOT=/home/rocky/odt-backend/uploaded_data
-HOST_PLANNER_DATA_DIR=/home/rocky/odt-backend/planner_data
+UID=<id -u odt>
+GID=<id -g odt>
+HOST_PROJECT_PATH=/srv/odt-backend
+HOST_MEDIA_ROOT=/srv/odt-backend/uploaded_data
+HOST_PLANNER_DATA_DIR=/srv/odt-backend/planner_data
 COMPOSE_PROFILES=planner
 ```
 
@@ -1281,12 +1281,17 @@ deploy with the development settings of `.env.example`.
 
 ### One-time server setup
 
-As the admin user (`rocky` on the current VPS); the first release creates the deployment
-directory `~/odt-backend` in the home of the user `odt-deploy` runs as (sudo sets `HOME` to it
-with `always_set_home`, the Rocky default). The install commands take the files from a copy
-of the repository on any machine (`scp` them to the server first):
+As the admin user (`rocky` on the current VPS). The install commands take the files from a
+copy of the repository on any machine (`scp` them to the server first):
 
 ```bash
+# The application's user: owns the deployment directory and runs every release. Its home
+# holds the backups (release.sh and backup.sh use $HOME, which sudo sets with
+# always_set_home, the Rocky default). The docker group lets it run Compose.
+sudo useradd --system --create-home --home-dir /var/lib/odt --shell /sbin/nologin odt
+sudo usermod -aG docker odt
+sudo install -d -o odt -g odt -m 750 /srv/odt-backend
+
 # The runners' user: no password, no login shell, not in the docker group.
 sudo useradd --system --create-home --home-dir /home/odt-runner --shell /sbin/nologin odt-runner
 
@@ -1297,8 +1302,8 @@ sudo install -o root -g root -m 755 scripts/deploy/odt-deploy /usr/local/sbin/od
 sudo install -d -o root -g root -m 755 /etc/odt
 sudoedit /etc/odt/backend-host.env && sudo chmod 644 /etc/odt/backend-host.env
 
-# odt-runner may run exactly that command as rocky, nothing else.
-echo 'odt-runner ALL=(rocky) NOPASSWD: /usr/local/sbin/odt-deploy' \
+# odt-runner may run exactly that command as odt, nothing else.
+echo 'odt-runner ALL=(odt) NOPASSWD: /usr/local/sbin/odt-deploy' \
   | sudo tee /etc/sudoers.d/odt-runner > /dev/null
 sudo chmod 440 /etc/sudoers.d/odt-runner && sudo visudo -cf /etc/sudoers.d/odt-runner
 ```
@@ -1326,10 +1331,10 @@ does not know Rocky 10; the libraries it would install (`libicu`, `krb5-libs`,
 Check the restriction without deploying:
 
 ```bash
-sudo -u odt-runner sudo -n -u rocky /usr/local/sbin/odt-deploy nope < /dev/null
+sudo -u odt-runner sudo -n -u odt /usr/local/sbin/odt-deploy nope < /dev/null
 # odt-deploy: expected a release tag vX.Y.Z, got 'nope'
 sudo -u odt-runner docker ps          # permission denied
-sudo -u odt-runner sudo -n -u rocky id   # a password is required: refused
+sudo -u odt-runner sudo -n -u odt id   # a password is required: refused
 ```
 
 **Another ODT repository**: another directory under `/opt/actions-runner/`, registered to
@@ -1349,7 +1354,7 @@ On a machine with the [GitHub CLI](https://cli.github.com/), signed in to the re
 an empty directory that is not synced anywhere:
 
 ```bash
-scp rocky@<host>:odt-backend/.env odt.env
+ssh rocky@<host> sudo cat /srv/odt-backend/.env > odt.env
 secrets='^(DJANGO_SECRET_KEY|POSTGRES_PASSWORD|FEED_AUTH_ENCRYPTION_KEY|REDIS_PASSWORD|PLANNER_INTERNAL_TOKEN)='
 grep -E "$secrets" odt.env > secrets.env
 grep -vE "$secrets" odt.env | grep -vE '^\s*(#|$)' > variables.env
@@ -1368,27 +1373,27 @@ end of a line are not part of the value in the server's `.env` either.
 
 ### Moving from the checkout to the deployment directory (once)
 
-Until v2.1.0 production ran from a Git checkout in `~/OtwarteDaneTransportowe-backend`, with
-the code bind-mounted into the containers. The move keeps the database volume and the
-networks (the project name is fixed) and the data directories (moved on the same disk, so
-instantly). As `rocky`, after the host file and `odt-deploy` are installed and the image
-package is public:
+Until v2.1.0 production ran from a Git checkout in `/home/rocky/OtwarteDaneTransportowe-backend`
+as `rocky`, with the code bind-mounted into the containers. The move keeps the database
+volume and the networks (the project name is fixed) and the data directories (moved on the
+same disk, so instantly). The running containers of the checkout mount the whole checkout,
+so its data directories stay where they are until the new containers run.
 
-```bash
-old=~/OtwarteDaneTransportowe-backend new=~/odt-backend
-mkdir -m 700 "$new"
-cp -p "$old/.env" "$new/.env"          # release.sh compares the pinned secrets with it
-mv "$old/uploaded_data" "$old/planner_data" "$new/"
-# The running containers keep their mounts; the old paths still work for the containers
-# they start (validator, planner) until the release recreates them.
-ln -s "$new/uploaded_data" "$old/uploaded_data" && ln -s "$new/planner_data" "$old/planner_data"
-```
-
-In the host file, `HOST_PROJECT_PATH`, `HOST_MEDIA_ROOT` and `HOST_PLANNER_DATA_DIR` point
-into `~/odt-backend`. Then release. If the release stops before `up -d`, nothing running
-changed: fix the cause and re-run the job. Once it is live, remove the old checkout (it held
-the per-service images' code and `staticfiles/`, no longer used) and the per-service images
-of the old layout (`docker image ls 'otwartedanetransportowe-backend-*'`).
+1. Create the user `odt` and `/srv/odt-backend` ([one-time setup](#one-time-server-setup)),
+   change the sudoers line to `(odt)`, and write the host file with `UID`/`GID` of `odt`
+   (`id odt`) and the `HOST_*` paths in `/srv/odt-backend`.
+2. As root: `install -o odt -g odt -m 600 <checkout>/.env /srv/odt-backend/.env` (release.sh
+   compares the pinned secrets with it), then `mv <checkout>/uploaded_data <checkout>/planner_data
+   /srv/odt-backend/` and bind-mount them back
+   (`mount --bind /srv/odt-backend/uploaded_data <checkout>/uploaded_data`, the same for
+   `planner_data`), so the running containers keep their files.
+3. Release. If it stops before `up -d`, nothing running changed: fix the cause and re-run the
+   job. `init_uploads` gives `uploaded_data/` to `odt`; give it the rest:
+   `chown -R odt:odt /srv/odt-backend/planner_data`.
+4. Unmount the two bind mounts, then remove the old checkout (its `staticfiles/` and code are
+   no longer used), the per-service images of the old layout
+   (`docker image ls 'otwartedanetransportowe-backend-*'`) and move the old release backups
+   from `/home/rocky/backups/release-*` to `/var/lib/odt/backups/`.
 
 Compose 2.24.4 or newer is required (`volumes: !override` in `docker-compose.prod.yml`).
 
@@ -1447,7 +1452,7 @@ application services (`./scripts/deploy.sh up -d`).
   ```bash
   ./scripts/deploy.sh stop web celery_worker celery_realtime_worker celery_beat celery_validator_worker celery_planner_worker
   ./scripts/deploy.sh exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' \
-    < ~/backups/release-<time>-<failed tag>/db.dump
+    < /var/lib/odt/backups/release-<time>-<failed tag>/db.dump
   ```
 
   Data written between the release and the restore is lost; reversing the migrations

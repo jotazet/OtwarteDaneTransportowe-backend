@@ -1,8 +1,8 @@
 #!/bin/sh
 # Deploys a release tag (docs/deployment.md, section 20); the deploy job runs it on the
 # production runner. Installed by hand as /usr/local/sbin/odt-deploy, owned by root, and
-# run through sudo as the user that owns the deployment directory: the runner may run
-# nothing else.
+# run through sudo as the system user odt, which owns the deployment directory: the runner
+# may run nothing else.
 #
 #   odt-deploy vX.Y.Z < production.env
 #
@@ -15,8 +15,8 @@
 # rarely needs reinstalling; the steps of a deployment live in release.sh.
 set -eu
 
-# sudo resets the environment and sets HOME to the target user's home.
-ODT_DIR="$HOME/odt-backend"
+# release.sh keeps its backups in $HOME, which sudo sets to the target user's home.
+ODT_DIR=/srv/odt-backend
 REPOSITORY=jotazet/OtwarteDaneTransportowe-backend
 API="https://api.github.com/repos/$REPOSITORY"
 # User ids, host paths, images, Compose settings: written by root, never by a release.
