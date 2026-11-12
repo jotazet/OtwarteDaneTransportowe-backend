@@ -135,46 +135,34 @@ class ProxyManagedFeedListView(APIView):
     # manually in get() below.
 
     @staticmethod
-    def _ordered(qs):
-        """Order in SQL by the same key the response is sorted on.
+    def _sort_keys(qs, source):
+        """``(id, source)`` plus the sort key of every row, for the SQL union.
 
         ``feed_name`` is the computed ``"#<id> <name>"`` label, so the sort key
-        has to be built with Concat to keep the ordering identical to the old
-        in-Python sort (a plain id sort would put '#10' after '#9').
+        is built with Concat (a plain id sort would put '#10' after '#9').
         """
-        return qs.annotate(
-            sort_region=Coalesce(F('submission__transport_organization__region'), Value('')),
-            sort_org=Coalesce(
-                F('submission__transport_organization__transport_organization'), Value('')
-            ),
-            sort_feed=Concat(
-                Value('#'),
-                'submission_id',
-                Value(' '),
-                Coalesce('submission__name', Value('')),
-                output_field=CharField(),
-            ),
-        ).order_by('sort_region', 'sort_org', 'sort_feed', 'id')
+        return (
+            qs.annotate(
+                source=Value(source, output_field=CharField()),
+                sort_region=Coalesce(F('submission__transport_organization__region'), Value('')),
+                sort_org=Coalesce(
+                    F('submission__transport_organization__transport_organization'), Value('')
+                ),
+                sort_feed=Concat(
+                    Value('#'),
+                    'submission_id',
+                    Value(' '),
+                    Coalesce('submission__name', Value('')),
+                    output_field=CharField(),
+                ),
+            )
+            .values('id', 'source', 'sort_region', 'sort_org', 'sort_feed')
+            .order_by()
+        )
 
     def get(self, request):
-        static_qs = self._ordered(
-            annotate_fetch_health(
-                StaticFeedEntry.objects.filter(hide_original=True)
-                .exclude(url='')
-                .select_related(
-                    'submission', 'submission__transport_organization', 'submission__submitted_by'
-                ),
-                'static_entry',
-            )
-        )
-        rt_qs = self._ordered(
-            annotate_fetch_health(
-                RealtimeEndpointRT.objects.filter(hide_original=True).select_related(
-                    'submission', 'submission__transport_organization', 'submission__submitted_by'
-                ),
-                'endpoint_rt',
-            )
-        )
+        static_qs = StaticFeedEntry.objects.filter(hide_original=True).exclude(url='')
+        rt_qs = RealtimeEndpointRT.objects.filter(hide_original=True)
         if not can_confirm_feeds(request.user):
             static_qs = static_qs.filter(submission__submitted_by=request.user)
             rt_qs = rt_qs.filter(submission__submitted_by=request.user)
@@ -185,41 +173,51 @@ class ProxyManagedFeedListView(APIView):
             page_number = max(1, int(request.query_params.get(paginator.page_query_param, 1)))
         except (TypeError, ValueError):
             page_number = 1
-        cutoff = page_number * page_size
+        offset = (page_number - 1) * page_size
 
-        # The two sources have to be merged and sorted in Python (they are
-        # different models), but only the rows that could still land on the
-        # requested page are materialised. Loading BOTH tables in full — with
-        # select_related and a fetch-health subquery per row — then sorting and
-        # throwing away all but one page was unbounded work on every request.
-        items = [
-            ProxyManagedFeedListSerializer.from_static_entry(entry) for entry in static_qs[:cutoff]
-        ]
-        items.extend(
-            ProxyManagedFeedListSerializer.from_realtime_endpoint(endpoint)
-            for endpoint in rt_qs[:cutoff]
+        # The two sources are different models, so they are merged with one
+        # UNION ALL that PostgreSQL orders and slices. Sorting in SQL and in
+        # Python must never be mixed: the database collation orders Polish
+        # letters and case differently from Python's code-point order, which
+        # duplicated and dropped rows across pages.
+        sources = {
+            'static': (static_qs, 'static_entry', ProxyManagedFeedListSerializer.from_static_entry),
+            'realtime': (
+                rt_qs,
+                'endpoint_rt',
+                ProxyManagedFeedListSerializer.from_realtime_endpoint,
+            ),
+        }
+        static_keys, rt_keys = (self._sort_keys(qs, source) for source, (qs, *_) in sources.items())
+        page_keys = list(
+            static_keys.union(rt_keys, all=True).order_by(
+                'sort_region', 'sort_org', 'sort_feed', 'source', 'id'
+            )[offset : offset + page_size]
         )
-        items.sort(
-            key=lambda row: (
-                row['region'] or '',
-                row['organization'] or '',
-                row['feed_name'] or '',
-                row['source'],
-                row['id'],
+
+        # Only the rows of the requested page are built, with select_related
+        # and the fetch-health annotations.
+        rows = {}
+        for source, (qs, label, build) in sources.items():
+            ids = [key['id'] for key in page_keys if key['source'] == source]
+            page_qs = qs.filter(id__in=ids).select_related(
+                'submission', 'submission__transport_organization', 'submission__submitted_by'
             )
-        )
+            rows.update(
+                ((source, obj.id), build(obj)) for obj in annotate_fetch_health(page_qs, label)
+            )
+        # A row deleted between the two queries is skipped, not a 500.
+        window = [row for key in page_keys if (row := rows.get((key['source'], key['id'])))]
 
         # Counting is a COUNT(*) per source; no rows are built for it.
         total = static_qs.count() + rt_qs.count()
-        offset = (page_number - 1) * page_size
-        window = items[offset : offset + page_size]
-
+        has_next = offset + page_size < total
         serializer = ProxyManagedFeedListSerializer(window, many=True)
         return Response(
             OrderedDict(
                 [
                     ('count', total),
-                    ('next', _page_url(request, page_number + 1) if cutoff < total else None),
+                    ('next', _page_url(request, page_number + 1) if has_next else None),
                     ('previous', _page_url(request, page_number - 1) if page_number > 1 else None),
                     ('results', serializer.data),
                 ]

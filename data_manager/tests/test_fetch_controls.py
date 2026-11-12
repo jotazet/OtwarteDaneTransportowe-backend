@@ -628,3 +628,34 @@ def test_proxy_feeds_list_combines_static_and_realtime(api_client, org, provider
 
     filtered = api_client.get('/api/data_manager/proxy-feeds/')
     assert filtered.data['count'] == 2
+
+
+def test_proxy_feeds_pages_list_every_feed_once_with_polish_names(
+    api_client, org, provider_user, helper_user
+):
+    # Polish letters and mixed case sort differently under the database's
+    # linguistic collation and Python's code-point order; paging must still
+    # return each feed exactly once, in the order of the single-page list.
+    expected = set()
+    for region in ['śląskie', 'łódzkie', 'lubelskie', 'Mazowieckie', 'mazowieckie', 'zachodnie']:
+        region_org = TransportOrganization.objects.create(
+            region=region, transport_organization=f'Ździebło {region}'
+        )
+        static_entry = _published_static_entry(region_org, provider_user)
+        rt_endpoint = _published_realtime_endpoint(region_org, provider_user)
+        expected |= {('static', static_entry.id), ('realtime', rt_endpoint.id)}
+
+    api_client.force_authenticate(user=helper_user)
+    url = '/api/data_manager/proxy-feeds/?page_size=2'
+    paged = []
+    while url:
+        response = api_client.get(url)
+        assert response.status_code == 200
+        assert response.data['count'] == len(expected)
+        paged.extend((row['source'], row['id']) for row in response.data['results'])
+        url = response.data['next']
+
+    single_page = api_client.get('/api/data_manager/proxy-feeds/?page_size=100')
+    assert len(paged) == len(set(paged))
+    assert set(paged) == expected
+    assert paged == [(row['source'], row['id']) for row in single_page.data['results']]
