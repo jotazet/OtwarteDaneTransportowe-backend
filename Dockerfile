@@ -37,9 +37,13 @@ RUN if [ "$INSTALL_DEV" = "true" ]; then uv sync --locked; else uv sync --locked
 
 COPY . /app
 
-# Collect admin/DRF/Swagger static assets for WhiteNoise (no DB required).
-ENV DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_dev
-RUN python manage.py collectstatic --noinput
+# Collect admin/DRF/Swagger static assets for WhiteNoise (no DB required). The development
+# settings are set for this step only: the production ones refuse to load without secrets.
+RUN DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_dev python manage.py collectstatic --noinput
+
+# Fail closed: a container started without DJANGO_SETTINGS_MODULE (a new Compose service,
+# a bare `docker run`) gets the production settings, which refuse placeholder secrets.
+ENV DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
 
 RUN groupadd --system app \
  && useradd --system --gid app --home-dir /app app \
