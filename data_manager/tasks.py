@@ -49,6 +49,7 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
+from data_manager.net_security import redact_urls
 from data_manager.validators import REALTIME_MIN_INTERVAL_SECONDS
 
 logger = get_task_logger(__name__)
@@ -448,7 +449,9 @@ def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> 
         try:
             result = _fetch(endpoint, now)
         except Exception as exc:
-            logger.warning('fetch_realtime_endpoint_rt id=%d error: %s', endpoint_id, exc)
+            logger.warning(
+                'fetch_realtime_endpoint_rt id=%d error: %s', endpoint_id, redact_urls(str(exc))
+            )
             result = 'error'
 
         endpoint.refresh_from_db(
@@ -682,7 +685,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 _reject_submission(str(exc))
                 return
             except requests.exceptions.RequestException as exc:
-                _reject_submission(f'Failed to download feed for validation: {exc}')
+                _reject_submission(
+                    f'Failed to download feed for validation: {redact_urls(str(exc))}'
+                )
                 return
         elif not file_field:
             _record_infra_error(ve.FILE_MISSING, 'no file, cached file or URL')
@@ -1162,7 +1167,7 @@ def _verify_realtime_submission(submission_id: int) -> dict:
                 submission_id,
                 ep.pk,
                 code,
-                exc,
+                redact_urls(str(exc)),
             )
             extra = {}
             if code == rr.ENDPOINT_CONTENT_INVALID:
