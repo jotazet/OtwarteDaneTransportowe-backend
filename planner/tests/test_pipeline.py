@@ -327,6 +327,8 @@ def test_build_declared_interrupted_during_activation_never_becomes_active(
     assert GraphBuild.objects.get(is_active=True) == first
     assert serving_target() == f'graphs/{first.id}'
     assert fake_otp.events == ['stop', 'start', 'stop']
+    assert not os.path.exists(pipeline.graph_dir(build))
+    assert os.path.exists(pipeline.graph_dir(first))
     feed.refresh_from_db()
     assert feed.last_good_sha256 == last_good
 
@@ -413,6 +415,133 @@ def test_failed_first_activation_serves_nothing(make_feed, fake_otp):
 
     assert build.error_code == 'planner.activation_failed'
     assert not os.path.lexists(pipeline.data_path('serving'))
+
+
+class WorkerKilled(BaseException):
+    """A deploy or OOM kill: no except clause of the pipeline runs."""
+
+
+def test_ensure_serving_restarts_otp_left_on_a_graph_that_never_became_active(
+    make_feed, fake_otp, monkeypatch
+):
+    feed = make_feed('krk')
+    active = build_now()
+    set_feed_content(feed, gtfs_variant('v2'))
+
+    def killed(build):
+        raise WorkerKilled
+
+    monkeypatch.setattr(pipeline, '_wait_until_healthy', killed)
+    with pytest.raises(WorkerKilled):
+        build_now()
+    interrupted = GraphBuild.objects.latest('id')
+    assert serving_target() == f'graphs/{interrupted.id}'
+    assert fake_otp.running  # on the graph the database says is not active
+    declare_interrupted()
+    fake_otp.events.clear()
+
+    pipeline.ensure_serving()
+
+    assert fake_otp.events == ['stop', 'start']
+    assert serving_target() == f'graphs/{active.id}'
+    assert not os.path.exists(pipeline.graph_dir(interrupted))
+    assert os.path.exists(pipeline.graph_dir(active))
+
+
+def test_ensure_serving_restarts_otp_when_serving_is_not_a_symlink(make_feed, fake_otp):
+    make_feed('krk')
+    active = build_now()
+    serving = Path(pipeline.data_path('serving'))
+    serving.unlink()
+    serving.mkdir()  # what Docker creates before the first build
+    fake_otp.events.clear()
+
+    pipeline.ensure_serving()
+
+    assert fake_otp.events == ['stop', 'start']
+    assert serving_target() == f'graphs/{active.id}'
+
+
+def test_failed_activation_removes_its_graph(make_feed, fake_otp):
+    feed = make_feed('krk')
+    first = build_now()
+    set_feed_content(feed, gtfs_variant('v2'))
+    fake_otp.healthy = False
+
+    build = build_now()
+
+    assert build.error_code == 'planner.activation_failed'
+    assert not os.path.exists(pipeline.graph_dir(build))
+    assert os.path.exists(pipeline.graph_dir(first))
+
+
+def test_failed_rollback_keeps_the_graph_it_rolled_back_to(make_feed, fake_otp):
+    feed = make_feed('krk')
+    first = build_now()
+    set_feed_content(feed, gtfs_variant('v2'))
+    second = build_now()
+    first.refresh_from_db()
+    fake_otp.healthy = False
+
+    rollback = services.request_rollback(first)
+    pipeline.run_build(rollback.id)
+    rollback.refresh_from_db()
+
+    assert rollback.error_code == 'planner.activation_failed'
+    assert serving_target() == f'graphs/{second.id}'
+    assert os.path.exists(pipeline.graph_dir(first))
+
+
+def test_ensure_serving_removes_only_files_of_finished_builds(make_feed, fake_otp, planner_data):
+    feed = make_feed('krk')
+    rollback_target = build_now()
+    set_feed_content(feed, gtfs_variant('v2'))
+    active = build_now()
+    failed = GraphBuild.objects.create(
+        trigger=GraphBuild.TRIGGER_MANUAL, otp_image='x', status=GraphBuild.STATUS_FAILED
+    )
+    queued = GraphBuild.objects.create(trigger=GraphBuild.TRIGGER_MANUAL, otp_image='x')
+    leftovers = [
+        planner_data / 'builds' / str(failed.id) / 'feeds',
+        planner_data / 'graphs' / str(failed.id),
+    ]
+    untouched = [
+        planner_data / 'builds' / str(queued.id),
+        planner_data / 'graphs' / str(queued.id),
+        planner_data / 'graphs' / '99999',  # no such build
+        planner_data / 'graphs' / 'notes',
+        planner_data / 'graphs' / '\u00b2',  # isdigit(), but not an id
+    ]
+    for path in leftovers + untouched:
+        path.mkdir(parents=True)
+    fake_otp.events.clear()
+
+    pipeline.ensure_serving()
+
+    assert fake_otp.events == []
+    assert not (planner_data / 'builds' / str(failed.id)).exists()
+    assert not leftovers[1].exists()
+    assert all(path.exists() for path in untouched)
+    assert os.path.exists(pipeline.graph_dir(active))
+    assert os.path.exists(pipeline.graph_dir(rollback_target))
+
+
+def test_ensure_serving_keeps_a_rolled_back_graph_and_the_one_before(make_feed, fake_otp):
+    feed = make_feed('krk')
+    first = build_now()
+    set_feed_content(feed, gtfs_variant('v2'))
+    second = build_now()
+    first.refresh_from_db()
+    rollback = services.request_rollback(first)
+    pipeline.run_build(rollback.id)
+    fake_otp.events.clear()
+
+    pipeline.ensure_serving()
+
+    assert fake_otp.events == []
+    assert serving_target() == f'graphs/{first.id}'
+    assert os.path.exists(pipeline.graph_dir(first))
+    assert os.path.exists(pipeline.graph_dir(second))
 
 
 def test_feed_copy_is_retried_on_the_current_file(make_feed, fake_otp, monkeypatch):
