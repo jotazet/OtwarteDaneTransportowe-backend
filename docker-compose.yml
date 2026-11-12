@@ -33,6 +33,16 @@ x-app-service: &app-service
   volumes:
     - .:/app
 
+# The worker's main process answers the ping also while its pool runs a long task (a planner
+# graph build takes hours). Each check starts a Python process that loads the Celery app.
+x-worker-healthcheck: &worker-healthcheck
+  test: ["CMD-SHELL", "celery -A OtwarteDaneTransportowe inspect ping --timeout 10 -d celery@$$HOSTNAME > /dev/null"]
+  interval: 120s
+  timeout: 30s
+  retries: 3
+  start_period: 60s
+  start_interval: 5s
+
 services:
   # Bind-mounted project dir often yields root-owned uploaded_data; app runs as UID:GID.
   init_uploads:
@@ -115,6 +125,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+      start_interval: 5s
 
   celery_worker:
     <<: *app-service
@@ -124,6 +135,7 @@ services:
       --loglevel=info
       --queues=default
       --concurrency=${CELERY_DEFAULT_CONCURRENCY:-2}
+    healthcheck: *worker-healthcheck
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -131,11 +143,16 @@ services:
   celery_beat:
     <<: *app-service
     container_name: odt-celery-beat
-    # DatabaseScheduler — harmonogram trzymany w PostgreSQL (tabela PeriodicTask)
-    command: >
-      celery -A OtwarteDaneTransportowe beat
-      --loglevel=info
-      --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    # The schedule is kept in PostgreSQL (PeriodicTask). The healthcheck reads the file that
+    # CELERY_BEAT_SCHEDULER touches after every tick (HEARTBEAT_FILE in celery_beat.py).
+    command: celery -A OtwarteDaneTransportowe beat --loglevel=info
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/celery-beat-heartbeat') > 60)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -179,6 +196,7 @@ services:
       --loglevel=info
       --queues=feeds
       --concurrency=${CELERY_FEEDS_CONCURRENCY:-1}
+    healthcheck: *worker-healthcheck
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -219,6 +237,7 @@ services:
       --loglevel=info
       --queues=planner
       --concurrency=2
+    healthcheck: *worker-healthcheck
     depends_on:
       migrate:
         condition: service_completed_successfully

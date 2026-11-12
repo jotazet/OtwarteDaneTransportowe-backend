@@ -1,21 +1,29 @@
 #!/bin/sh
 # Deploys the checked-out release, in the order that keeps the data safe: the .env check,
 # the image (which changes nothing running), a database dump, the new .env, migrations and
-# new containers, then an answer from the API. Any failure stops it there. odt-deploy runs
+# new containers, then every service healthy. Any failure stops it there. odt-deploy runs
 # it after checking out the tag (docs/deployment.md, section 20); it also works by hand from
 # the checkout, with a complete .env (odt-deploy adds the host file's settings to the job's):
 #
-#   sh scripts/deploy/release.sh <label> <new .env>
+#   sh scripts/deploy/release.sh vX.Y.Z <new .env>
 set -eu
 
 tag="$1"
 env_new="$2"
 BACKUPS_KEEP=10
-HEALTH_TRIES=36
-HEALTH_DELAY=5
+RELEASES_KEEP=3
+# Covers the migrations too: when it expires, Compose leaves the services after `migrate`
+# created but not started. Within the deploy job's 30 minutes.
+WAIT_TIMEOUT=900
 
 cd "$(dirname "$0")/../.."
 log() { echo "release: $*"; }
+
+# The version becomes an image tag (odt-backend:vX.Y.Z) once the release is live.
+if ! printf '%s\n' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+    log "expected a release tag vX.Y.Z, got '$tag'" >&2
+    exit 1
+fi
 
 # A planner graph build or feed test (containers labelled odt.planner) holds up to 8 GB of
 # RAM and swap: an image build beside it risks the OOM killer, and the release would
@@ -27,10 +35,6 @@ fi
 
 python3 -I scripts/deploy/envfile.py check .env "$env_new"
 
-# The image web runs now stays as :previous for a quick manual rollback (section 20); taken
-# from the container, not :latest, which a failed earlier attempt may have rebuilt already.
-running="$(./scripts/deploy.sh images -q web 2>/dev/null || true)"
-[ -z "$running" ] || docker image tag "$running" odt-backend:previous
 # --pull: the newest python:3.12-slim of the same tag, so base image fixes reach production.
 ./scripts/deploy.sh build --pull web
 
@@ -49,22 +53,21 @@ find "$HOME/backups" -maxdepth 1 -name 'release-*' -type d | sort | head -n "-$B
 
 install -m 600 "$env_new" .env
 # `migrate` runs first (depends_on), then every service is recreated on the new image.
-./scripts/deploy.sh up -d
-
-tries=0
-until ./scripts/deploy.sh exec -T web python -c \
-    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/', timeout=5)" \
-    > /dev/null 2>&1; do
-    tries=$((tries + 1))
-    if [ "$tries" -ge "$HEALTH_TRIES" ]; then
-        log "web did not answer after $tries tries" >&2
-        ./scripts/deploy.sh ps >&2
-        exit 1
-    fi
-    sleep "$HEALTH_DELAY"
-done
+# --wait: until every service runs and passes its healthcheck; it fails as soon as one
+# exits or turns unhealthy, and one that keeps restarting never becomes healthy.
+if ! ./scripts/deploy.sh up -d --wait --wait-timeout "$WAIT_TIMEOUT"; then
+    log "not every service became healthy within ${WAIT_TIMEOUT}s" >&2
+    ./scripts/deploy.sh ps -a >&2
+    exit 1
+fi
+# Only a release that passed gets an image tag, so a failed one, retried or not, never
+# replaces a good rollback image (section 20). The newest $RELEASES_KEEP stay.
+docker image tag odt-backend:latest "odt-backend:$tag"
 log "$tag is live"
 
+docker image ls odt-backend --format '{{.Tag}}' | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' \
+    | sort -V | head -n "-$RELEASES_KEEP" | sed 's/^/odt-backend:/' \
+    | xargs -r docker image rm > /dev/null || log "could not remove old release images"
 # Only this project's replaced images: the host runs other projects too.
 docker image prune -f --filter label=org.opencontainers.image.title=odt-backend > /dev/null
 # Build cache older than a week, of every project on the host (it grew to 17 GB): only a
