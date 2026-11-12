@@ -41,7 +41,7 @@ class Command(BaseCommand):
 
         count = 0
         for entry in entries:
-            self.stdout.write(f'  → Pobieranie entry id={entry.pk}  {redact_url(entry.url)}')
+            self.stdout.write(f'  → Fetching entry id={entry.pk}  {redact_url(entry.url)}')
             _fetch_static_entry(entry)
             count += 1
 

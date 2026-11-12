@@ -102,8 +102,11 @@ def redact_url(url: str) -> str:
 
 
 # Absolute URLs, and paths with a query: urllib3 reports a failed request
-# as "... with url: /feed?token=... (Caused by ...)".
-_URL_IN_TEXT = re.compile(r"""[a-z][a-z0-9+.-]*://[^\s'"<>]+|/[^\s'"<>?]*\?[^\s'"<>()]*""", re.I)
+# as "... with url: /feed?token=... (Caused by ...)". Userinfo, query and
+# fragment run to the next whitespace: quotes and brackets are valid there.
+_URL_IN_TEXT = re.compile(
+    r"""[a-z][a-z0-9+.-]*://[^\s/?#]*[^\s'"<>?#]*(?:[?#]\S*)?|/[^\s'"<>?]*\?\S*""", re.I
+)
 
 
 def redact_urls(text: str) -> str:

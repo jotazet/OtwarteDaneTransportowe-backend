@@ -43,6 +43,8 @@ def test_redact_urls_in_request_error_texts():
     assert 't0k' not in redact_urls(pool_error)
     assert 'with url: /gtfs.zip (Caused by' in redact_urls(pool_error)
     assert redact_urls('Read timed out. (read timeout=60)') == 'Read timed out. (read timeout=60)'
+    quoted = "Invalid URL 'https://u:p'w@example.org/a?t=x'y(z)': bad"
+    assert redact_urls(quoted) == "Invalid URL 'https://example.org/a bad"
 
 
 @pytest.fixture
