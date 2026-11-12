@@ -129,22 +129,12 @@ def can_edit_static_feed_source(user, submission) -> bool:
         return has_admin_role(user) or _is_submission_owner_provider(user, submission)
     if submission.current_stage < 2:
         return has_admin_role(user) or submission.submitted_by_id == user.id
-    if submission.current_stage <= 4:
-        return has_admin_role(user)
     return has_admin_role(user)
 
 
 def can_edit_realtime_submission_content(user, submission) -> bool:
     """Whether the user may change realtime endpoints (url, auth, add/remove), same rules as static."""
-    if not user or not user.is_authenticated:
-        return False
-    if submission.is_rejected:
-        return has_admin_role(user) or _is_submission_owner_provider(user, submission)
-    if submission.current_stage < 2:
-        return has_admin_role(user) or submission.submitted_by_id == user.id
-    if submission.current_stage <= 4:
-        return has_admin_role(user)
-    return has_admin_role(user)
+    return can_edit_static_feed_source(user, submission)
 
 
 CONFIRMATION_ONLY_PATCH_KEYS = frozenset({'stage', 'rejection_cause'})
@@ -195,8 +185,6 @@ class IsEditorOrOwnBloggerOrReadOnly(BasePermission):
         user = request.user
         if not user or not user.is_authenticated:
             return False
-        if view.action == 'create':
-            return can_publish_blog(user) or can_edit_any_blog(user)
         return can_publish_blog(user) or can_edit_any_blog(user)
 
     def has_object_permission(self, request, view, obj):
