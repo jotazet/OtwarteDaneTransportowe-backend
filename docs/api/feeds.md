@@ -23,7 +23,7 @@ The full submission lifecycle (stages, rejections, fetch errors and pauses) is d
 GET /api/data_manager/submissions/
 ```
 
-The endpoint requires JWT and returns, in a single response (not paginated), the logged-in user's own submissions: static (`feed-submissions`) and realtime (`realtime-submissions`). The optional query param `transport_organization` filters both types by organization.
+The endpoint requires JWT and returns, in a single response (not paginated), the logged-in user's own submissions: static (`feed-submissions`) and realtime (`realtime-submissions`). The optional query param `transport_organization` filters both types by organization (a non-integer value returns `400`, as for the lists below).
 
 ```json
 {
@@ -96,7 +96,7 @@ Base endpoint:
 **List query params:**
 
 - `data_type` - e.g. `gtfs`.
-- `transport_organization` - organization ID.
+- `transport_organization` - organization ID; a value that is not an integer returns `400` with `{"transport_organization": ["feeds.invalid_integer"]}`.
 
 **List:**
 
@@ -313,7 +313,7 @@ Base endpoint:
 
 **List query params:**
 
-- `transport_organization` - organization ID.
+- `transport_organization` - organization ID; a value that is not an integer returns `400` with `{"transport_organization": ["feeds.invalid_integer"]}`.
 
 **Static submissions to which realtime can be added:**
 

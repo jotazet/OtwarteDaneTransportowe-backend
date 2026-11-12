@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: non-numeric ids and filters no longer return `500`
+
+Not breaking. The `transport_organization` query filter of `GET /api/data_manager/submissions/`, `feed-submissions/` and `realtime-submissions/` returns `400` with `{"transport_organization": ["feeds.invalid_integer"]}` for a value that is not an integer (it used to be a `500`). A non-numeric id in `realtime-submissions/eligible-static-submissions/{id}/` and `feed-submissions/{pk}/download/static|realtime/{endpoint_pk}/` returns `404`. See [Feeds API](feeds.md).
+
+---
+
 ## 2026-11-12: realtime refresh interval of at least 5 seconds
 
 Not breaking for clients that send sensible intervals. A realtime endpoint's `interval` in `POST`/`PUT`/`PATCH /api/data_manager/realtime-submissions/` must now be at least **5** seconds; `0` to `4` return `400` with `["realtime.interval_too_short"]` as the messages of `endpoints.{index}.interval` (it used to be accepted, and `0` made ODT fetch the provider in a tight loop). Endpoints stored with an interval below 5 were raised to 5 by a migration, so the published `interval` in the catalogue is never below 5 either. See [Realtime validation rules](feeds.md).

@@ -97,6 +97,23 @@ def _days_since(request, default: int = 7):
     return timezone.now() - timedelta(days=days)
 
 
+def _int_query_param(request, name):
+    """Integer query filter, or ``None`` when absent.
+
+    A non-integer value is a 400 with the code as the field message (ADR 0006)
+    instead of a ``ValueError`` from the ORM lookup.
+    """
+    raw = request.query_params.get(name)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValidationError(
+            {name: ['feeds.invalid_integer']}, code='feeds.invalid_integer'
+        ) from None
+
+
 def _filter_fetch_errors(request, qs):
     """Apply shared query params (error_type, source, endpoint_type) to a FeedFetchError qs."""
     error_type = request.query_params.get('error_type')
@@ -555,8 +572,8 @@ class UserSubmissionsView(APIView):
             .order_by('-created_at')
         )
 
-        transport_org = request.query_params.get('transport_organization')
-        if transport_org:
+        transport_org = _int_query_param(request, 'transport_organization')
+        if transport_org is not None:
             static_qs = static_qs.filter(transport_organization_id=transport_org)
             realtime_qs = realtime_qs.filter(transport_organization_id=transport_org)
 
@@ -598,8 +615,8 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         data_type = self.request.query_params.get('data_type')
         if data_type:
             qs = qs.filter(data_type=data_type)
-        transport_org = self.request.query_params.get('transport_organization')
-        if transport_org:
+        transport_org = _int_query_param(self.request, 'transport_organization')
+        if transport_org is not None:
             qs = qs.filter(transport_organization_id=transport_org)
         return qs
 
@@ -730,7 +747,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    @action(detail=True, methods=['get'], url_path='download/static/(?P<endpoint_pk>[^/.]+)')
+    @action(detail=True, methods=['get'], url_path='download/static/(?P<endpoint_pk>[0-9]+)')
     def download_static(self, request, pk=None, endpoint_pk=None):
         submission = self.get_object()
         entry = get_object_or_404(StaticFeedEntry, pk=endpoint_pk, submission=submission)
@@ -744,7 +761,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
             filename=feed_file.name.split('/')[-1],
         )
 
-    @action(detail=True, methods=['get'], url_path='download/realtime/(?P<endpoint_pk>[^/.]+)')
+    @action(detail=True, methods=['get'], url_path='download/realtime/(?P<endpoint_pk>[0-9]+)')
     def download_realtime(self, request, pk=None, endpoint_pk=None):
         """Download the cached file of a realtime endpoint linked to static submission pk."""
         submission = self.get_object()
@@ -798,9 +815,9 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
         if not can_confirm_feeds(self.request.user):
             qs = qs.filter(submitted_by=self.request.user)
-        p = self.request.query_params.get('transport_organization')
-        if p:
-            qs = qs.filter(transport_organization_id=p)
+        transport_org = _int_query_param(self.request, 'transport_organization')
+        if transport_org is not None:
+            qs = qs.filter(transport_organization_id=transport_org)
         return qs
 
     def get_serializer_class(self):
@@ -813,7 +830,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
     @action(
         detail=False,
         methods=['get'],
-        url_path=r'eligible-static-submissions/(?P<transport_org>[^/.]+)(?:/(?P<data_type>gtfs|netex|other))?',
+        url_path=r'eligible-static-submissions/(?P<transport_org>[0-9]+)(?:/(?P<data_type>gtfs|netex|other))?',
     )
     def eligible_static_submissions(self, request, transport_org=None, data_type=None):
         get_object_or_404(TransportOrganization, pk=transport_org)

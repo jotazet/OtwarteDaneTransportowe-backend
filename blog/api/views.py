@@ -89,7 +89,7 @@ class MyReactionsView(APIView):
         post_ids = []
         for value in raw:
             value = value.strip()
-            if value.isdigit():
+            if value.isdecimal():
                 post_ids.append(int(value))
             if len(post_ids) >= self.MAX_POST_IDS:
                 break
