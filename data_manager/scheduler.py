@@ -307,8 +307,7 @@ def _fetch_realtime_endpoint_rt(
         logger.debug('Refreshed realtime endpoint_rt=%d', endpoint.pk)
         return FETCH_OK
     except CredentialUndecryptable as exc:
-        _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_AUTH, exc)
-        return FETCH_PERMANENT
+        return _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_AUTH, exc, FETCH_PERMANENT)
     except (OutboundURLBlocked, InvalidFeedContent) as exc:
         return _log_endpoint_rt_error(
             endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc, FETCH_PERMANENT
