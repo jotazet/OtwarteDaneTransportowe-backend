@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -28,51 +29,61 @@ FETCH_RETRY_DELAYS = [
 ]
 
 
+_FETCH_STATE_FIELDS = (
+    'fetch_status',
+    'fetch_failure_count',
+    'next_fetch_after',
+    'fetch_paused_at',
+    'fetch_pause_reason',
+)
+
+
 class FetchControlMixin:
     """Shared state transitions for proxied static and realtime feed fetching."""
 
+    def _lock_fetch_state(self) -> None:
+        """Re-read the fetch state under a row lock (call inside a transaction).
+
+        The instance was loaded before the fetch, which can take minutes, so its
+        status may be stale: a Helper may have paused the feed in the meantime.
+        A manual pause outlives any fetch outcome; only resume_fetch() lifts it.
+        """
+        self.refresh_from_db(
+            fields=_FETCH_STATE_FIELDS,
+            from_queryset=type(self).objects.select_for_update(),
+        )
+
     def mark_fetch_success(self, now=None) -> None:
         now = now or timezone.now()
-        self.fetch_status = FETCH_STATUS_ACTIVE
-        self.fetch_failure_count = 0
-        self.next_fetch_after = None
-        self.fetch_paused_at = None
-        self.fetch_pause_reason = ''
-        self.last_fetch_success_at = now
-        self.save(
-            update_fields=[
-                'fetch_status',
-                'fetch_failure_count',
-                'next_fetch_after',
-                'fetch_paused_at',
-                'fetch_pause_reason',
-                'last_fetch_success_at',
-            ]
-        )
+        with transaction.atomic():
+            self._lock_fetch_state()
+            # Recorded even for a manually paused feed: the cache was refreshed.
+            self.last_fetch_success_at = now
+            if self.fetch_status != FETCH_STATUS_MANUAL_PAUSED:
+                self.fetch_status = FETCH_STATUS_ACTIVE
+                self.fetch_failure_count = 0
+                self.next_fetch_after = None
+                self.fetch_paused_at = None
+                self.fetch_pause_reason = ''
+            self.save(update_fields=[*_FETCH_STATE_FIELDS, 'last_fetch_success_at'])
 
     def mark_fetch_failure(self, reason: str = '', now=None) -> None:
         now = now or timezone.now()
-        self.fetch_failure_count = (self.fetch_failure_count or 0) + 1
-        self.last_fetch_error_at = now
-        self.fetch_pause_reason = (reason or '')[:500]
-        if self.fetch_failure_count <= len(FETCH_RETRY_DELAYS):
-            self.fetch_status = FETCH_STATUS_DELAYED
-            self.next_fetch_after = now + FETCH_RETRY_DELAYS[self.fetch_failure_count - 1]
-            self.fetch_paused_at = now
-        else:
-            self.fetch_status = FETCH_STATUS_AUTO_PAUSED
-            self.next_fetch_after = None
-            self.fetch_paused_at = now
-        self.save(
-            update_fields=[
-                'fetch_status',
-                'fetch_failure_count',
-                'next_fetch_after',
-                'fetch_paused_at',
-                'fetch_pause_reason',
-                'last_fetch_error_at',
-            ]
-        )
+        with transaction.atomic():
+            self._lock_fetch_state()
+            # Recorded even for a manually paused feed: the FeedFetchError is logged too.
+            self.last_fetch_error_at = now
+            if self.fetch_status != FETCH_STATUS_MANUAL_PAUSED:
+                self.fetch_failure_count += 1
+                self.fetch_pause_reason = (reason or '')[:500]
+                self.fetch_paused_at = now
+                if self.fetch_failure_count <= len(FETCH_RETRY_DELAYS):
+                    self.fetch_status = FETCH_STATUS_DELAYED
+                    self.next_fetch_after = now + FETCH_RETRY_DELAYS[self.fetch_failure_count - 1]
+                else:
+                    self.fetch_status = FETCH_STATUS_AUTO_PAUSED
+                    self.next_fetch_after = None
+            self.save(update_fields=[*_FETCH_STATE_FIELDS, 'last_fetch_error_at'])
 
     def pause_fetch(self, reason: str = '', now=None) -> None:
         now = now or timezone.now()
@@ -116,15 +127,29 @@ class FetchControlMixin:
 
 
 class OverwriteStorage(FileSystemStorage):
-    """Saves a new version of a file under the same name, rewriting it in place.
+    """Saves a new version of a file under the same name, replacing it atomically.
 
-    Django's own overwrite (truncate on open) instead of deleting the old file
-    first: two saves of one file at once (e.g. overlapping validations writing
-    report.json) made the second delete fail or remove the first's new file.
+    Each save writes its own temporary file next to the target and renames it
+    over the target with ``os.replace``, so a reader (a download being served,
+    OTP polling a realtime feed) sees the complete old or the complete new file,
+    never a truncated one. Two overlapping saves of one name (e.g. validations
+    writing report.json) both succeed and the last rename wins; delete-then-save
+    made the second delete fail or remove the first's new file.
     """
 
     def __init__(self, **kwargs):
         super().__init__(allow_overwrite=True, **kwargs)
+
+    def _save(self, name, content):
+        directory, basename = os.path.split(name)
+        tmp_name = os.path.join(directory, f'.{basename}.{secrets.token_hex(8)}.tmp')
+        try:
+            tmp_name = super()._save(tmp_name, content)
+            os.replace(self.path(tmp_name), self.path(name))
+        except BaseException:  # also on worker shutdown, so no temp file is left
+            self.delete(tmp_name)
+            raise
+        return name.replace('\\', '/')
 
 
 def feed_file_path(instance, filename):

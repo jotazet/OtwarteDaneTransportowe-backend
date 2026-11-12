@@ -1,3 +1,4 @@
+from django.db.models import Prefetch
 from rest_framework import viewsets
 
 from cases.api.serializers import (
@@ -7,7 +8,10 @@ from cases.api.serializers import (
     TransportOrganizationSerializer,
 )
 from cases.models import CaseStatus, DataProvider, TransportOrganization
-from OtwarteDaneTransportowe.auth_roles import IsCaseManagerOrReadOnly
+from OtwarteDaneTransportowe.auth_roles import (
+    IsCaseManagerOrReadOnly,
+    IsTransportOrganizationManagerOrReadOnly,
+)
 
 
 class DataProviderViewSet(viewsets.ModelViewSet):
@@ -25,11 +29,16 @@ class CaseStatusViewSet(viewsets.ModelViewSet):
 class TransportOrganizationViewSet(viewsets.ModelViewSet):
     queryset = (
         TransportOrganization.objects.all()
-        .prefetch_related('data_providers', 'case_status')
+        # The serializers read these from the prefetch cache: providers by
+        # name, statuses newest first (CaseStatus.Meta.ordering).
+        .prefetch_related(
+            Prefetch('data_providers', queryset=DataProvider.objects.order_by('name')),
+            'case_status',
+        )
         .order_by('region', 'transport_organization')
     )
     serializer_class = TransportOrganizationSerializer
-    permission_classes = [IsCaseManagerOrReadOnly]
+    permission_classes = [IsTransportOrganizationManagerOrReadOnly]
 
     def get_serializer_class(self):
         # Use detail serializer for retrieve (single object), base serializer for list

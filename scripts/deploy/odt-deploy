@@ -6,13 +6,17 @@
 #   odt-deploy vX.Y.Z < production.env
 #
 # Checks out the release tag, which must be on main, and hands it to that release's own
-# scripts/deploy/release.sh together with the .env from standard input. Kept small so
-# it rarely needs reinstalling; the steps of a deployment live in release.sh.
+# scripts/deploy/release.sh together with the .env from standard input merged with the
+# server's host file: standard input may set only application settings and secrets, the
+# host file sets the rest and wins (scripts/deploy/envfile.py, merge). Kept small so it
+# rarely needs reinstalling; the steps of a deployment live in release.sh.
 set -eu
 
 # sudo resets the environment and sets HOME to the target user's home.
 ODT_DIR="$HOME/OtwarteDaneTransportowe-backend"
 REPOSITORY=https://github.com/jotazet/OtwarteDaneTransportowe-backend.git
+# User ids, host paths, images, Compose settings: written by root, never by a release.
+HOST_ENV=/etc/odt/backend-host.env
 
 tag="${1:-}"
 if ! printf '%s\n' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
@@ -20,9 +24,15 @@ if ! printf '%s\n' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
     exit 2
 fi
 
-env_new="$(mktemp)"
-trap 'rm -f "$env_new"' EXIT
-cat > "$env_new"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+cat > "$work/release.env"
+
+if [ ! -f "$HOST_ENV" ] \
+    || [ -n "$(find "$HOST_ENV" "${HOST_ENV%/*}" -maxdepth 0 \( ! -user root -o -perm /022 \) -print)" ]; then
+    echo "odt-deploy: $HOST_ENV is missing, or it or its directory is not root's alone" >&2
+    exit 1
+fi
 
 cd "$ODT_DIR"
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
@@ -37,6 +47,10 @@ if ! git merge-base --is-ancestor "refs/tags/$tag" refs/remotes/origin/main; the
     exit 1
 fi
 
+# main's envfile.py, not the tag's: a tag from before the restriction deploys restricted too.
+git show refs/remotes/origin/main:scripts/deploy/envfile.py > "$work/envfile.py"
+python3 -I "$work/envfile.py" merge "$work/release.env" "$HOST_ENV" "$work/production.env"
+
 echo "odt-deploy: $(git describe --tags --always HEAD) -> $tag"
 git checkout --quiet --detach "refs/tags/$tag"
-sh scripts/deploy/release.sh "$tag" "$env_new"
+sh scripts/deploy/release.sh "$tag" "$work/production.env"

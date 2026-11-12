@@ -5,6 +5,7 @@ use real HTTP on 127.0.0.1 (the ``local_server`` fixture)."""
 import gzip
 import socket
 import time
+from urllib.parse import urlsplit
 
 import pytest
 import requests
@@ -31,6 +32,22 @@ def _addrinfo(*ips):
 
 def _patch_dns(monkeypatch, *ips):
     monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo', _addrinfo(*ips))
+
+
+def _patch_get(monkeypatch, fake_get):
+    """Patch requests.get with ``fake_get``, first resolving the host as urllib3 does.
+
+    urllib3 resolves the URL's host as is, a trailing dot included.
+
+    safe_get fails closed when a connection bypasses the DNS pin, so a fake
+    that never resolves anything would look like exactly that bypass.
+    """
+
+    def connecting_get(url, *args, **kwargs):
+        socket.getaddrinfo(urlsplit(url).hostname, 443)
+        return fake_get(url, *args, **kwargs)
+
+    monkeypatch.setattr('data_manager.net_security.requests.get', connecting_get)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +145,7 @@ def test_safe_get_converts_userinfo_to_basic_auth(monkeypatch):
         captured['headers'] = headers
         return _FakeResponse(body=b'PK\x03\x04data')
 
-    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    _patch_get(monkeypatch, fake_get)
     response = safe_get(
         'https://kd_sample:Hm5mEuPC%3F1h7@feeds.example.org/feed.zip',
         timeout=5,
@@ -148,7 +165,7 @@ def test_safe_get_explicit_auth_header_wins_over_userinfo(monkeypatch):
         captured['headers'] = headers
         return _FakeResponse(body=b'ok')
 
-    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    _patch_get(monkeypatch, fake_get)
     safe_get(
         'https://user:pass@feeds.example.org/feed.zip',
         headers={'Authorization': 'Bearer explicit-token'},
@@ -198,10 +215,7 @@ class _FakeResponse:
 
 def test_safe_get_returns_body(monkeypatch):
     _patch_dns(monkeypatch, '93.184.216.34')
-    monkeypatch.setattr(
-        'data_manager.net_security.requests.get',
-        lambda *a, **kw: _FakeResponse(body=b'PK\x03\x04data'),
-    )
+    _patch_get(monkeypatch, lambda *a, **kw: _FakeResponse(body=b'PK\x03\x04data'))
     response = safe_get('https://feeds.example.org/gtfs.zip', timeout=5, max_bytes=1024)
     assert response.content == b'PK\x03\x04data'
 
@@ -214,7 +228,7 @@ def test_safe_get_blocks_redirect_to_private_host(monkeypatch):
         return _addrinfo(ip)(host, port)
 
     monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo', fake_dns)
-    monkeypatch.setattr('data_manager.net_security.requests.get', lambda *a, **kw: next(responses))
+    _patch_get(monkeypatch, lambda *a, **kw: next(responses))
     with pytest.raises(OutboundURLBlocked):
         safe_get('https://feeds.example.org/gtfs.zip', timeout=5, max_bytes=1024)
 
@@ -223,16 +237,15 @@ def test_safe_get_blocks_redirect_without_location(monkeypatch):
     _patch_dns(monkeypatch, '93.184.216.34')
     response = _FakeResponse(redirect_to='x')
     response.headers = {}
-    monkeypatch.setattr('data_manager.net_security.requests.get', lambda *a, **kw: response)
+    _patch_get(monkeypatch, lambda *a, **kw: response)
     with pytest.raises(OutboundURLBlocked):
         safe_get('https://feeds.example.org/gtfs.zip', timeout=5, max_bytes=1024)
 
 
 def test_safe_get_blocks_redirect_loop(monkeypatch):
     _patch_dns(monkeypatch, '93.184.216.34')
-    monkeypatch.setattr(
-        'data_manager.net_security.requests.get',
-        lambda *a, **kw: _FakeResponse(redirect_to='https://feeds.example.org/loop'),
+    _patch_get(
+        monkeypatch, lambda *a, **kw: _FakeResponse(redirect_to='https://feeds.example.org/loop')
     )
     with pytest.raises(OutboundURLBlocked, match='redirect'):
         safe_get('https://feeds.example.org/gtfs.zip', timeout=5, max_bytes=1024)
@@ -240,10 +253,7 @@ def test_safe_get_blocks_redirect_loop(monkeypatch):
 
 def test_safe_get_aborts_oversized_body(monkeypatch):
     _patch_dns(monkeypatch, '93.184.216.34')
-    monkeypatch.setattr(
-        'data_manager.net_security.requests.get',
-        lambda *a, **kw: _FakeResponse(chunks=[b'a' * 600, b'b' * 600]),
-    )
+    _patch_get(monkeypatch, lambda *a, **kw: _FakeResponse(chunks=[b'a' * 600, b'b' * 600]))
     with pytest.raises(OutboundURLBlocked, match='byte limit'):
         safe_get('https://feeds.example.org/gtfs.zip', timeout=5, max_bytes=1000)
 
@@ -267,10 +277,10 @@ def test_verify_failure_retries_with_aia_bundle(monkeypatch):
             )
         return _FakeResponse(body=b'PK\x03\x04ok')
 
-    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    _patch_get(monkeypatch, fake_get)
     monkeypatch.setattr(
         'data_manager.net_security._ca_bundle_with_aia_intermediates',
-        lambda host, port: '/tmp/fake-bundle.pem',
+        lambda host, port, allowed_ips: '/tmp/fake-bundle.pem',
     )
     response = safe_get('https://broken-chain.example.org/f.zip', timeout=5, max_bytes=1024)
     assert response.content == b'PK\x03\x04ok'
@@ -285,11 +295,11 @@ def test_other_ssl_errors_are_not_retried(monkeypatch):
     def fake_get(url, **kwargs):
         raise requests_module.exceptions.SSLError('handshake failure')
 
-    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    _patch_get(monkeypatch, fake_get)
     bundle_mock_called = []
     monkeypatch.setattr(
         'data_manager.net_security._ca_bundle_with_aia_intermediates',
-        lambda host, port: bundle_mock_called.append(1) or '/tmp/x',
+        lambda host, port, allowed_ips: bundle_mock_called.append(1) or '/tmp/x',
     )
     with pytest.raises(requests_module.exceptions.SSLError):
         safe_get('https://feeds.example.org/f.zip', timeout=5, max_bytes=1024)
@@ -304,10 +314,10 @@ def test_verify_failure_propagates_when_chain_cannot_be_completed(monkeypatch):
     def fake_get(url, **kwargs):
         raise requests_module.exceptions.SSLError('certificate verify failed')
 
-    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    _patch_get(monkeypatch, fake_get)
     monkeypatch.setattr(
         'data_manager.net_security._ca_bundle_with_aia_intermediates',
-        lambda host, port: None,
+        lambda host, port, allowed_ips: None,
     )
     with pytest.raises(requests_module.exceptions.SSLError):
         safe_get('https://feeds.example.org/f.zip', timeout=5, max_bytes=1024)
@@ -342,7 +352,7 @@ def _recording_get(monkeypatch, responses):
         sent.append((url, dict(headers or {})))
         return next(queue)
 
-    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    _patch_get(monkeypatch, fake_get)
     return sent
 
 
@@ -457,10 +467,7 @@ def test_safe_download_streams_without_materialising_the_body(monkeypatch):
 
     _patch_dns(monkeypatch, '93.184.216.34')
     chunks = [b'x' * 1024] * 16
-    monkeypatch.setattr(
-        'data_manager.net_security.requests.get',
-        lambda *a, **kw: _FakeResponse(chunks=chunks),
-    )
+    _patch_get(monkeypatch, lambda *a, **kw: _FakeResponse(chunks=chunks))
 
     with safe_download('https://feeds.example.org/gtfs.zip', timeout=5, max_bytes=1 << 20) as (
         _response,
@@ -475,10 +482,7 @@ def test_safe_download_can_write_straight_into_a_file(monkeypatch, tmp_path):
     from data_manager.net_security import safe_download
 
     _patch_dns(monkeypatch, '93.184.216.34')
-    monkeypatch.setattr(
-        'data_manager.net_security.requests.get',
-        lambda *a, **kw: _FakeResponse(chunks=[b'ab', b'cd']),
-    )
+    _patch_get(monkeypatch, lambda *a, **kw: _FakeResponse(chunks=[b'ab', b'cd']))
     target = tmp_path / 'region.osm.pbf.tmp'
 
     with target.open('w+b') as file:
@@ -512,10 +516,7 @@ def test_aia_intermediate_fetch_is_size_capped(monkeypatch, tmp_path):
                 raise AssertionError('size cap did not stop the download')
             yield b'\x00' * 8192
 
-    monkeypatch.setattr(
-        'data_manager.net_security.requests.get',
-        lambda *a, **kw: _FakeResponse(chunks=endless_chunks()),
-    )
+    _patch_get(monkeypatch, lambda *a, **kw: _FakeResponse(chunks=endless_chunks()))
     with pytest.raises(OutboundURLBlocked, match='byte limit'):
         ns.safe_get(
             'https://ca.example.org/intermediate.der',
@@ -610,3 +611,171 @@ def test_gzip_body_is_decoded_and_capped_after_decompression(local_server):
     with pytest.raises(ResponseTooLarge):
         with safe_download(url, timeout=5, max_bytes=len(payload) // 2):
             pass
+
+
+# Hostname normalisation: validate, pin and request one ASCII name
+# ---------------------------------------------------------------------------
+
+IDN_URL = 'https://łódź.example.org/gtfs.zip'
+IDN_ASCII_HOST = 'xn--d-uga0v4h.example.org'  # what requests/urllib3 resolve
+
+
+def _once_public_dns(monkeypatch, name):
+    """``name`` resolves to a public IP once, then to a private one.
+
+    Other names always resolve to the public IP; literal IPs to themselves, as
+    the real resolver does. Returns the list of non-literal names looked up.
+    """
+    lookups = []
+
+    def fake(host, port, *args, **kwargs):
+        if host[0].isdigit():
+            return _addrinfo(host)(host, port)
+        lookups.append(host)
+        rebound = host == name and lookups.count(name) > 1
+        return _addrinfo('10.0.0.5' if rebound else '93.184.216.34')(host, port)
+
+    monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo', fake)
+    return lookups
+
+
+def test_idn_hostname_is_validated_in_its_ascii_form(monkeypatch):
+    lookups = _once_public_dns(monkeypatch, IDN_ASCII_HOST)
+    assert resolve_public_ips(IDN_URL) == (IDN_ASCII_HOST, 443, {'93.184.216.34'})
+    assert lookups == [IDN_ASCII_HOST]
+
+
+@pytest.mark.parametrize(
+    ('url', 'name'),
+    [(IDN_URL, IDN_ASCII_HOST), ('https://feeds.example.org./x', 'feeds.example.org.')],
+    ids=['idn', 'trailing-dot'],
+)
+def test_request_goes_through_the_pin(monkeypatch, url, name):
+    lookups = _once_public_dns(monkeypatch, name)
+    sent = []
+
+    def fake_get(url, headers=None, **kwargs):
+        host = urlsplit(url).hostname  # what urllib3 resolves
+        sent.append((host, socket.getaddrinfo(host, 443)[0][4][0], headers))
+        return _FakeResponse(body=b'ok')
+
+    monkeypatch.setattr('data_manager.net_security.requests.get', fake_get)
+    response = safe_get(url, headers={'X-Api-Key': 'k'}, timeout=5, max_bytes=1024)
+
+    assert response.content == b'ok'
+    # The validated IP, not the rebound one; same origin, so the key is kept.
+    assert sent == [(name, '93.184.216.34', {'X-Api-Key': 'k'})]
+    assert lookups == [name]  # one real lookup: validation only
+
+
+def test_idn_redirect_target_is_normalised_and_pinned(monkeypatch):
+    lookups = _once_public_dns(monkeypatch, IDN_ASCII_HOST)
+    sent = _recording_get(
+        monkeypatch, [_FakeResponse(redirect_to=IDN_URL), _FakeResponse(body=b'ok')]
+    )
+
+    assert safe_get('https://feeds.example.org/x', timeout=5, max_bytes=1024).content == b'ok'
+    assert urlsplit(sent[1][0]).hostname == IDN_ASCII_HOST
+    assert lookups == ['feeds.example.org', IDN_ASCII_HOST]  # validation only, per hop
+
+
+def test_pin_refuses_other_names_before_connecting(monkeypatch):
+    """Fail closed: a name spelled differently gets no unvalidated lookup."""
+    from data_manager.net_security import _pinned_dns
+
+    lookups = _once_public_dns(monkeypatch, IDN_ASCII_HOST)
+    with _pinned_dns(IDN_ASCII_HOST, {'93.184.216.34'}):
+        with pytest.raises(socket.gaierror):
+            socket.getaddrinfo('łódź.example.org', 443)
+        assert socket.getaddrinfo('93.184.216.34', 443)[0][4][0] == '93.184.216.34'
+    assert lookups == []
+
+
+def test_response_without_a_pinned_lookup_is_refused(monkeypatch):
+    _patch_dns(monkeypatch, '93.184.216.34')
+    response = _FakeResponse(body=b'ok')
+    monkeypatch.setattr('data_manager.net_security.requests.get', lambda *a, **kw: response)
+    with pytest.raises(OutboundURLBlocked, match='validated address'):
+        safe_get(IDN_URL, timeout=5, max_bytes=1024)
+    assert response.closed
+
+
+def test_invalid_idn_hostname_is_blocked():
+    with pytest.raises(OutboundURLBlocked):
+        assert_safe_outbound_url('https://ł' + 'a' * 70 + '.example.org/x')  # label > 63
+
+
+def test_aia_leaf_certificate_fetch_is_pinned(monkeypatch):
+    import ssl
+
+    from data_manager.net_security import _ca_bundle_with_aia_intermediates
+
+    lookups = _once_public_dns(monkeypatch, IDN_ASCII_HOST)
+    handshakes = []
+
+    def fake_get_server_certificate(addr, timeout=None):
+        handshakes.append(socket.getaddrinfo(*addr)[0][4][0])
+        raise ssl.SSLError('stop here')
+
+    monkeypatch.setattr(ssl, 'get_server_certificate', fake_get_server_certificate)
+    monkeypatch.setattr('data_manager.net_security._AIA_BUNDLE_CACHE', {})
+    assert _ca_bundle_with_aia_intermediates(IDN_ASCII_HOST, 443, {'93.184.216.34'}) is None
+    assert handshakes == ['93.184.216.34']
+    assert lookups == []
+
+
+@pytest.mark.parametrize(
+    'url',
+    [
+        'http://ŁÓDŹ.Example.org./x',
+        'http://feeds.example.org/x',
+        'http://93.184.216.34/x',
+        'http://[2606:2800:220:1::1]/x',
+    ],
+    ids=['idn-upper-trailing-dot', 'ascii', 'ipv4-literal', 'ipv6-literal'],
+)
+def test_pin_answers_the_lookup_real_requests_makes(monkeypatch, url):
+    """The real requests/urllib3 stack, DNS mocked and a local server.
+
+    Validation lookups (no family/type arguments) see a public IP; connect
+    lookups (urllib3 passes family and type) are routed to the local server.
+    The fetch succeeds only if urllib3's lookup hit the pin: any other name
+    is refused, and a response without a pinned lookup is discarded.
+    """
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-Length', '2')
+            self.end_headers()
+            self.wfile.write(b'ok')
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    real_getaddrinfo = socket.getaddrinfo
+    connect_lookups = []
+
+    def fake(host, port, *args, **kwargs):
+        if not args:  # validation
+            ip = host if host[0].isdigit() else '93.184.216.34'
+            return _addrinfo(ip)(host, port)
+        connect_lookups.append(host)
+        return real_getaddrinfo('127.0.0.1', server.server_port, *args, **kwargs)
+
+    monkeypatch.setenv('NO_PROXY', '*')
+    monkeypatch.setattr('data_manager.net_security.socket.getaddrinfo', fake)
+    try:
+        response = safe_get(url, timeout=5, max_bytes=1024)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert response.content == b'ok'
+    # urllib3 asked for the URL's name; only the pin's own lookup of the
+    # validated IP got through to the resolver.
+    assert connect_lookups == ['2606:2800:220:1::1' if '[' in url else '93.184.216.34']
