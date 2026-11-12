@@ -179,6 +179,14 @@ class ProxyManagedFeedListView(APIView):
         # Python must never be mixed: the database collation orders Polish
         # letters and case differently from Python's code-point order, which
         # duplicated and dropped rows across pages.
+        sources = {
+            'static': (static_qs, 'static_entry', ProxyManagedFeedListSerializer.from_static_entry),
+            'realtime': (
+                rt_qs,
+                'endpoint_rt',
+                ProxyManagedFeedListSerializer.from_realtime_endpoint,
+            ),
+        }
         page_keys = list(
             self._sort_keys(static_qs, 'static')
             .union(self._sort_keys(rt_qs, 'realtime'), all=True)
@@ -189,44 +197,27 @@ class ProxyManagedFeedListView(APIView):
 
         # Only the rows of the requested page are built, with select_related
         # and the fetch-health annotations.
-        related = ('submission', 'submission__transport_organization', 'submission__submitted_by')
-        static_ids = [key['id'] for key in page_keys if key['source'] == 'static']
-        rt_ids = [key['id'] for key in page_keys if key['source'] == 'realtime']
-        rows = {
-            ('static', entry.id): ProxyManagedFeedListSerializer.from_static_entry(entry)
-            for entry in annotate_fetch_health(
-                StaticFeedEntry.objects.filter(id__in=static_ids).select_related(*related),
-                'static_entry',
+        rows = {}
+        for source, (qs, label, build) in sources.items():
+            ids = [key['id'] for key in page_keys if key['source'] == source]
+            page_qs = qs.filter(id__in=ids).select_related(
+                'submission', 'submission__transport_organization', 'submission__submitted_by'
             )
-        }
-        rows.update(
-            (
-                ('realtime', endpoint.id),
-                ProxyManagedFeedListSerializer.from_realtime_endpoint(endpoint),
+            rows.update(
+                ((source, obj.id), build(obj)) for obj in annotate_fetch_health(page_qs, label)
             )
-            for endpoint in annotate_fetch_health(
-                RealtimeEndpointRT.objects.filter(id__in=rt_ids).select_related(*related),
-                'endpoint_rt',
-            )
-        )
         # A row deleted between the two queries is skipped, not a 500.
-        window = [
-            rows[key['source'], key['id']]
-            for key in page_keys
-            if (key['source'], key['id']) in rows
-        ]
+        window = [row for key in page_keys if (row := rows.get((key['source'], key['id'])))]
 
         # Counting is a COUNT(*) per source; no rows are built for it.
         total = static_qs.count() + rt_qs.count()
+        has_next = offset + page_size < total
         serializer = ProxyManagedFeedListSerializer(window, many=True)
         return Response(
             OrderedDict(
                 [
                     ('count', total),
-                    (
-                        'next',
-                        _page_url(request, page_number + 1) if offset + page_size < total else None,
-                    ),
+                    ('next', _page_url(request, page_number + 1) if has_next else None),
                     ('previous', _page_url(request, page_number - 1) if page_number > 1 else None),
                     ('results', serializer.data),
                 ]
