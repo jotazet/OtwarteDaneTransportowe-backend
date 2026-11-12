@@ -22,7 +22,7 @@ def _delete_replaced_files(sender, instance, field_names, update_fields) -> None
     in-memory instance may hold a stale copy of fields it is NOT saving — e.g.
     ``cached_file`` refreshed concurrently by the fetch scheduler — and
     deleting based on that stale diff would remove a live file. Same-name
-    replacement is skipped too: OverwriteStorage rewrites the path in place.
+    replacement is skipped too: OverwriteStorage replaces the file atomically.
     """
     if not instance.pk:
         return

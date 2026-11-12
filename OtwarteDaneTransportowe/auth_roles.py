@@ -101,6 +101,17 @@ def is_helper_reviewer(user) -> bool:
     return ROLE_HELPER in role_names(user) and not has_admin_role(user)
 
 
+def is_submitter_or_reviewer(user, submission) -> bool:
+    """Whether the user submitted ``submission`` (static or realtime) or reviews feeds.
+
+    A DataProvider works only with its own submissions: it links realtime to
+    its own static feed and sees only its own realtime on that feed.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    return submission.submitted_by_id == user.id or can_confirm_feeds(user)
+
+
 def _is_submission_owner_provider(user, submission) -> bool:
     return submission.submitted_by_id == user.id and ROLE_DATA_PROVIDER in role_names(user)
 
@@ -151,6 +162,12 @@ def can_manage_cases(user) -> bool:
     return has_role(user, ROLE_HELPER)
 
 
+def can_delete_transport_organization(user) -> bool:
+    """Admin only: deleting an organization cascades to all its feed submissions,
+    and deleting a submission is Admin-only too."""
+    return is_admin(user)
+
+
 class RoleReadOnlyOrWritePermission(BasePermission):
     write_check = staticmethod(lambda user: False)
 
@@ -199,11 +216,39 @@ class IsCaseManagerOrReadOnly(RoleReadOnlyOrWritePermission):
     write_check = staticmethod(can_manage_cases)
 
 
+class IsTransportOrganizationManagerOrReadOnly(IsCaseManagerOrReadOnly):
+    """Case managers create and update organizations; only Admin deletes them."""
+
+    def has_permission(self, request, view):
+        if request.method == 'DELETE':
+            return can_delete_transport_organization(request.user)
+        return super().has_permission(request, view)
+
+
 class RequiresAdminGroup(BasePermission):
     """API write/list user management requires Django group ``Admin``."""
 
     def has_permission(self, request, view):
         return has_admin_role(request.user)
+
+
+def can_manage_user_account(user, target) -> bool:
+    """Whether ``user`` may edit, delete or reset the password of ``target``.
+
+    Accounts with the Django-level flags (``is_superuser``, ``is_staff``) reach
+    the admin site, so only a superuser may manage them; the ``Admin`` role
+    alone is not enough (see :func:`has_admin_role`).
+    """
+    return user.is_superuser or not (target.is_superuser or target.is_staff)
+
+
+class CanManageUserAccount(BasePermission):
+    """Object check for user management: reads pass, writes need ``can_manage_user_account``."""
+
+    message = {'code': 'users.protected_account', 'details': {}}
+
+    def has_object_permission(self, request, view, obj):
+        return request.method in SAFE_METHODS or can_manage_user_account(request.user, obj)
 
 
 class AdminGroupOrDebug(BasePermission):

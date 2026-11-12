@@ -11,6 +11,7 @@ import io
 import json
 import os
 import subprocess
+import time
 import zipfile
 from datetime import datetime
 
@@ -27,6 +28,8 @@ TAG_FILTER = [
     'r/type=route',
 ]
 OSMIUM_TIMEOUT_SECONDS = 1800
+# How often a running osmium pass calls back, so the build's heartbeat stays fresh.
+OSMIUM_POLL_SECONDS = 60
 # Reading a header takes well under a second, even for all of Poland.
 HEADER_TIMEOUT_SECONDS = 60
 
@@ -96,8 +99,11 @@ def street_graph_key(cells, osm_path: str, otp_image: str) -> str:
     return digest.hexdigest()
 
 
-def prepare_osm(source: str, cells, target: str) -> None:
-    """Write ``source`` filtered to routable ways and cropped to the cells to ``target``."""
+def prepare_osm(source: str, cells, target: str, on_tick=None) -> None:
+    """Write ``source`` filtered to routable ways and cropped to the cells to ``target``.
+
+    ``on_tick`` is called about once a minute while osmium runs.
+    """
     workdir = os.path.dirname(target)
     polygons = [
         [
@@ -123,9 +129,17 @@ def prepare_osm(source: str, cells, target: str) -> None:
         )
     filtered = os.path.join(workdir, 'filtered.osm.pbf')
     try:
-        _osmium('tags-filter', source, *TAG_FILTER, '-o', filtered)
+        _osmium('tags-filter', source, *TAG_FILTER, '-o', filtered, on_tick=on_tick)
         _osmium(
-            'extract', '--strategy', 'complete_ways', '--polygon', coverage, filtered, '-o', target
+            'extract',
+            '--strategy',
+            'complete_ways',
+            '--polygon',
+            coverage,
+            filtered,
+            '-o',
+            target,
+            on_tick=on_tick,
         )
     finally:
         for path in (coverage, filtered):
@@ -133,13 +147,27 @@ def prepare_osm(source: str, cells, target: str) -> None:
                 os.remove(path)
 
 
-def _osmium(*args):
+def _osmium(*args, on_tick=None):
+    command = ['osmium', *args, '--overwrite', '-f', 'pbf,add_metadata=false']
     try:
-        subprocess.run(
-            ['osmium', *args, '--overwrite', '-f', 'pbf,add_metadata=false'],
-            check=True,
-            capture_output=True,
-            timeout=OSMIUM_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as exc:
         raise OsmPreparationError(str(exc)) from exc
+    deadline = time.monotonic() + OSMIUM_TIMEOUT_SECONDS
+    try:
+        while True:
+            try:
+                returncode = process.wait(timeout=OSMIUM_POLL_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() > deadline:
+                    raise OsmPreparationError(f'osmium {args[0]} timed out') from None
+                if on_tick:
+                    on_tick()
+    finally:
+        # Also when on_tick raises: never leave osmium running behind the build.
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    if returncode != 0:
+        raise OsmPreparationError(f'osmium {args[0]} exited with {returncode}')
