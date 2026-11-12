@@ -12,7 +12,9 @@ DataProvider
   -> backend saves FeedSubmission + StaticFeedEntry
   -> backend creates an uploaded history entry (stage 1 -> 2), so a new submission starts at stage 2
   -> data_type=gtfs: GTFS validation (Celery feeds queue, worker with Docker) runs after the file upload,
-     the URL submission or the proxy fetch; no errors -> stage 3, errors -> rejection (stage 1)
+     the URL submission or the proxy fetch; no errors -> stage 3, errors -> rejection (stage 1);
+     validation that could not run (Docker, validator, time limit) -> no rejection, the stage stays,
+     validation_status=error with a code, re-run by manage.py retry_gtfs_validation
   -> netex / other: no automatic validation; the submission stays at stage 2 until Helper/Admin sets the stage
   -> StaticFeedEntry.validation_status: pending / valid / invalid / error
   -> from stage 2 the owner may PATCH only the note, license and download schedule (not the name, URL/file, auth, is_original, hide_original)

@@ -188,7 +188,17 @@ In `static_entry`:
 
 - `download_time_1` and `download_time_2` are daily fetch times in **UTC** (`HH:MM:SS`), not Polish local time. `download_time_1` is required for a URL source and must be empty for an uploaded file; `download_time_2` is optional. ODT fetches on this schedule only when the source is proxied (`is_proxy_managed`).
 - The fetch health fields, from `fetch_status` to `fetch_error_count_7d`, are present only when `is_proxy_managed` is `true` (a URL with `hide_original=true`); for an uploaded file or a non-proxied URL they are left out. They are described in the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
-- `validation_status` is `pending`, `valid`, `invalid` or `error`; `validation_message` is a short English status or error text from validation (empty when valid).
+- `validation_status` is `pending`, `valid`, `invalid` or `error`. `validation_message` depends on it:
+  - `pending`, `valid`: empty.
+  - `invalid`: the feed failed validation and the submission was rejected; the same text as the rejection cause (validator notice codes as `code: count`, or English text when the provider's URL could not be downloaded).
+  - `error`: validation **could not run** because of a problem on ODT's side; the feed was not judged. The submission keeps its stage (no rejection) and ODT re-runs the validation. `validation_message` is one of the codes below, which the frontend translates ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
+
+| Code | Meaning |
+|---|---|
+| `gtfs_validation.file_missing` | The feed file to validate is not available on ODT's storage. |
+| `gtfs_validation.validator_unavailable` | ODT could not start the validator (Docker unreachable). |
+| `gtfs_validation.validator_failed` | The validator stopped or produced no usable report (e.g. it ran out of memory). |
+| `gtfs_validation.timeout` | Validation did not finish within ODT's time limit. |
 
 For Helper/Admin the detail and the write responses also contain `submitted_by_username`.
 

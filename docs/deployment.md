@@ -750,6 +750,11 @@ needed; only the proxy mounts the socket (read-only).
    docker compose exec web python manage.py retry_gtfs_validation
    docker compose exec web python manage.py retry_gtfs_validation --submission-id 64
    ```
+   Without `--submission-id` it re-queues GTFS entries at stage 2 or 3 whose `validation_status` is
+   `error` (validation could not run: the submission was not rejected) or `pending` (the task was lost
+   or the worker was killed). Named submissions are re-queued whatever their status. Stage 1 and
+   published (stage 4) submissions are skipped. The cause of an `error` is in the worker log
+   (`could not run: gtfs_validation.<code>: <details>`).
 
 This applies to GTFS feeds only (NeTEx/other are not validated automatically and stay at stage 2
 until a Helper/Admin sets the stage). After successful validation the stage moves to **3**; after GTFS

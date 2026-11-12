@@ -476,8 +476,10 @@ def validate_gtfs_feed_task(self, entry_id: int):
     import shutil
 
     import docker
+    from celery.exceptions import SoftTimeLimitExceeded
     from django.conf import settings
 
+    from data_manager import validation_errors as ve
     from data_manager.models import (
         FeedSubmission,
         FeedSubmissionHistory,
@@ -506,7 +508,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
         entry.validation_message = message
         entry.save(update_fields=['validation_status', 'validation_message'])
 
-    _set_validation_status(StaticFeedEntry.VALIDATION_PENDING, 'Validation in progress')
+    _set_validation_status(StaticFeedEntry.VALIDATION_PENDING)
 
     def _lock_submission() -> FeedSubmission:
         # Overlapping runs (upload signal, proxy refresh, retry command) must read
@@ -517,13 +519,21 @@ def validate_gtfs_feed_task(self, entry_id: int):
             .get(pk=entry.submission_id)
         )
 
-    def _reject_submission(reason: str, *, validation_error: bool = False) -> None:
-        status = (
-            StaticFeedEntry.VALIDATION_ERROR
-            if validation_error
-            else StaticFeedEntry.VALIDATION_INVALID
+    def _record_infra_error(code: str, detail) -> None:
+        # Validation could not run (our side, not the feed): no rejection, the
+        # stage stays as it is and manage.py retry_gtfs_validation re-runs it.
+        # The provider sees only the code; the details go to the server log.
+        _set_validation_status(StaticFeedEntry.VALIDATION_ERROR, code)
+        logger.error(
+            'GTFS validation of StaticFeedEntry %s (submission %s) could not run: %s: %s',
+            entry.id,
+            entry.submission_id,
+            code,
+            detail,
         )
-        _set_validation_status(status, reason)
+
+    def _reject_submission(reason: str) -> None:
+        _set_validation_status(StaticFeedEntry.VALIDATION_INVALID, reason)
         with transaction.atomic():
             submission = _lock_submission()
             stage = submission.current_stage
@@ -604,20 +614,14 @@ def validate_gtfs_feed_task(self, entry_id: int):
                         shutil.copyfileobj(body, fh)
                 container_input_dir = validation_temp_dir
             except OutboundURLBlocked as exc:
-                _reject_submission(str(exc), validation_error=True)
+                # The provider's URL, not our infrastructure: rejected as before.
+                _reject_submission(str(exc))
                 return
             except requests.exceptions.RequestException as exc:
-                _reject_submission(
-                    f'Failed to download feed for validation: {exc}',
-                    validation_error=True,
-                )
+                _reject_submission(f'Failed to download feed for validation: {exc}')
                 return
         elif not file_field:
-            logger.info(f"No file found for StaticFeedEntry {entry_id}. Skipping validation.")
-            _set_validation_status(
-                StaticFeedEntry.VALIDATION_ERROR,
-                'No file available for validation.',
-            )
+            _record_infra_error(ve.FILE_MISSING, 'no file, cached file or URL')
             return
         else:
             # file_field.name is relative to MEDIA_ROOT (e.g. '1/2/static/feed.zip')
@@ -638,10 +642,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
         host_output_dir = os.path.join(host_input_dir, report_dir_name)
 
         if not os.path.exists(container_file_path):
-            _reject_submission(
-                f"File not found in container: {container_file_path}",
-                validation_error=True,
-            )
+            _record_infra_error(ve.FILE_MISSING, f'not on disk: {container_file_path}')
             return
 
         # NOTE: Do not check that the file exists at the host path here.
@@ -660,8 +661,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             except Exception:
                 pass
         except OSError as e:
-            logger.error(f"Failed to create validation output dir: {e}")
-            _set_validation_status(StaticFeedEntry.VALIDATION_ERROR, str(e))
+            _record_infra_error(ve.VALIDATOR_FAILED, f'cannot create the output dir: {e}')
             return
 
         logger.info(f"Validating {filename}...")
@@ -670,9 +670,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
         try:
             client = docker.from_env()
         except docker.errors.DockerException as e:
-            _reject_submission(
-                f"Cannot connect to Docker (check the docker-socket-proxy service / DOCKER_HOST): {e}",
-                validation_error=True,
+            _record_infra_error(
+                ve.VALIDATOR_UNAVAILABLE,
+                f'cannot connect to Docker (check docker-socket-proxy / DOCKER_HOST): {e}',
             )
             return
 
@@ -705,10 +705,13 @@ def validate_gtfs_feed_task(self, entry_id: int):
             logger.info("Validation container finished.")
 
         except docker.errors.ContainerError as e:
-            _reject_submission(f"Validator container failed: {e}", validation_error=True)
+            # Non-zero exit, e.g. 137 when the memory limit killed it.
+            _record_infra_error(ve.VALIDATOR_FAILED, f'container failed: {e}')
             return
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as e:
-            _reject_submission(f"Docker execution error: {e}", validation_error=True)
+            _record_infra_error(ve.VALIDATOR_UNAVAILABLE, f'Docker execution error: {e}')
             return
 
         # Parse results
@@ -731,9 +734,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
             )
             time.sleep(retry_delay)
         else:
-            _reject_submission(
-                f"report.json not found in output directory after {max_retries} retries: {container_output_dir}",
-                validation_error=True,
+            _record_infra_error(
+                ve.VALIDATOR_FAILED,
+                f'report.json not found after {max_retries} retries: {container_output_dir}',
             )
             return
 
@@ -741,7 +744,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             with open(report_file, encoding='utf-8') as f:
                 report_data = json.load(f)
         except json.JSONDecodeError as e:
-            _reject_submission(f"Failed to decode report.json: {e}", validation_error=True)
+            _record_infra_error(ve.VALIDATOR_FAILED, f'cannot decode report.json: {e}')
             return
 
         def extract_notice_counts(payload: dict) -> tuple[int, int, dict]:
@@ -850,6 +853,8 @@ def validate_gtfs_feed_task(self, entry_id: int):
                     logger.info(
                         f"Submission {submission.id} advanced to Stage 3 (valid GTFS, awaiting admin)."
                     )
+    except SoftTimeLimitExceeded:
+        _record_infra_error(ve.TIMEOUT, 'soft time limit exceeded')
     finally:
         _cleanup_workdirs()
 

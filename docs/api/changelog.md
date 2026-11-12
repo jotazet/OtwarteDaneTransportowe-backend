@@ -2,6 +2,18 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: GTFS validation that could not run no longer rejects
+
+Not breaking: no field is added or removed.
+
+- When GTFS validation cannot run (Docker unreachable, the validator container fails or runs out of memory, no usable `report.json`, the time limit, the feed file missing on ODT's storage), the submission is **no longer rejected** to stage 1 with English exception text as `rejection_cause`. It keeps its stage, `static_entry.validation_status` is `error` and `static_entry.validation_message` is a code: `gtfs_validation.file_missing`, `gtfs_validation.validator_unavailable`, `gtfs_validation.validator_failed` or `gtfs_validation.timeout`. ODT re-runs the validation. See [Static feeds](feeds.md#static-feeds-feedsubmission).
+- `validation_message` is empty while `validation_status` is `pending` (it was `"Validation in progress"`).
+- Errors in the feed itself are unchanged: rejection to stage 1, `validation_status` `invalid`, the validator codes in `rejection_cause` and `validation_message`. A failed download of the provider's non-proxied URL also still rejects, now with `validation_status` `invalid` instead of `error`.
+
+**Frontend:** translate the four codes when showing `validation_message` for `validation_status: "error"`; never show `validation_message` as text in that case.
+
+---
+
 ## 2026-10-17: entity types of a realtime endpoint
 
 Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).
