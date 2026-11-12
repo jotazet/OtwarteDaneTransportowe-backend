@@ -1,7 +1,8 @@
 """The production .env, written from the GitHub environment and checked on the server.
 
-    python3 -I scripts/deploy/envfile.py write <path>       # the deploy job, on the runner
-    python3 -I scripts/deploy/envfile.py check <old> <new>  # release.sh, on the server
+    python3 -I scripts/deploy/envfile.py write <path>                  # the deploy job, on the runner
+    python3 -I scripts/deploy/envfile.py merge <release> <host> <out>  # odt-deploy, on the server
+    python3 -I scripts/deploy/envfile.py check <old> <new>             # release.sh, on the server
 
 `write` turns every variable of the `production` environment (VARS_JSON, the job's
 toJSON(vars)) into one line under its own name, then the secrets listed in SECRETS, which
@@ -10,6 +11,14 @@ token included. Variables named DEPLOY_* configure the deploy job itself and sta
 the file. Values go in double quotes with \\, \" and $ escaped ($$), which Compose reads
 back as the exact value through env_file and ${...} alike; single quotes break on a value
 that ends in a backslash. A line break is refused.
+
+`merge` builds the .env a release installs: the keys of the release's .env (standard input
+of odt-deploy), which must all be in RELEASE_KEYS, then every key of the server's host file
+(/etc/odt/backend-host.env, written by root), which wins. A release .env with any other key
+is refused, not trimmed. The host file holds what decides what and how containers run on
+the host: user ids, host paths, images, container names, Compose settings and every value
+Compose interpolates into docker-compose*.yml, resource limits, service addresses and
+DJANGO_SETTINGS_MODULE.
 
 `check` refuses a new .env that changes or drops FEED_AUTH_ENCRYPTION_KEY or
 POSTGRES_PASSWORD: the first makes every stored feed credential undecryptable, the second
@@ -35,6 +44,40 @@ REQUIRED_VARIABLES = (
     "CORS_ALLOWED_ORIGINS",
     "TRUSTED_PROXY_CIDRS",
 )
+# What a release may set besides the secrets: application settings read by Django that do
+# not change what or how containers run on the host. Anything else goes in the host file.
+RELEASE_VARIABLES = REQUIRED_VARIABLES + (
+    "ALLOW_UNTRUSTED_PROXY_IPS",
+    "CORS_ALLOWED_ORIGIN_REGEXES",
+    "CORS_URLS_REGEX",
+    "DJANGO_SECURE_SSL_REDIRECT",
+    "DJANGO_SECURE_HSTS_SECONDS",
+    "DJANGO_SECURE_REFERRER_POLICY",
+    "DJANGO_SECURE_COOP",
+    "DJANGO_LOG_LEVEL",
+    "PUBLIC_BASE_URL",
+    "JWT_ACCESS_MINUTES",
+    "JWT_REFRESH_DAYS",
+    "THROTTLE_LOGIN",
+    "THROTTLE_FEED_DOWNLOAD",
+    "THROTTLE_REACTION",
+    "FILE_UPLOAD_MAX_MEMORY_SIZE",
+    "DATA_UPLOAD_MAX_MEMORY_SIZE",
+    "MAX_IMAGE_FILE_SIZE_BYTES",
+    "MAX_FEED_FILE_SIZE_BYTES",
+    "MAX_REALTIME_FEED_BYTES",
+    "FEED_FETCH_TOTAL_TIMEOUT_SECONDS",
+    "REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS",
+    "CELERY_WORKER_MAX_TASKS_PER_CHILD",
+    "CELERY_WORKER_MAX_MEMORY_PER_CHILD",
+    "CELERY_WORKER_PREFETCH_MULTIPLIER",
+    "PLANNER_OSM_MAX_BYTES",
+    "PLANNER_REQUEST_LOG_RETENTION_DAYS",
+)
+RELEASE_KEYS = frozenset(RELEASE_VARIABLES + REQUIRED_SECRETS + OPTIONAL_SECRETS)
+# Without these in the host file the containers would run with the development settings
+# of .env.example and Compose's default user ids.
+REQUIRED_HOST_KEYS = ("DJANGO_SETTINGS_MODULE", "UID", "GID")
 # Changing these in GitHub alone breaks production (see the module docstring).
 PINNED = ("FEED_AUTH_ENCRYPTION_KEY", "POSTGRES_PASSWORD")
 DEPLOY_PREFIX = "DEPLOY_"
@@ -109,6 +152,29 @@ def write(path):
     print(f"envfile: {text.count(chr(10))} lines -> {path}")
 
 
+def merge(release_path, host_path, out_path):
+    if not os.path.isfile(host_path):
+        fail(f"No host file {host_path}; see docs/deployment.md section 20.")
+    with open(release_path, encoding="utf-8") as release_file:
+        release = parse(release_file.read())
+    with open(host_path, encoding="utf-8") as host_file:
+        host = parse(host_file.read())
+    refused = sorted(set(release) - RELEASE_KEYS)
+    if refused:
+        fail(
+            f"A release may not set {', '.join(refused)}; set it in {host_path} on the server"
+            " (docs/deployment.md section 20)."
+        )
+    for name in REQUIRED_HOST_KEYS:
+        if not host.get(name):
+            fail(f"{host_path} has no {name}.")
+    # Rendered again from the parsed values: only the keys checked above reach the file.
+    text = "".join(f"{name}={quote(name, value)}\n" for name, value in {**release, **host}.items())
+    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with open(fd, "w", encoding="utf-8") as env_file:
+        env_file.write(text)
+
+
 def check(old_path, new_path):
     if not os.path.exists(old_path):
         return
@@ -122,6 +188,8 @@ def check(old_path, new_path):
 if __name__ == "__main__":
     if sys.argv[1:2] == ["write"] and len(sys.argv) == 3:
         write(sys.argv[2])
+    elif sys.argv[1:2] == ["merge"] and len(sys.argv) == 5:
+        merge(*sys.argv[2:])
     elif sys.argv[1:2] == ["check"] and len(sys.argv) == 4:
         check(sys.argv[2], sys.argv[3])
     else:

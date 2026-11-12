@@ -117,8 +117,10 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ## 5. The `.env` file — full configuration
 
 > Once releases deploy automatically ([section 20](#20-releases-automatic-deployment-from-github)),
-> the server's `.env` is **generated** from the GitHub environment `production` on every
-> release: set the variables below there, not in the file. A hand edit lasts until the next release.
+> the server's `.env` is **generated** on every release from the GitHub environment
+> `production` (application settings and secrets) and the server's host file
+> `/etc/odt/backend-host.env` (everything else): set the variables below there, not in the
+> file. A hand edit lasts until the next release.
 
 Copy the template and fill in real values:
 
@@ -860,6 +862,7 @@ flowchart LR
   rel["GitHub Release vX.Y.Z"] --> ci["CI on the tag: tests, image, scripts"]
   ci --> job["deploy job on the server's runner (environment production)"]
   job -->|"sudo: tag + .env"| od["odt-deploy"]
+  host["/etc/odt/backend-host.env (root)"] --> od
   od --> rs["scripts/deploy/release.sh of that tag"]
 ```
 
@@ -870,7 +873,8 @@ flowchart LR
 2. It runs `/usr/local/sbin/odt-deploy` through sudo as the owner of the checkout, the only
    command `odt-runner` may run that way. `odt-deploy` refuses a tag that is not `vX.Y.Z`
    and a checkout with local changes, fetches the tag, refuses it unless it is on `main`,
-   checks it out and runs that tag's `release.sh`.
+   merges the `.env` from the job with the server's host file (below), checks the tag out
+   and runs that tag's `release.sh`.
 3. **`release.sh`**: stops while a planner graph build or feed test is running (a container
    labelled `odt.planner`), refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
    `POSTGRES_PASSWORD`, tags the running image `odt-backend:previous`, builds
@@ -907,12 +911,13 @@ deployment in *Actions*; the job's log shows `odt-deploy: <old> -> <new>` and
 
 - **Deployment branches and tags:** *Selected branches and tags*, add the tag rule `v*`.
   Then no branch, pull request or other workflow gets its secrets.
-- **Environment variables:** every `.env` setting, under the names from `.env.example` and
-  [section 5](#5-the-env-file--full-configuration) (`DJANGO_SETTINGS_MODULE`,
-  `DJANGO_ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`,
-  `TRUSTED_PROXY_CIDRS`, `POSTGRES_DB`, `POSTGRES_USER`, `UID`, `GID`, `HOST_PROJECT_PATH`,
-  `HOST_MEDIA_ROOT`, `COMPOSE_PROFILES`, `PLANNER_*`, ...). Optionally `DEPLOY_APP_USER`, the
-  owner of the checkout that `odt-deploy` runs as (default `rocky`).
+- **Environment variables:** the application settings of `RELEASE_VARIABLES` in
+  `scripts/deploy/envfile.py`, under the names from `.env.example` and
+  [section 5](#5-the-env-file--full-configuration) (`DJANGO_ALLOWED_HOSTS`,
+  `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `CORS_URLS_REGEX`, `TRUSTED_PROXY_CIDRS`,
+  `POSTGRES_DB`, `POSTGRES_USER`, `PUBLIC_BASE_URL`, size limits, throttles, ...). Optionally
+  `DEPLOY_APP_USER`, the owner of the checkout that `odt-deploy` runs as (default `rocky`).
+  Every other setting goes in the [host file](#the-host-file).
 - **Environment secrets:** `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`,
   `FEED_AUTH_ENCRYPTION_KEY` and `PLANNER_INTERNAL_TOKEN` (with the planner).
 
@@ -921,7 +926,9 @@ collaborators*, choose **Require approval for all outside collaborators**: a pul
 change `ci.yml` and send a job to the server's runner, so read a fork's workflow changes
 before approving its run.
 
-Rules of `envfile.py`: every variable becomes a `.env` line except `DEPLOY_*`; the secrets
+Rules of `envfile.py`: every variable becomes a `.env` line except `DEPLOY_*`; the server
+refuses the release, before it changes anything, if a line is not one of `RELEASE_VARIABLES`
+or the secrets (`A release may not set ...`); the secrets
 above must not also be variables (the job stops); a value cannot contain a line break;
 `POSTGRES_DB`, `POSTGRES_USER`, `DJANGO_ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`,
 `CORS_ALLOWED_ORIGINS` and `TRUSTED_PROXY_CIDRS` are required, because without them the
@@ -929,7 +936,72 @@ containers would take the development values from `.env.example` and still look 
 Repository-level and organization variables are part of the same `vars` context, so they
 land in `.env` too: keep production settings in the environment. A secret not listed in
 `envfile.py` and the workflow's `deploy` job does not reach the server: a new secret needs
-both changed.
+both changed. A new application setting that releases should set needs adding to
+`RELEASE_VARIABLES`; `odt-deploy` uses the list of `main`, so it applies once merged.
+
+### The host file
+
+`/etc/odt/backend-host.env` holds the settings that decide what and how containers run on
+the host, and wins over the job's `.env`: `DJANGO_SETTINGS_MODULE`, `UID` and `GID`
+(required), `HOST_*`, `*_IMAGE`, `COMPOSE_*`, the ports and every other value Compose
+interpolates into `docker-compose*.yml` (`*_HOST_PORT`, `WEB_HOST_BIND`, `GUNICORN_*`,
+`CELERY_*_CONCURRENCY`, `PLANNER_OTP_SERVE_*`), container resource limits
+(`GTFS_VALIDATOR_*_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS`, `PLANNER_OTP_*_HEAP`,
+`PLANNER_OTP_*_LIMIT`), paths and internal addresses (`DJANGO_MEDIA_ROOT`,
+`PLANNER_DATA_DIR`, `PLANNER_OSM_FILE`, `PLANNER_OTP_CONTAINER`, `PLANNER_OTP_URL`,
+`PLANNER_ODT_INTERNAL_URL`, `REDIS_CACHE_URL`). It may also pin an application setting. It
+holds no secret. `odt-deploy` refuses to run unless the file and `/etc/odt` are owned by root
+and writable by nobody else; the format is that of `.env`. Change it as root, then deploy.
+
+```bash
+sudo install -d -o root -g root -m 755 /etc/odt
+sudoedit /etc/odt/backend-host.env    # then:
+sudo chown root:root /etc/odt/backend-host.env && sudo chmod 644 /etc/odt/backend-host.env
+```
+
+For example:
+
+```dotenv
+DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
+UID=1000
+GID=1000
+HOST_PROJECT_PATH=/home/rocky/OtwarteDaneTransportowe-backend
+HOST_MEDIA_ROOT=/home/rocky/OtwarteDaneTransportowe-backend/uploaded_data
+COMPOSE_PROFILES=planner
+```
+
+#### Moving host settings out of GitHub (once)
+
+Releases from before this restriction took every setting from GitHub. Before the next
+release, on the server as `rocky`, from the checkout:
+
+1. Write the host file from the current `.env`, with the names that GitHub may no longer
+   set (as of 2026-11-12: `DJANGO_SETTINGS_MODULE`, `UID`, `GID`, `HOST_PROJECT_PATH`,
+   `HOST_MEDIA_ROOT`, `HOST_PLANNER_DATA_DIR`, `COMPOSE_PROFILES`, `POSTGRES_HOST_PORT`,
+   `REDIS_HOST_PORT`, `WEB_HOST_PORT`, `GUNICORN_WORKERS`, `CELERY_DEFAULT_CONCURRENCY`,
+   `CELERY_FEEDS_CONCURRENCY`, `PLANNER_OTP_BUILD_MEMSWAP_LIMIT`, `REDIS_CACHE_URL`), then
+   check it:
+
+   ```bash
+   sudo install -d -o root -g root -m 755 /etc/odt
+   grep -E '^(DJANGO_SETTINGS_MODULE|UID|GID|HOST_[A-Z_]+|COMPOSE_[A-Z_]+|[A-Z_]+_HOST_PORT|GUNICORN_[A-Z_]+|CELERY_[A-Z]+_CONCURRENCY|PLANNER_OTP_[A-Z_]+|REDIS_CACHE_URL)=' .env \
+     | sudo tee /etc/odt/backend-host.env > /dev/null
+   sudo chmod 644 /etc/odt/backend-host.env && cat /etc/odt/backend-host.env
+   ```
+
+2. Reinstall `odt-deploy` from `main` once this change is merged there:
+
+   ```bash
+   git fetch origin main && git show origin/main:scripts/deploy/odt-deploy > /tmp/odt-deploy
+   sudo install -o root -g root -m 755 /tmp/odt-deploy /usr/local/sbin/odt-deploy && rm /tmp/odt-deploy
+   ```
+
+3. Delete those variables from the GitHub environment `production`, and
+   `GTFS_REALTIME_VALIDATOR_HOST_PORT`, which nothing reads any more:
+   `gh variable delete --env production <NAME>` for each, then `gh variable list --env
+   production` shows only application settings.
+4. Release. The job fails with `A release may not set ...` if a variable was missed: move it,
+   then re-run the job.
 
 ### One-time server setup
 
@@ -943,6 +1015,10 @@ sudo useradd --system --create-home --home-dir /home/odt-runner --shell /sbin/no
 
 # The deploy command, owned by root; reinstall it whenever scripts/deploy/odt-deploy changes.
 sudo install -o root -g root -m 755 scripts/deploy/odt-deploy /usr/local/sbin/odt-deploy
+
+# The host settings, written by root (see "The host file" above).
+sudo install -d -o root -g root -m 755 /etc/odt
+sudoedit /etc/odt/backend-host.env && sudo chmod 644 /etc/odt/backend-host.env
 
 # odt-runner may run exactly that command as rocky, nothing else.
 echo 'odt-runner ALL=(rocky) NOPASSWD: /usr/local/sbin/odt-deploy' \
@@ -981,9 +1057,11 @@ sudo -u odt-runner sudo -n -u rocky id   # a password is required: refused
 
 **Another ODT repository** (the frontend): another directory under `/opt/actions-runner/`,
 registered to that repository with the same user and its own label, and its own deploy
-command in `/etc/sudoers.d/odt-runner`. The runners of one user can read each other's
-files, which is acceptable while they all deploy ODT; a project outside ODT gets its own
-user.
+command in `/etc/sudoers.d/odt-runner`. The runners of one user can read and change each
+other's files, so code that reaches one runner also reaches the other repository's
+deployments and their secrets. The frontend's deploy command should take the same care as
+`odt-deploy` (only application settings from the job, host settings from a root-owned file);
+a separate user per repository keeps them apart. A project outside ODT gets its own user.
 
 ### Moving the current `.env` into GitHub (once)
 
@@ -1000,6 +1078,9 @@ gh variable set --env production -f variables.env
 shred -u odt.env secrets.env variables.env
 gh variable list --env production && gh secret list --env production
 ```
+
+Keep the host settings out of `variables.env` and put them in the
+[host file](#the-host-file) instead: the release refuses them from GitHub.
 
 `gh` reads these as dotenv files and expands `$VAR` in values (unverified for every
 case): check any value with a `$`, quotes or a `#` by hand in the web UI. Comments at the
@@ -1022,8 +1103,9 @@ Compose 2.24.4 or newer is required (`volumes: !override` in `docker-compose.pro
 
 ### Changing a setting or a secret
 
-Change it in the environment, then deploy: a new release, or *Re-run jobs* on the latest
-release's run (it uses the workflow of that tag and today's settings).
+Change it in the environment (a host setting: in `/etc/odt/backend-host.env`, as root), then
+deploy: a new release, or *Re-run jobs* on the latest release's run (it uses the workflow of
+that tag and today's settings).
 
 - `DJANGO_SECRET_KEY` may change: every session and JWT becomes invalid.
 - `POSTGRES_PASSWORD`: first change it in the database
