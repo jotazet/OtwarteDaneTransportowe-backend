@@ -27,6 +27,7 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 from rest_framework.permissions import AllowAny
+from rest_framework_simplejwt.views import TokenBlacklistView
 
 from data_manager.api.views import PublicFeedDownloadView, RealtimePublicFeedDownloadView
 from OtwarteDaneTransportowe.admin_login import throttled_admin_login
@@ -81,6 +82,7 @@ urlpatterns = [
     path('api/planner/v1/', include('planner.api.public_urls')),
     path('api/auth/token/', RolesInTokenObtainPairView.as_view(), name='token-obtain-pair'),
     path('api/auth/token/refresh/', ThrottledTokenRefreshView.as_view(), name='token-refresh'),
+    path('api/auth/logout/', TokenBlacklistView.as_view(), name='logout'),
 ]
 
 # The API schema and interactive docs are public in development but restricted to

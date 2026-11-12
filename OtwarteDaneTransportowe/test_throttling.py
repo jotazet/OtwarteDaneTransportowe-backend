@@ -8,6 +8,7 @@ from rest_framework.test import APIClient
 
 from blog.models import Post
 from OtwarteDaneTransportowe import settings_base
+from OtwarteDaneTransportowe.auth_roles import ROLE_DATA_PROVIDER
 
 pytestmark = pytest.mark.django_db
 
@@ -158,3 +159,22 @@ def test_admin_login_with_valid_credentials_still_signs_in(rates):
     assert response.status_code == 302
     assert response.url == '/admin/'
     assert client.get('/admin/').status_code == 200
+
+
+@pytest.mark.parametrize(
+    ('path', 'body'),
+    [
+        ('/api/users/me/change-password/', {'current_password': 'wrong', 'new_password': 'x'}),
+        ('/api/users/me/change-email/', {'current_password': 'wrong', 'new_email': 'a@b.cz'}),
+    ],
+)
+def test_current_password_checks_are_limited_per_user(rates, make_user, client_as, path, body):
+    rates['account_change'] = '2/min'
+    client = client_as(make_user(ROLE_DATA_PROVIDER))
+
+    statuses = [client.post(path, body, format='json').status_code for _ in range(3)]
+
+    assert statuses == [400, 400, 429]
+    # Another user from the same client IP keeps their own limit.
+    other = client_as(make_user(ROLE_DATA_PROVIDER))
+    assert other.post(path, body, format='json').status_code == 400

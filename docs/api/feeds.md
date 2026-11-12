@@ -190,6 +190,8 @@ In `static_entry`:
 - The fetch health fields, from `fetch_status` to `fetch_error_count_7d`, are present only when `is_proxy_managed` is `true` (a URL with `hide_original=true`); for an uploaded file or a non-proxied URL they are left out. They are described in the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
 - `validation_status` is `pending`, `valid`, `invalid` or `error`; `validation_message` is a short English status or error text from validation (empty when valid).
 
+`realtime_submissions` lists the realtime submissions linked to this static feed. For a `DataProvider` it holds only the ones the feed's owner submitted; `GET .../download/realtime/{endpoint_pk}/` likewise returns `404` for an endpoint of another user's realtime submission.
+
 For Helper/Admin the detail and the write responses also contain `submitted_by_username`.
 
 **Create - URL:**
@@ -406,6 +408,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
 - `siri` can only be attached to a static `netex` feed.
 - `static_submission` must be a published static feed (`current_stage=4`).
 - `static_submission` must belong to the same `transport_organization`.
+- For a `DataProvider`, `static_submission` must be a feed it submitted itself, as listed by `eligible-static-submissions`; otherwise `400` on `static_submission` (code `realtime.static_submission_not_owned`, not yet in the body; see [error codes](README.md#http-status-codes)). Checked on create and whenever `static_submission` changes. `Admin` may link any feed.
 - `protocol=gbfs` cannot have a `static_submission`, i.e. GBFS cannot be attached to `gtfs` or `netex`.
 - `endpoints` are required and cannot be empty.
 - Two endpoints of the same `endpoint_type` cannot be added to one submission.
