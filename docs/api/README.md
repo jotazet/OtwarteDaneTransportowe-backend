@@ -67,7 +67,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 | `Blogger` | Creating blog posts; editing and deleting **only their own** posts. |
 | `Editor` | Editing and deleting **any** blog posts (including other users' posts). |
 | `DataProvider` | Adding static and realtime feeds and managing their own submissions before review. |
-| `Helper` | Feed queue: **only** confirming/rejecting (`stage`, `rejection_cause`); cases (data providers, organizations, statuses). **No** editing of the URL/file or the submission content. |
+| `Helper` | Feed queue: **only** confirming/rejecting (`stage`, `rejection_cause`); cases (data providers, organizations, statuses), except deleting an organization. **No** editing of the URL/file or the submission content. |
 | Anonymous | Public reads, blog reactions, downloading published feeds. |
 
 ### Access matrix
@@ -78,7 +78,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 | Blog reactions | Yes, `POST` without login | Anyone, limited per IP |
 | Data providers | Yes | `Helper` or `Admin` |
 | Case statuses | Yes | `Helper` or `Admin` |
-| Transport organizations | Yes | `Helper` or `Admin` |
+| Transport organizations | Yes | `Helper` or `Admin`; delete: `Admin` |
 | Static feed submissions | No | `DataProvider` creates; `Helper`/`Admin` confirms |
 | Realtime submissions | No | `DataProvider` creates; `Helper`/`Admin` confirms |
 | Published feeds catalog | Yes | No writes through the public API |
@@ -189,13 +189,15 @@ Requires the Django group **`Admin`** (`has_admin_role`) — `is_staff` / `is_su
 | `GET` | `/api/users/` | `Admin` (group) | List of all users |
 | `POST` | `/api/users/` | `Admin` (group) | Create an account; the server generates the password — returned in `generated_password` |
 | `GET` | `/api/users/{id}/` | `Admin` (group) | User details |
-| `PUT` | `/api/users/{id}/` | `Admin` (group) | Same fields and rules as `PATCH`; none is required, and with a JSON body omitted fields keep their values |
-| `PATCH` | `/api/users/{id}/` | `Admin` (group) | Edit `email`, `first_name`, `last_name`, `is_active`, `roles` |
-| `DELETE` | `/api/users/{id}/` | `Admin` (group) | Permanent deletion (you cannot delete yourself or the last `Admin`) |
-| `POST` | `/api/users/{id}/reset-password/` | `Admin` (group) | New random password in `generated_password` |
+| `PUT` | `/api/users/{id}/` | `Admin` (group)¹ | Same fields and rules as `PATCH`; none is required, and with a JSON body omitted fields keep their values |
+| `PATCH` | `/api/users/{id}/` | `Admin` (group)¹ | Edit `email`, `first_name`, `last_name`, `is_active`, `roles` |
+| `DELETE` | `/api/users/{id}/` | `Admin` (group)¹ | Permanent deletion (you cannot delete yourself or the last `Admin`) |
+| `POST` | `/api/users/{id}/reset-password/` | `Admin` (group)¹ | New random password in `generated_password` |
 | `GET` | `/api/users/me/` | logged in | Current user's profile |
 | `POST` | `/api/users/me/change-email/` | logged in | `current_password`, `new_email` |
 | `POST` | `/api/users/me/change-password/` | logged in | `current_password`, `new_password` |
+
+¹ A **protected account** (`is_superuser` or `is_staff` true; both are read-only fields of every user object) can be edited, deleted or have its password reset only by a caller who is a superuser as well as in the `Admin` group. Anyone else gets `403` with `{"code": "users.protected_account", "details": {}}`. Reading such an account (`GET`) is not restricted. The flags themselves are set only through Django (`createsuperuser`, the admin site), never through this API.
 
 Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PUT`/`PATCH` fully replace the list of groups).
 
@@ -209,6 +211,8 @@ For `POST /api/users/` the body does **not** contain a password — example `201
   "first_name": "Jan",
   "last_name": "Kowalski",
   "is_active": true,
+  "is_staff": false,
+  "is_superuser": false,
   "roles": ["DataProvider"],
   "generated_password": "xK9mP2vL8nQwR4sT1uY0zA"
 }

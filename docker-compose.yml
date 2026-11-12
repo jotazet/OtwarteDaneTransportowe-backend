@@ -4,11 +4,12 @@ x-app-env: &app-env
   HOME: /app
   POSTGRES_HOST: postgres
   POSTGRES_PORT: "5432"
-  CELERY_BROKER_URL: redis://redis:6379/0
-  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  # REDIS_PASSWORD goes into the URLs unencoded: letters, digits, - and _ only. Empty in dev.
+  CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
+  CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-}@redis:6379/1
   # Shared cache: required so the realtime self-scheduling lock and DRF throttling
   # work across web + worker processes (per-process LocMemCache would break them).
-  REDIS_CACHE_URL: redis://redis:6379/2
+  REDIS_CACHE_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/2
 
 x-app-service: &app-service
   build:
@@ -31,6 +32,16 @@ x-app-service: &app-service
     <<: *app-env
   volumes:
     - .:/app
+
+# The worker's main process answers the ping also while its pool runs a long task (a planner
+# graph build takes hours). Each check starts a Python process that loads the Celery app.
+x-worker-healthcheck: &worker-healthcheck
+  test: ["CMD-SHELL", "celery -A OtwarteDaneTransportowe inspect ping --timeout 10 -d celery@$$HOSTNAME > /dev/null"]
+  interval: 120s
+  timeout: 30s
+  retries: 3
+  start_period: 60s
+  start_interval: 5s
 
 services:
   # Bind-mounted project dir often yields root-owned uploaded_data; app runs as UID:GID.
@@ -69,10 +80,14 @@ services:
     image: redis:7-alpine
     container_name: odt-redis
     restart: unless-stopped
+    # An empty REDIS_PASSWORD (development) leaves Redis without authentication.
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command: ["sh", "-c", 'exec redis-server --requirepass "$$REDIS_PASSWORD"']
     ports:
       - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", '[ -z "$$REDIS_PASSWORD" ] || export REDISCLI_AUTH="$$REDIS_PASSWORD"; [ "$$(redis-cli ping)" = PONG ]']
       interval: 5s
       timeout: 3s
       retries: 10
@@ -110,6 +125,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+      start_interval: 5s
 
   celery_worker:
     <<: *app-service
@@ -119,6 +135,7 @@ services:
       --loglevel=info
       --queues=default
       --concurrency=${CELERY_DEFAULT_CONCURRENCY:-2}
+    healthcheck: *worker-healthcheck
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -126,18 +143,24 @@ services:
   celery_beat:
     <<: *app-service
     container_name: odt-celery-beat
-    # DatabaseScheduler — harmonogram trzymany w PostgreSQL (tabela PeriodicTask)
-    command: >
-      celery -A OtwarteDaneTransportowe beat
-      --loglevel=info
-      --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    # The schedule is kept in PostgreSQL (PeriodicTask). The healthcheck reads the file that
+    # CELERY_BEAT_SCHEDULER touches after every tick (HEARTBEAT_FILE in celery_beat.py).
+    command: celery -A OtwarteDaneTransportowe beat --loglevel=info
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/celery-beat-heartbeat') > 60)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
     depends_on:
       migrate:
         condition: service_completed_successfully
 
-  # Least-privilege gateway to the host Docker API for the GTFS validator
-  # worker. Only this container mounts /var/run/docker.sock; the worker talks
-  # to it over TCP with everything except the needed endpoints denied.
+  # Least-privilege gateway to the host Docker API for the GTFS validator and
+  # planner workers. Only this container mounts /var/run/docker.sock; those two
+  # workers talk to it over TCP with everything except the needed endpoints
+  # denied, on the internal 'docker-api' network that no other service joins.
   #
   # Honest caveat: the containers-create API still accepts bind mounts and the
   # privileged flag, so a compromised worker remains dangerous — the proxy
@@ -156,6 +179,7 @@ services:
       # Everything else (EXEC, VOLUMES, NETWORKS, SECRETS, SWARM, ...) stays denied.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [docker-api]
 
   celery_validator_worker:
     <<: *app-service
@@ -172,6 +196,7 @@ services:
       --loglevel=info
       --queues=feeds
       --concurrency=${CELERY_FEEDS_CONCURRENCY:-1}
+    healthcheck: *worker-healthcheck
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -184,6 +209,7 @@ services:
       GID: "${GID:-1000}"
       HOST_PROJECT_PATH: "${HOST_PROJECT_PATH:-${PWD}}"
       HOST_MEDIA_ROOT: "${HOST_MEDIA_ROOT:-${PWD}/uploaded_data}"
+    networks: [default, docker-api]
 
   # NOTE: the gtfs-realtime-validator service was removed deliberately.
   #
@@ -211,6 +237,7 @@ services:
       --loglevel=info
       --queues=planner
       --concurrency=2
+    healthcheck: *worker-healthcheck
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -223,7 +250,7 @@ services:
       GID: "${GID:-1000}"
       HOST_PROJECT_PATH: "${HOST_PROJECT_PATH:-${PWD}}"
       HOST_PLANNER_DATA_DIR: "${HOST_PLANNER_DATA_DIR:-${PWD}/planner_data}"
-    networks: [default, planner]
+    networks: [default, planner, docker-api]
 
   # The serving OpenTripPlanner. Private: no published port, only on the
   # 'planner' network with web and the planner worker (not with postgres, redis
@@ -257,6 +284,10 @@ services:
 networks:
   planner:
     name: odt-planner
+  # Only docker-socket-proxy and the two workers that start containers. Internal:
+  # no route out; image pulls are done by the Docker daemon, not the proxy.
+  docker-api:
+    internal: true
 
 volumes:
   odt_pgdata:

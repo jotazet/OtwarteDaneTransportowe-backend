@@ -78,7 +78,8 @@ Base endpoint:
 **Permissions:**
 
 - `GET list/retrieve` - public.
-- `POST/PUT/PATCH/DELETE` - `Helper` or `Admin`.
+- `POST/PUT/PATCH` - `Helper` or `Admin`.
+- `DELETE` - `Admin` only (`403` for a `Helper`). Deleting an organization also deletes all its static and realtime feed submissions, published ones included, and deleting a submission is `Admin` only too.
 
 **List (`GET /api/cases/transport-organizations/`):**
 
