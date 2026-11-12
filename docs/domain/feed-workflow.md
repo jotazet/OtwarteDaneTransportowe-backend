@@ -65,6 +65,8 @@ The flows above are the normal path. Helper/Admin can override it: `PATCH {"stag
 
 The Django admin offers the same kind of change as the bulk action "Advance selected submissions to next stage" on the FeedSubmission list. It is available only to accounts that hold Django's `change` permission on FeedSubmission **and** a reviewer role (Helper or Admin group, or superuser), so `is_staff` and model permissions alone are not enough. The action locks each submission and re-reads its stage, and it skips rejected submissions and those already at stage 4.
 
+A stage transition through the API (a reviewer, an owner's resubmission) or a validation task locks the submission row and reads the stage from committed history before writing its history entry (`lock_submission()` in `data_manager/models.py`), so transitions of one submission happen one at a time. A request whose stage changed after it was read returns `409` `feeds.stage_changed` instead of acting on the old stage.
+
 ## Fetch errors and pauses of proxied feeds
 
 The pause, retry and background cache mechanism applies **only to proxied feeds** (`hide_original=true`). A feed without proxying (`hide_original=false`) or an uploaded file is **not** periodically fetched or served from the server cache — the original URL (or the uploaded file) is what is publicly visible. For such feeds:

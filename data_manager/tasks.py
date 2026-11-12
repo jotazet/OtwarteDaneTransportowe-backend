@@ -553,6 +553,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
         FeedSubmissionHistory,
         FeedValidationReport,
         StaticFeedEntry,
+        lock_submission,
     )
 
     started = time.monotonic()
@@ -580,13 +581,10 @@ def validate_gtfs_feed_task(self, entry_id: int):
     _set_validation_status(StaticFeedEntry.VALIDATION_PENDING)
 
     def _lock_submission() -> FeedSubmission:
-        # Overlapping runs (upload signal, proxy refresh, retry command) must read
-        # the stage one at a time: read it from the returned row, in the same atomic block.
-        return (
-            FeedSubmission.objects.select_for_update()
-            .prefetch_related('history')
-            .get(pk=entry.submission_id)
-        )
+        # Overlapping runs (upload signal, proxy refresh, retry command) and
+        # reviewers must read the stage one at a time: read it from the returned
+        # row, in the same atomic block.
+        return lock_submission(FeedSubmission, entry.submission_id)
 
     def _record_infra_error(code: str, detail) -> None:
         # Validation could not run (our side, not the feed): no rejection, the
@@ -1026,6 +1024,7 @@ def _verify_realtime_submission(submission_id: int) -> dict:
         RealtimeSubmission,
         RealtimeSubmissionHistory,
         completed_submission_ids,
+        lock_submission,
     )
     from data_manager.net_security import OutboundURLBlocked, ResponseTooLarge, safe_get
     from data_manager.scheduler import _build_auth_headers, _fetch_realtime_endpoint_rt
@@ -1047,13 +1046,10 @@ def _verify_realtime_submission(submission_id: int) -> dict:
         return {'status': 'not_found', 'id': submission_id}
 
     def _lock_submission() -> RealtimeSubmission:
-        # Overlapping runs (create, resubmission, retry command) must read the
-        # stage one at a time: read it from the returned row, in the same atomic block.
-        return (
-            RealtimeSubmission.objects.select_for_update()
-            .prefetch_related('history')
-            .get(pk=submission_id)
-        )
+        # Overlapping runs (create, resubmission, retry command) and reviewers
+        # must read the stage one at a time: read it from the returned row, in
+        # the same atomic block.
+        return lock_submission(RealtimeSubmission, submission_id)
 
     def _reject(reasons: list[dict]) -> dict:
         with transaction.atomic():
