@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import atexit
 import os
+import re
 import socket
 import tempfile
 import threading
 import time
 from contextlib import contextmanager, nullcontext, suppress
 from ipaddress import ip_address, ip_network
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 
@@ -73,7 +74,7 @@ def split_userinfo(url: str) -> tuple[str, dict]:
     if not parts.username and not parts.password:
         return url, {}
     import base64
-    from urllib.parse import unquote, urlunsplit
+    from urllib.parse import unquote
 
     user = unquote(parts.username or "")
     password = unquote(parts.password or "")
@@ -83,6 +84,34 @@ def split_userinfo(url: str) -> tuple[str, dict]:
     clean = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
     token = base64.b64encode(f"{user}:{password}".encode()).decode()
     return clean, {"Authorization": f"Basic {token}"}
+
+
+def redact_url(url: str) -> str:
+    """``url`` for logs and stored error messages: scheme, host, port and path.
+
+    Userinfo, the query and the fragment are dropped, since sources carry
+    credentials there (``user:pass@``, ``?token=``). A relative URL keeps its
+    path only.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<invalid URL>"
+    netloc = parts.netloc.rpartition("@")[2]
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+# Absolute URLs, and paths with a query: urllib3 reports a failed request
+# as "... with url: /feed?token=... (Caused by ...)". Userinfo, query and
+# fragment run to the next whitespace: quotes and brackets are valid there.
+_URL_IN_TEXT = re.compile(
+    r"""[a-z][a-z0-9+.-]*://[^\s/?#]*[^\s'"<>?#]*(?:[?#]\S*)?|/[^\s'"<>?]*\?\S*""", re.I
+)
+
+
+def redact_urls(text: str) -> str:
+    """``text`` (e.g. an exception message) with every URL in it redacted."""
+    return _URL_IN_TEXT.sub(lambda match: redact_url(match.group()), text)
 
 
 def _normalise_url(url: str) -> str:
