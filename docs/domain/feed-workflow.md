@@ -69,7 +69,7 @@ When a proxied static feed stops being proxied, or its URL changes, the cache of
 
 Exception: **validation stage 2** — for a static GTFS feed with a non-proxied URL, the server may download the file **once** into a temporary directory solely for the validator (without saving to `cached_file` and without starting the proxy mechanism). For realtime, stage 2 validation performs a link-check on the URL, checks the response format in process (`data_manager/validators.py`) and creates a cache only for `hide_original=true`.
 
-Proxy fetching applies to static feeds and realtime endpoints with `hide_original=true`. Every fetch error is stored as a `FeedFetchError` and can be read from these endpoints:
+Proxy fetching applies to static feeds and realtime endpoints with `hide_original=true`. Each fetch has a total time budget (`FEED_FETCH_TOTAL_TIMEOUT_SECONDS` / `REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS`) besides the per-read timeout, so a server that trickles bytes is cut off as a `timeout`. A body cut off mid-transfer (shorter than its `Content-Length`, or a broken chunked encoding) is a `connection_error`, not `invalid_content`: a transfer problem, not a problem with the data. Every fetch error is stored as a `FeedFetchError` and can be read from these endpoints:
 
 ```http
 GET /api/data_manager/fetch-errors/?days=7

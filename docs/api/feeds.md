@@ -512,7 +512,7 @@ Rejections recorded before codes existed were converted when every part of their
 | `realtime.endpoint_too_large` | `endpoint_type`, `limit_bytes` | The response exceeded the size limit for realtime feeds (`MAX_REALTIME_FEED_BYTES`, 32 MiB by default). |
 | `realtime.endpoint_url_blocked` | `endpoint_type` | The URL was refused by the outbound security rules: its host does not resolve or resolves to a non-public address, or a redirect was refused. |
 | `realtime.endpoint_timeout` | `endpoint_type` | The endpoint did not answer in time. |
-| `realtime.endpoint_unreachable` | `endpoint_type` | No connection could be made (refused, reset, TLS error). |
+| `realtime.endpoint_unreachable` | `endpoint_type` | No connection could be made (refused, reset, TLS error), or the body was cut off mid-transfer. |
 | `realtime.endpoint_fetch_failed` | `endpoint_type` | Any other error while fetching; details are in the server log. |
 | `realtime.endpoint_cache_failed` | `endpoint_type` | Verification passed, but the first fetch into the server cache (`hide_original`) stored nothing. |
 

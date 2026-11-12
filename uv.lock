@@ -511,6 +511,7 @@ dependencies = [
     { name = "pillow" },
     { name = "psycopg2-binary" },
     { name = "requests" },
+    { name = "urllib3" },
     { name = "whitenoise" },
 ]
 
@@ -538,6 +539,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.9" },
     { name = "requests", specifier = ">=2.32.0" },
+    { name = "urllib3", specifier = ">=2.3" },
     { name = "whitenoise", specifier = ">=6.6.0" },
 ]
 

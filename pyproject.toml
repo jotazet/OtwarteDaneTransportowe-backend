@@ -22,6 +22,8 @@ dependencies = [
     "django-celery-beat>=2.7.0",
     # Docker client for the GTFS validator container
     "docker>=7.1.0",
+    # safe_download calls HTTPResponse.shutdown() (added in urllib3 2.3)
+    "urllib3>=2.3",
 ]
 
 [dependency-groups]

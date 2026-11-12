@@ -24,7 +24,12 @@ from data_manager.models import (
     RealtimeSubmissionHistory,
     StaticFeedEntry,
 )
-from data_manager.scheduler import FETCH_OK, FETCH_TRANSIENT, _fetch_static_entry
+from data_manager.scheduler import (
+    FETCH_OK,
+    FETCH_TRANSIENT,
+    _fetch_realtime_endpoint_rt,
+    _fetch_static_entry,
+)
 from data_manager.tests.test_flow import fake_download
 
 pytestmark = pytest.mark.django_db
@@ -629,6 +634,28 @@ def test_proxy_feeds_list_combines_static_and_realtime(api_client, org, provider
 
     filtered = api_client.get('/api/data_manager/proxy-feeds/')
     assert filtered.data['count'] == 2
+
+
+# Content-Length promises 1000 bytes; the server sends 10 and hangs up.
+TRUNCATED = (1000, [b'PK\x03\x04part'])
+
+
+def test_truncated_static_body_is_a_transient_connection_error(local_server, org, provider_user):
+    entry = _published_static_entry(org, provider_user, url=local_server(*TRUNCATED))
+
+    assert _fetch_static_entry(entry) == FETCH_TRANSIENT
+    error = FeedFetchError.objects.get(static_entry=entry)
+    assert error.error_type == FeedFetchError.ERROR_CONNECTION
+
+
+def test_truncated_realtime_body_is_a_transient_connection_error(local_server, org, provider_user):
+    endpoint = _published_realtime_endpoint(org, provider_user)
+    endpoint.url = local_server(*TRUNCATED)
+    endpoint.save(update_fields=['url'])
+
+    assert _fetch_realtime_endpoint_rt(endpoint, timezone.now()) == FETCH_TRANSIENT
+    error = FeedFetchError.objects.get(endpoint_rt=endpoint)
+    assert error.error_type == FeedFetchError.ERROR_CONNECTION
 
 
 def _download_pausing(model, pk, body=b'', exc=None):
