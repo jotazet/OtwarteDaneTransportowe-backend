@@ -101,6 +101,15 @@ def is_helper_reviewer(user) -> bool:
     return ROLE_HELPER in role_names(user) and not has_admin_role(user)
 
 
+def is_submitter_or_reviewer(user, submission) -> bool:
+    """Whether the user submitted ``submission`` (static or realtime) or reviews feeds.
+
+    A DataProvider works only with its own submissions: it links realtime to
+    its own static feed and sees only its own realtime on that feed.
+    """
+    return submission.submitted_by_id == user.id or can_confirm_feeds(user)
+
+
 def _is_submission_owner_provider(user, submission) -> bool:
     return submission.submitted_by_id == user.id and ROLE_DATA_PROVIDER in role_names(user)
 

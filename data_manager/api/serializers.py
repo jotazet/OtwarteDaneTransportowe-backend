@@ -22,7 +22,7 @@ from data_manager.models import (
 )
 from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url
 from data_manager.validators import validate_uploaded_gtfs_zip
-from OtwarteDaneTransportowe.auth_roles import can_confirm_feeds
+from OtwarteDaneTransportowe.auth_roles import is_submitter_or_reviewer
 
 # ---------------------------------------------------------------------------
 # FeedSubmissionHistory
@@ -751,11 +751,8 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
             # Matches eligible-static-submissions: a provider links realtime only
             # to its own static feed; the (static_submission, protocol) slot is
             # unique, so another provider's link would block the owner's.
-            user = self.context['request'].user
-            if (
-                (inst is None or ss.pk != inst.static_submission_id)
-                and ss.submitted_by_id != user.id
-                and not can_confirm_feeds(user)
+            if (inst is None or ss.pk != inst.static_submission_id) and not (
+                is_submitter_or_reviewer(self.context['request'].user, ss)
             ):
                 raise serializers.ValidationError(
                     {'static_submission': 'Static submission must be your own.'},
@@ -897,12 +894,12 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(RealtimeSubmissionSerializer(many=True))
     def get_realtime_submissions(self, obj):
-        # The provider's view of its feed lists only its own realtime
-        # submissions: another user's may carry hidden (hide_original) URLs.
-        own = [
-            rt for rt in obj.realtime_submissions.all() if rt.submitted_by_id == obj.submitted_by_id
+        # Another user's realtime on this feed may carry hidden (hide_original) URLs.
+        user = self.context['request'].user
+        visible = [
+            rt for rt in obj.realtime_submissions.all() if is_submitter_or_reviewer(user, rt)
         ]
-        return RealtimeSubmissionSerializer(own, many=True, context=self.context).data
+        return RealtimeSubmissionSerializer(visible, many=True, context=self.context).data
 
 
 # ---------------------------------------------------------------------------
@@ -1210,7 +1207,6 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
 
 
 class AdminFeedSubmissionSerializer(FeedSubmissionSerializer):
-    realtime_submissions = RealtimeSubmissionSerializer(many=True, read_only=True)
     submitted_by_username = serializers.SerializerMethodField()
 
     class Meta(FeedSubmissionSerializer.Meta):

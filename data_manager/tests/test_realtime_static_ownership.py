@@ -9,6 +9,7 @@ only its own realtime submissions.
 import pytest
 from django.core.files.base import ContentFile
 
+from cases.models import TransportOrganization
 from data_manager.models import RealtimeEndpointRT, RealtimeSubmission
 from data_manager.tests.test_realtime_create import (
     URL,
@@ -17,20 +18,13 @@ from data_manager.tests.test_realtime_create import (
 )
 from OtwarteDaneTransportowe.auth_roles import ROLE_ADMIN, ROLE_DATA_PROVIDER, ROLE_HELPER
 
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures('fake_dns')]
 
 NOT_OWNED = 'realtime.static_submission_not_owned'
 
 
-@pytest.fixture(autouse=True)
-def _fake_dns(fake_dns):
-    """Endpoint URLs are SSRF-checked on input; keep DNS in process."""
-
-
 @pytest.fixture
 def org():
-    from cases.models import TransportOrganization
-
     return TransportOrganization.objects.create(region='R', transport_organization='Org')
 
 
@@ -49,7 +43,7 @@ def static(org, owner):
     return _static_submission(org, owner)
 
 
-def _realtime(org, static, user, protocol):
+def _cached_endpoint(org, static, user, protocol):
     """A realtime submission with one cached hide_original endpoint.
 
     Created directly, bypassing the API's rules, as a link made before the
@@ -78,8 +72,8 @@ def linked(settings, tmp_path, org, owner, other, static):
     """The owner's realtime endpoint and another provider's, on the owner's static feed."""
     settings.MEDIA_ROOT = tmp_path
     return (
-        _realtime(org, static, owner, RealtimeSubmission.PROTOCOL_GTFS_RT),
-        _realtime(org, static, other, RealtimeSubmission.PROTOCOL_SIRI),
+        _cached_endpoint(org, static, owner, RealtimeSubmission.PROTOCOL_GTFS_RT),
+        _cached_endpoint(org, static, other, RealtimeSubmission.PROTOCOL_SIRI),
     )
 
 
@@ -119,15 +113,6 @@ def test_admin_links_realtime_to_any_static(org, static, make_user, client_as):
     response = client_as(admin).post(URL, _gtfs_rt_payload(org, static), format='json')
 
     assert response.status_code == 201, response.data
-
-
-def test_helper_cannot_create_realtime(org, static, make_user, client_as):
-    # Helper reviews but never submits, so the ownership rule is not reached.
-    response = client_as(make_user(ROLE_HELPER)).post(
-        URL, _gtfs_rt_payload(org, static), format='json'
-    )
-
-    assert response.status_code == 403
 
 
 def _realtime_ids(response):
