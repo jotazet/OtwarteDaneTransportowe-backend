@@ -59,6 +59,7 @@ from OtwarteDaneTransportowe.auth_roles import (
     can_edit_static_feed_source,
     is_admin,
     is_helper_reviewer,
+    is_submitter_or_reviewer,
     patch_request_includes_submission_content,
 )
 from OtwarteDaneTransportowe.internal_requests import has_internal_token
@@ -747,13 +748,15 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='download/realtime/(?P<endpoint_pk>[^/.]+)')
     def download_realtime(self, request, pk=None, endpoint_pk=None):
-        """Pobierz plik cache endpointu RT (RealtimeSubmission powiązany ze static submission pk)."""
+        """Download the cached file of a realtime endpoint linked to static submission pk."""
         submission = self.get_object()
         endpoint = get_object_or_404(
             RealtimeEndpointRT.objects.select_related('submission'),
             pk=endpoint_pk,
             submission__static_submission_id=submission.pk,
         )
+        if not is_submitter_or_reviewer(request.user, endpoint.submission):
+            raise Http404
         if not endpoint.cached_file:
             raise Http404
 
