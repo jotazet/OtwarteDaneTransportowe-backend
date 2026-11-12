@@ -51,6 +51,13 @@ class BuildFailed(Exception):
         self.log = log
 
 
+class BuildAborted(BuildFailed):
+    """The build's row is no longer RUNNING: the watchdog declared it interrupted."""
+
+    def __init__(self):
+        super().__init__('planner.build_interrupted')
+
+
 class FeedUnavailable(Exception):
     pass
 
@@ -118,6 +125,7 @@ def run_build(build_id: int) -> None:
         build.save(update_fields=['status', 'started_at', 'heartbeat_at'])
 
     workdir = data_path('builds', str(build.id))
+    aborted = False
     try:
         if build.rollback_of_id:
             _stop_serving(build)
@@ -125,6 +133,11 @@ def run_build(build_id: int) -> None:
             _activate(build, included, fresh=[])
         else:
             _build_and_activate(build, workdir)
+    except BuildAborted:
+        # The watchdog failed the row and now owns serving: a newer build may already
+        # be using the maintenance window, so do not start OTP here.
+        aborted = True
+        logger.error('Graph build %s was declared interrupted; stopped it', build.id)
     except BuildFailed as exc:
         _finish_failed(build, exc.code, exc.log)
     except otp_runtime.DockerUnavailable as exc:
@@ -134,7 +147,7 @@ def run_build(build_id: int) -> None:
         _finish_failed(build, 'planner.build_failed')
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
-        if build.otp_stopped_at:
+        if build.otp_stopped_at and not aborted:
             _start_serving()
     refresh_index()
 
@@ -242,15 +255,21 @@ def fail_stale_osm_downloads() -> int:
 
 
 def fail_stale_builds() -> int:
-    """Mark builds whose worker disappeared as failed; returns how many."""
-    cutoff = timezone.now() - HEARTBEAT_STALE_AFTER
-    stale = GraphBuild.objects.filter(
-        status=GraphBuild.STATUS_RUNNING, heartbeat_at__lt=cutoff
-    ) | GraphBuild.objects.filter(status=GraphBuild.STATUS_QUEUED, created_at__lt=cutoff)
-    stale = list(stale)
-    for build in stale:
-        _finish_failed(build, 'planner.build_interrupted')
-    return len(stale)
+    """Mark builds whose worker disappeared as failed; returns how many.
+
+    A build that is in fact still alive notices at its next heartbeat and stops.
+    """
+    now = timezone.now()
+    cutoff = now - HEARTBEAT_STALE_AFTER
+    return GraphBuild.objects.filter(
+        Q(status=GraphBuild.STATUS_RUNNING, heartbeat_at__lt=cutoff)
+        | Q(status=GraphBuild.STATUS_QUEUED, created_at__lt=cutoff)
+    ).update(
+        status=GraphBuild.STATUS_FAILED,
+        finished_at=now,
+        error_code='planner.build_interrupted',
+        log_excerpt='',
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +308,7 @@ def _build_and_activate(build: GraphBuild, workdir: str) -> None:
             'submission__endpoints'
         )
     )
-    build.save(update_fields=['rental_results'])
+    _update_running(build, rental_results=build.rental_results)
 
     target = graph_dir(build)
     os.makedirs(target, exist_ok=True)
@@ -469,7 +488,12 @@ def _ensure_street_graph(build: GraphBuild, candidates: list[Candidate]) -> str:
     shutil.rmtree(tmp_dir, ignore_errors=True)
     os.makedirs(tmp_dir)
     try:
-        osm.prepare_osm(osm_file, cells, os.path.join(tmp_dir, STREET_OSM_FILE))
+        osm.prepare_osm(
+            osm_file,
+            cells,
+            os.path.join(tmp_dir, STREET_OSM_FILE),
+            on_tick=lambda: _heartbeat(build),
+        )
         _write_json(
             os.path.join(tmp_dir, 'build-config.json'),
             otp_config.build_config({}, osm_file=STREET_OSM_FILE),
@@ -528,30 +552,31 @@ def _activate(build: GraphBuild, included_feed_ids: list[str], fresh: list[Candi
     previous_target = os.readlink(serving) if os.path.islink(serving) else None
     _point_serving_at(target)
     otp_runtime.start_server()
-    if not _wait_until_healthy(build) or not _serves_feeds(included_feed_ids):
+    try:
+        if not _wait_until_healthy(build) or not _serves_feeds(included_feed_ids):
+            raise BuildFailed('planner.activation_failed')
+        # Copies first (may fail), then the database, then atomic renames, so a
+        # snapshot never disagrees with the last_good_sha256 that describes it.
+        staged = [_stage_snapshot(candidate) for candidate in fresh]
+        staged = [paths for paths in staged if paths]
+        now = timezone.now()
+        with transaction.atomic():
+            GraphBuild.objects.filter(is_active=True).update(is_active=False)
+            _update_running(
+                build, is_active=True, finished_at=now, status=GraphBuild.STATUS_SUCCEEDED
+            )
+            for candidate in fresh:
+                PlannerFeed.objects.filter(pk=candidate.feed.pk).update(
+                    last_good_sha256=candidate.sha256, last_good_at=now
+                )
+    except BuildFailed:
         otp_runtime.stop_server()
         if previous_target:
             _point_serving_at(data_path(previous_target))
         else:
             # First build: nothing to go back to, so serve nothing rather than this graph.
             os.remove(serving)
-        raise BuildFailed('planner.activation_failed')
-
-    # Copies first (may fail), then the database, then atomic renames, so a
-    # snapshot never disagrees with the last_good_sha256 that describes it.
-    staged = [_stage_snapshot(candidate) for candidate in fresh]
-    staged = [paths for paths in staged if paths]
-    now = timezone.now()
-    with transaction.atomic():
-        GraphBuild.objects.filter(is_active=True).update(is_active=False)
-        build.is_active = True
-        build.finished_at = now
-        build.status = GraphBuild.STATUS_SUCCEEDED
-        build.save(update_fields=['is_active', 'finished_at', 'status'])
-        for candidate in fresh:
-            PlannerFeed.objects.filter(pk=candidate.feed.pk).update(
-                last_good_sha256=candidate.sha256, last_good_at=now
-            )
+        raise
     for tmp, snapshot in staged:
         os.replace(tmp, snapshot)
     _remove_unused_graphs(current=target)
@@ -564,8 +589,9 @@ def _activate(build: GraphBuild, included_feed_ids: list[str], fresh: list[Candi
 
 
 def _stop_serving(build: GraphBuild) -> None:
-    build.otp_stopped_at = timezone.now()
-    build.save(update_fields=['otp_stopped_at'])
+    now = timezone.now()
+    _update_running(build, otp_stopped_at=now)
+    build.otp_stopped_at = now
     try:
         otp_runtime.stop_server()
     except Exception as exc:  # noqa: BLE001 - docker errors vary; the build must not proceed
@@ -647,20 +673,28 @@ def _remove_unused_graphs(current: str) -> None:
 
 def _record_results(build: GraphBuild, candidates: list[Candidate]) -> None:
     build.feed_results = [c.result() for c in candidates]
-    build.heartbeat_at = timezone.now()
-    build.save(update_fields=['feed_results', 'heartbeat_at'])
+    _update_running(build, feed_results=build.feed_results, heartbeat_at=timezone.now())
 
 
 def _heartbeat(build: GraphBuild) -> None:
-    GraphBuild.objects.filter(pk=build.pk).update(heartbeat_at=timezone.now())
+    _update_running(build, heartbeat_at=timezone.now())
+
+
+def _update_running(build: GraphBuild, **fields) -> None:
+    """Save fields of a running build; raise BuildAborted if it is no longer running."""
+    running = GraphBuild.objects.filter(pk=build.pk, status=GraphBuild.STATUS_RUNNING)
+    if not running.update(**fields):
+        raise BuildAborted
 
 
 def _finish_failed(build: GraphBuild, code: str, log: str = '') -> None:
-    build.status = GraphBuild.STATUS_FAILED
-    build.finished_at = timezone.now()
-    build.error_code = code
-    build.log_excerpt = log[-LOG_EXCERPT_CHARS:]
-    build.save(update_fields=['status', 'finished_at', 'error_code', 'log_excerpt'])
+    """Fail the build unless the watchdog already has (its code stays then)."""
+    GraphBuild.objects.filter(pk=build.pk, status=GraphBuild.STATUS_RUNNING).update(
+        status=GraphBuild.STATUS_FAILED,
+        finished_at=timezone.now(),
+        error_code=code,
+        log_excerpt=log[-LOG_EXCERPT_CHARS:],
+    )
     logger.error('Graph build %s failed: %s', build.id, code)
 
 
