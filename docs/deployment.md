@@ -88,7 +88,7 @@ use as much swap as its `mem_limit`.
 | `celery_planner_worker` | 6 GB | `CELERY_PLANNER_MEM_LIMIT` | `osmium` filtering and cropping the OSM extract for a new street graph, in this container: for all of Poland (2.1 GB PBF) the crop was killed at 4 GB and fit in 5 GB without swap (measured 2026-11-12). It runs while the serving OTP is stopped. Graph builds run in their own containers (`PLANNER_OTP_*_LIMIT`) |
 | `celery_beat` | 256 MB | — | one Django process |
 | `postgres` | 1 GB | `POSTGRES_MEM_LIMIT` | default `shared_buffers` (128 MB) and ~20 connections; the page cache inside the limit is reclaimed before anything is killed |
-| `redis` | 512 MB | — | broker queues, task results (kept for a day) and the cache |
+| `redis` | 512 MB | — | broker queues and the cache |
 | `otp` | 7 GB | `PLANNER_OTP_SERVE_MEM_LIMIT` | [section 19](#19-journey-planner-opentripplanner) |
 
 Idle in development (2026-11-12): `web` with gunicorn ~220 MB after a few requests,
@@ -124,9 +124,13 @@ their logs when they finish.
 ## 3. Getting the code
 
 ```bash
-git clone <adres-repozytorium> /opt/odt
-cd /opt/odt
+git clone https://github.com/jotazet/OtwarteDaneTransportowe-backend.git ~/OtwarteDaneTransportowe-backend
+cd ~/OtwarteDaneTransportowe-backend
 ```
+
+Clone into the home of the admin user (`rocky` on the current VPS): `odt-deploy`
+([section 20](#20-releases-automatic-deployment-from-github)) only deploys to
+`~/OtwarteDaneTransportowe-backend`.
 
 ---
 
@@ -179,7 +183,7 @@ A full production `.env` example (replace the values with your own):
 ```dotenv
 # ───────────────────────── Django ─────────────────────────
 DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
-DJANGO_SECRET_KEY=<wklej-wygenerowany-secret-key>
+DJANGO_SECRET_KEY=<generated-secret-key>
 DJANGO_ALLOWED_HOSTS=api.example.org
 # 127.0.0.1 and localhost are added automatically in settings_prod (healthcheck).
 # TLS is terminated by the reverse proxy — the redirect in Django is disabled by default:
@@ -190,13 +194,13 @@ DJANGO_ALLOWED_HOSTS=api.example.org
 # ───────────────────────── PostgreSQL ─────────────────────────
 POSTGRES_DB=otwarte_dane_transportowe
 POSTGRES_USER=odt
-POSTGRES_PASSWORD=<wklej-silne-haslo-bazy>
+POSTGRES_PASSWORD=<strong-database-password>
 # POSTGRES_HOST_PORT / REDIS_HOST_PORT are for development: the production overlay
 # publishes no port for postgres or redis.
 
 # ───────────────────────── Redis (broker + cache) ─────────────────────────
-# Compose builds the broker, result and cache URLs from it (see the table below).
-REDIS_PASSWORD=<wklej-haslo-redis>
+# Compose builds the broker and cache URLs from it (see the table below).
+REDIS_PASSWORD=<redis-password>
 
 # ───────────────────────── CORS / CSRF ─────────────────────────
 # Frontend origins (scheme + host, no path), comma-separated:
@@ -209,7 +213,7 @@ CORS_URLS_REGEX=^/(api|feed)/.*$
 CSRF_TRUSTED_ORIGINS=https://api.example.org
 
 # ───────────────────────── Feed credential encryption ─────────────────────────
-FEED_AUTH_ENCRYPTION_KEY=<wklej-klucz-Fernet>
+FEED_AUTH_ENCRYPTION_KEY=<Fernet-key>
 # Only during a key rotation (section 20): the previous key(s), comma-separated, decrypt only.
 # FEED_AUTH_ENCRYPTION_OLD_KEYS=
 
@@ -247,8 +251,8 @@ FEED_AUTH_ENCRYPTION_KEY=<wklej-klucz-Fernet>
 # ───────────────────────── File permissions ─────────────────────────
 UID=1000
 GID=1000
-HOST_PROJECT_PATH=/opt/odt
-HOST_MEDIA_ROOT=/opt/odt/uploaded_data
+HOST_PROJECT_PATH=/home/rocky/OtwarteDaneTransportowe-backend
+HOST_MEDIA_ROOT=/home/rocky/OtwarteDaneTransportowe-backend/uploaded_data
 
 # ───────────────────────── Performance / Celery / gunicorn ─────────────────────────
 GUNICORN_WORKERS=3
@@ -1050,7 +1054,7 @@ Builds deliberately fill RAM and spill into swap, so the VPS has a last-resort g
 ```bash
 # 1. Secrets and settings in .env (see .env.example, "Journey planner")
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # -> PLANNER_INTERNAL_TOKEN
-# COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/opt/odt/planner_data
+# COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/home/rocky/OtwarteDaneTransportowe-backend/planner_data
 
 # 2. Start the services
 ./scripts/deploy.sh up -d --build
