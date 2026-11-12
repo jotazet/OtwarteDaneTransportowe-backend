@@ -53,6 +53,10 @@ Applies to both ODT repositories: this backend and [the frontend](https://github
 
 ## Enforcement
 
-- **Locally (Claude Code):** `.claude/hooks/protect-main.sh` blocks `git commit` on `main`/`master`, and any `git push` that targets them. The hook needs `jq`.
+- **Locally (Claude Code):** `.claude/hooks/protect-main.sh` is a PreToolUse hook on the Bash tool. It needs `jq` and is tested in `scripts/tests/test_protect_main_hook.py`.
+  - On `main`/`master` it denies `git commit`, `merge`, `cherry-pick`, `revert`, `rebase` and `am` (`--abort` and `--quit` pass), and a `git pull` that would merge: `--no-ff`, or a branch other than `main`/`master`. A plain or `--ff-only` pull passes.
+  - Anywhere it denies a `git push` that would update `main`/`master`: an explicit refspec, `HEAD`/`@` or no refspec while on `main`, `--all`, `--mirror` and deletions.
+  - It asks for confirmation before pushing a `v*` tag (`--tags` and `--follow-tags` included) and before `gh release create`, since a release tag deploys to production.
+  - It is a guard for the command shapes it recognizes, not a guarantee. It does not see git run by scripts, aliases or `bash -c`, and it reads the branch from the working directory when the command starts (an earlier `git switch main` or `git checkout main` in the same command is taken into account; a `cd` is not).
 - **CI:** `.github/workflows/ci.yml` runs the checks on every pull request, on every push to `main` and on release tags, where it also deploys. Dependabot proposes updates of actions, Python packages and the base image monthly.
-- **On GitHub (to set up by a repository admin):** a branch protection rule or ruleset on `main` that requires a pull request, blocks force pushes, and requires the CI jobs to pass. This is the real guarantee; the hook only protects Claude sessions.
+- **On GitHub: not set up.** As of 2026-11-12 `main` has no branch protection rule and the repository has no rulesets, so nothing on GitHub stops a direct push to `main`. A repository admin should add a rule or ruleset on `main` that requires a pull request, blocks force pushes and requires the CI jobs to pass. That would be the real guarantee; the hook only protects Claude sessions.
