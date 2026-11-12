@@ -1,8 +1,13 @@
+from datetime import timedelta
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 
+from accounts.tasks import flush_expired_tokens_task
 from OtwarteDaneTransportowe.auth_roles import ROLE_ADMIN, ROLE_DATA_PROVIDER
 
 pytestmark = pytest.mark.django_db
@@ -88,6 +93,29 @@ def test_reset_password(api_client, admin_user, regular_user):
     assert regular_user.check_password(response.data['generated_password'])
 
 
+def _login(username, password):
+    response = APIClient().post(
+        '/api/auth/token/', {'username': username, 'password': password}, format='json'
+    )
+    assert response.status_code == 200
+    return response.data['refresh']
+
+
+def _refresh(refresh):
+    return APIClient().post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
+
+
+def test_reset_password_ends_the_users_sessions(api_client, admin_user, regular_user):
+    sessions = [_login('regular', 'regularpass') for _ in range(2)]
+    admin_session = _login('admin_api', 'adminpass')
+    api_client.force_authenticate(user=admin_user)
+
+    assert api_client.post(f'/api/users/{regular_user.pk}/reset-password/').status_code == 200
+
+    assert [_refresh(r).status_code for r in sessions] == [401, 401]
+    assert _refresh(admin_session).status_code == 200
+
+
 def test_change_password(api_client, regular_user):
     api_client.force_authenticate(user=regular_user)
     response = api_client.post(
@@ -99,6 +127,68 @@ def test_change_password(api_client, regular_user):
 
     regular_user.refresh_from_db()
     assert regular_user.check_password('NewSecurePass9!')
+
+
+def test_change_password_ends_other_sessions_and_returns_a_new_pair(api_client, regular_user):
+    old_session = _login('regular', 'regularpass')
+    api_client.force_authenticate(user=regular_user)
+
+    response = api_client.post(
+        '/api/users/me/change-password/',
+        {'current_password': 'regularpass', 'new_password': 'NewSecurePass9!'},
+        format='json',
+    )
+
+    assert response.status_code == 200
+    assert _refresh(old_session).status_code == 401
+    assert _refresh(response.data['refresh']).status_code == 200
+    me = APIClient()
+    me.credentials(HTTP_AUTHORIZATION=f'Bearer {response.data["access"]}')
+    assert me.get('/api/users/me/').status_code == 200
+
+
+def test_wrong_current_password_keeps_the_sessions(api_client, regular_user):
+    session = _login('regular', 'regularpass')
+    api_client.force_authenticate(user=regular_user)
+
+    response = api_client.post(
+        '/api/users/me/change-password/',
+        {'current_password': 'wrong', 'new_password': 'NewSecurePass9!'},
+        format='json',
+    )
+
+    assert response.status_code == 400
+    assert _refresh(session).status_code == 200
+
+
+def test_logout_blacklists_the_refresh_token():
+    User.objects.create_user('someone', 'someone@example.com', 'somepass')
+    session = _login('someone', 'somepass')
+    other_session = _login('someone', 'somepass')
+
+    response = APIClient().post('/api/auth/logout/', {'refresh': session}, format='json')
+
+    assert response.status_code == 200
+    assert _refresh(session).status_code == 401
+    assert _refresh(other_session).status_code == 200
+    # A second logout with the same token: 401, which the client treats as done.
+    again = APIClient().post('/api/auth/logout/', {'refresh': session}, format='json')
+    assert again.status_code == 401
+
+
+def test_flush_expired_tokens_task_deletes_only_expired_tokens(regular_user):
+    _login('regular', 'regularpass')
+    expired = OutstandingToken.objects.create(
+        user=regular_user,
+        jti='expired',
+        token='x',
+        expires_at=timezone.now() - timedelta(days=1),
+    )
+
+    flush_expired_tokens_task()
+
+    assert not OutstandingToken.objects.filter(pk=expired.pk).exists()
+    assert OutstandingToken.objects.filter(user=regular_user).count() == 1
 
 
 def test_change_email(api_client, regular_user):

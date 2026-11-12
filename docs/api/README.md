@@ -35,6 +35,7 @@ API authentication uses JWT:
 ```http
 POST /api/auth/token/
 POST /api/auth/token/refresh/
+POST /api/auth/logout/
 ```
 
 For requests that require login, the client sends:
@@ -149,6 +150,30 @@ Refreshes the access token using the refresh token.
 
 Refresh tokens rotate (`ROTATE_REFRESH_TOKENS`, `BLACKLIST_AFTER_ROTATION`): every successful refresh returns a **new** `refresh` and blacklists the one that was sent. The client must store the new `refresh` and use it next time; sending the old one again returns `401` (`{"detail": "Token is blacklisted", "code": "token_not_valid"}`).
 
+### `POST /api/auth/logout/`
+
+Ends a session: blacklists the given refresh token, so it can no longer be refreshed. Other sessions of the same user are not affected.
+
+**Permissions:** public, requires a valid `refresh` (no access token needed, so logout works after the access token has expired).
+
+**Request:**
+
+```json
+{
+  "refresh": "eyJ..."
+}
+```
+
+**Response 200:** `{}`
+
+A refresh token that is invalid, expired or already blacklisted returns `401` with `"code": "token_not_valid"`; the session is over either way, so the client clears its tokens in both cases.
+
+The access token of that session is not revoked: access tokens are stateless and stay valid until they expire (`JWT_ACCESS_MINUTES`, 15 minutes by default). The client discards it.
+
+### Ending all sessions of a user
+
+A password change (`POST /api/users/me/change-password/`) and an admin password reset (`POST /api/users/{id}/reset-password/`) blacklist **all** refresh tokens of that user, so every session must log in again once its access token expires. A self-service change returns a fresh pair for the session that made it (see the [endpoint map](#users-djangocontribauthmodelsuser)). Expired tokens are deleted daily by the beat task `accounts.flush_expired_tokens` (03:15 UTC).
+
 ### `/api-auth/`
 
 DRF browsable API session login/logout. Useful for development; a production client should use JWT.
@@ -175,6 +200,7 @@ page (max 50); fetch errors and `proxy-feeds` 25 per page (max 100).
 | `GET` | `/admin/` | Django staff/admin | Django admin panel |
 | `POST` | `/api/auth/token/` | public | Obtain JWT `access` and `refresh` |
 | `POST` | `/api/auth/token/refresh/` | public | Refresh JWT `access`; returns a new `refresh` as well |
+| `POST` | `/api/auth/logout/` | public | Blacklist the given `refresh` (end the session) |
 | `GET` | `/api/schema/` | public when `DEBUG`, otherwise `Admin` (group) only | OpenAPI schema |
 | `GET` | `/api/schema/swagger-ui/` | public when `DEBUG`, otherwise `Admin` (group) only | Swagger UI |
 | `GET` | `/api/schema/redoc/` | public when `DEBUG`, otherwise `Admin` (group) only | ReDoc |
@@ -192,10 +218,10 @@ Requires the Django group **`Admin`** (`has_admin_role`) — `is_staff` / `is_su
 | `PUT` | `/api/users/{id}/` | `Admin` (group) | Same fields and rules as `PATCH`; none is required, and with a JSON body omitted fields keep their values |
 | `PATCH` | `/api/users/{id}/` | `Admin` (group) | Edit `email`, `first_name`, `last_name`, `is_active`, `roles` |
 | `DELETE` | `/api/users/{id}/` | `Admin` (group) | Permanent deletion (you cannot delete yourself or the last `Admin`) |
-| `POST` | `/api/users/{id}/reset-password/` | `Admin` (group) | New random password in `generated_password` |
+| `POST` | `/api/users/{id}/reset-password/` | `Admin` (group) | New random password in `generated_password`; ends all sessions of that user |
 | `GET` | `/api/users/me/` | logged in | Current user's profile |
-| `POST` | `/api/users/me/change-email/` | logged in | `current_password`, `new_email` |
-| `POST` | `/api/users/me/change-password/` | logged in | `current_password`, `new_password` |
+| `POST` | `/api/users/me/change-email/` | logged in | `current_password`, `new_email`; rate limit `account_change` |
+| `POST` | `/api/users/me/change-password/` | logged in | `current_password`, `new_password`; ends all sessions of the user and returns a fresh `{"access", "refresh"}` pair for this one; rate limit `account_change` |
 
 Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PUT`/`PATCH` fully replace the list of groups).
 
@@ -362,6 +388,8 @@ Details: [Journey planner: admin API](planner-admin.md).
 
 - Keep `access` short-lived and refresh it via `/api/auth/token/refresh/`. Replace the stored `refresh` with the one from each refresh response; the old one stops working.
 - After a `401`, try a refresh first and only then log the user out.
+- On logout, send the stored `refresh` to `POST /api/auth/logout/`, then clear the tokens whatever the response.
+- After `POST /api/users/me/change-password/`, store the `access` and `refresh` from the response: the old `refresh` no longer works.
 - Public endpoints do not need a token.
 
 ### Role-based UI
@@ -389,7 +417,7 @@ Most common responses:
 | `401` | Missing or invalid token |
 | `403` | Valid token, but the required role/permission is missing |
 | `404` | Object does not exist or is not publicly available |
-| `429` | Rate limit: DRF throttling of login, feed downloads and blog reaction changes (`login`, `feed_download`, `reaction`; rates set by the `THROTTLE_*` settings; counted per client IP), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
+| `429` | Rate limit: DRF throttling of login, feed downloads and blog reaction changes (`login`, `feed_download`, `reaction`; rates set by the `THROTTLE_*` settings; counted per client IP), of password and email changes (`account_change`, counted per user), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
 
 ### Multipart nested fields
 

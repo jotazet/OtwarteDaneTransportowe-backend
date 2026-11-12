@@ -191,6 +191,9 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'login': os.getenv('THROTTLE_LOGIN', '10/min'),
+        # me/change-password and me/change-email check the current password;
+        # counted per user (they require login).
+        'account_change': os.getenv('THROTTLE_ACCOUNT_CHANGE', '5/min'),
         'feed_download': os.getenv('THROTTLE_FEED_DOWNLOAD', '120/min'),
         'reaction': os.getenv('THROTTLE_REACTION', '30/min'),
     },
@@ -298,6 +301,11 @@ CELERY_BEAT_SCHEDULE = {
     'planner-watchdog': {
         'task': 'planner.watchdog',
         'schedule': crontab(minute='*/5'),
+        'options': {'queue': 'default'},
+    },
+    'flush-expired-tokens': {
+        'task': 'accounts.flush_expired_tokens',
+        'schedule': crontab(minute=15, hour=3),
         'options': {'queue': 'default'},
     },
     'planner-request-logs': {

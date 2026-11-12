@@ -3,7 +3,12 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from accounts.services import generate_random_password, set_user_roles, user_role_names
+from accounts.services import (
+    generate_random_password,
+    set_password_and_end_sessions,
+    set_user_roles,
+    user_role_names,
+)
 from OtwarteDaneTransportowe.auth_roles import ALLOWED_ROLE_NAMES
 
 User = get_user_model()
@@ -123,6 +128,5 @@ class ChangePasswordSerializer(serializers.Serializer):
 
     def save(self, **kwargs):
         user = self.context['request'].user
-        user.set_password(self.validated_data['new_password'])
-        user.save(update_fields=['password'])
+        set_password_and_end_sessions(user, self.validated_data['new_password'])
         return user

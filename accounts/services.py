@@ -4,6 +4,9 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+from django.db import transaction
+from django.utils import timezone
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 from OtwarteDaneTransportowe.auth_roles import ALLOWED_ROLE_NAMES, ROLE_ADMIN
 
@@ -20,6 +23,24 @@ def generate_random_password(user=None) -> str:
             continue
         return candidate
     raise ValidationError('Could not generate a valid random password.')
+
+
+@transaction.atomic
+def set_password_and_end_sessions(user, password: str) -> None:
+    """Set a new password and blacklist all of the user's refresh tokens.
+
+    Every session must log in again. Access tokens are stateless and stay
+    valid until they expire (``JWT_ACCESS_MINUTES``).
+    """
+    user.set_password(password)
+    user.save(update_fields=['password'])
+    token_ids = OutstandingToken.objects.filter(
+        user=user, expires_at__gt=timezone.now(), blacklistedtoken__isnull=True
+    ).values_list('pk', flat=True)
+    # ignore_conflicts: a refresh running at the same time may blacklist one first.
+    BlacklistedToken.objects.bulk_create(
+        [BlacklistedToken(token_id=pk) for pk in token_ids], ignore_conflicts=True
+    )
 
 
 def user_role_names(user) -> list[str]:

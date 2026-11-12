@@ -88,3 +88,24 @@ def test_reaction_changes_are_limited_per_client_ip(rates):
     assert 429 not in statuses[:2]
     assert statuses[2] == 429
     assert react('198.51.100.2', 'like').status_code != 429
+
+
+@pytest.mark.parametrize(
+    ('path', 'body'),
+    [
+        ('/api/users/me/change-password/', {'current_password': 'wrong', 'new_password': 'x'}),
+        ('/api/users/me/change-email/', {'current_password': 'wrong', 'new_email': 'a@b.cz'}),
+    ],
+)
+def test_current_password_checks_are_limited_per_user(rates, path, body):
+    users = get_user_model().objects
+    rates['account_change'] = '2/min'
+    client = APIClient()
+    client.force_authenticate(users.create_user('one', 'one@example.com', 'password'))
+
+    statuses = [client.post(path, body, format='json').status_code for _ in range(3)]
+
+    assert statuses == [400, 400, 429]
+    # Another user from the same client IP keeps their own limit.
+    client.force_authenticate(users.create_user('two', 'two@example.com', 'password'))
+    assert client.post(path, body, format='json').status_code == 400
