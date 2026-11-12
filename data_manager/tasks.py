@@ -42,7 +42,9 @@ import time
 import uuid
 
 from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
 from celery.utils.log import get_task_logger
+from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
@@ -64,6 +66,19 @@ RT_ALIVE_TTL_BUFFER_SECONDS = 120
 RT_LEGACY_ALIVE_MARKER = '1'
 # Ile minut wstecz dispatcher statyczny nadrabia zgubione tiki Beata.
 STATIC_DISPATCH_CATCHUP_MINUTES = 10
+# One wall-clock budget for every download of a realtime verification (link
+# checks, then first cache fetches): GBFS allows 9 endpoints at up to
+# REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS each, and the task runs on 'default'
+# next to the dispatchers, so the total is capped rather than sized to the sum.
+RT_VERIFICATION_BUDGET_SECONDS = 240
+# Less than this left counts as none: a download clipped to a second or two
+# would only time out and be recorded as a fetch failure of the endpoint.
+RT_VERIFICATION_MIN_DOWNLOAD_SECONDS = 5
+RT_VERIFICATION_SOFT_TIME_LIMIT = RT_VERIFICATION_BUDGET_SECONDS + 60
+RT_VERIFICATION_TIME_LIMIT = RT_VERIFICATION_SOFT_TIME_LIMIT + 60
+# Past the hard limit plus a queue backlog no run is in flight any more, so
+# retry_stuck_realtime_verifications re-queues the submission.
+RT_VERIFICATION_STUCK_AFTER_SECONDS = RT_VERIFICATION_TIME_LIMIT + 600
 
 
 def enqueue(task, *args, **kwargs) -> bool:
@@ -880,8 +895,29 @@ def validate_gtfs_feed_task(self, entry_id: int):
         _cleanup_workdirs()
 
 
-@shared_task(name='data_manager.validate_realtime_submission')
+@shared_task(
+    name='data_manager.validate_realtime_submission',
+    soft_time_limit=RT_VERIFICATION_SOFT_TIME_LIMIT,
+    time_limit=RT_VERIFICATION_TIME_LIMIT,
+)
 def validate_realtime_submission_task(submission_id: int) -> dict:
+    try:
+        return _verify_realtime_submission(submission_id)
+    except SoftTimeLimitExceeded:
+        # Downloads fit RT_VERIFICATION_BUDGET_SECONDS and slow endpoints end
+        # as endpoint_timeout, so the time went elsewhere (worker, database,
+        # storage): an infrastructure error, not a rejection. Stay at stage 2
+        # for retry_stuck_realtime_verifications.
+        logger.error(
+            'Realtime verification of submission %s hit the soft time limit (%ss); '
+            'kept at stage 2 for a retry',
+            submission_id,
+            RT_VERIFICATION_SOFT_TIME_LIMIT,
+        )
+        return {'status': 'timed_out', 'id': submission_id}
+
+
+def _verify_realtime_submission(submission_id: int) -> dict:
     """
     Realtime verification (stage 2): link-check every endpoint, validate the
     response format, and do the first cache fetch for hide_original endpoints.
@@ -899,7 +935,6 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     validate_realtime_feed_content.
     """
     import requests
-    from django.conf import settings
 
     from data_manager import rejection_reasons as rr
     from data_manager.models import (
@@ -1004,15 +1039,24 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
         (requests.exceptions.ConnectionError, rr.ENDPOINT_UNREACHABLE),
     )
 
+    deadline = time.monotonic() + RT_VERIFICATION_BUDGET_SECONDS
+
+    def _download_budget() -> float:
+        return min(settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS, deadline - time.monotonic())
+
     for ep in endpoints:
         entity_types = set()
         try:
+            budget = _download_budget()
+            if budget < RT_VERIFICATION_MIN_DOWNLOAD_SECONDS:
+                # The endpoints before this one used up the budget: too slow.
+                raise requests.exceptions.Timeout('verification budget used up')
             resp = safe_get(
                 ep.url,
                 headers=_build_auth_headers(ep.auth_type, ep.auth_value),
                 timeout=15,
                 max_bytes=max_link_bytes,
-                total_timeout=settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS,
+                total_timeout=budget,
             )
             if resp.status_code >= 400:
                 reasons.append(
@@ -1024,6 +1068,9 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                 )
             else:
                 entity_types = validate_realtime_feed_content(rts.protocol, resp.content)
+        except SoftTimeLimitExceeded:
+            # Not the endpoint's fault: end the task as timed_out.
+            raise
         except Exception as exc:
             code = next(
                 (c for exc_type, c in exception_codes if isinstance(exc, exc_type)),
@@ -1051,7 +1098,13 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
         for ep in endpoints:
             if not ep.hide_original:
                 continue
-            _fetch_realtime_endpoint_rt(ep, now)
+            budget = _download_budget()
+            if budget < RT_VERIFICATION_MIN_DOWNLOAD_SECONDS:
+                reasons.append(
+                    rr.rejection_reason(rr.ENDPOINT_TIMEOUT, endpoint_type=ep.endpoint_type)
+                )
+                continue
+            _fetch_realtime_endpoint_rt(ep, now, total_timeout=budget)
             ep.refresh_from_db(fields=['cached_file', 'cached_at'])
             if not ep.cached_file:
                 reasons.append(
@@ -1063,3 +1116,51 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
 
     _advance(3)
     return {'status': 'ok', 'id': submission_id}
+
+
+@shared_task(name='data_manager.retry_stuck_realtime_verifications')
+def retry_stuck_realtime_verifications() -> dict:
+    """Beat: re-queue verifications whose latest history entry is their own
+    advance to stage 2 (actor None) older than RT_VERIFICATION_STUCK_AFTER_SECONDS.
+    A stage 2 set by a reviewer is left alone.
+    """
+    from datetime import timedelta
+
+    from django.db.models import OuterRef, Subquery
+
+    from data_manager.models import RealtimeSubmissionHistory
+
+    cutoff = timezone.now() - timedelta(seconds=RT_VERIFICATION_STUCK_AFTER_SECONDS)
+    latest_entry = (
+        RealtimeSubmissionHistory.objects.filter(submission=OuterRef('submission'))
+        .order_by('-created_at', '-id')
+        .values('id')[:1]
+    )
+    submission_ids = list(
+        RealtimeSubmissionHistory.objects.filter(
+            id=Subquery(latest_entry),
+            stage_after=2,
+            actor__isnull=True,
+            created_at__lte=cutoff,
+        ).values_list('submission_id', flat=True)
+    )
+
+    queued = 0
+    for submission_id in submission_ids:
+        # Re-queuing does not move the stage-2 timestamp, so without this marker
+        # every sweep would queue another run while one is still in progress.
+        marker = f'rt-verification-requeued:{submission_id}'
+        if not cache.add(marker, '1', timeout=RT_VERIFICATION_STUCK_AFTER_SECONDS):
+            continue
+        if not enqueue(validate_realtime_submission_task, submission_id):
+            cache.delete(marker)
+            break
+        queued += 1
+
+    if submission_ids:
+        logger.warning(
+            'Re-queued %d of %d realtime verifications stuck at stage 2',
+            queued,
+            len(submission_ids),
+        )
+    return {'stuck': len(submission_ids), 'queued': queued}

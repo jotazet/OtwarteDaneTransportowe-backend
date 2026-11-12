@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: realtime verification time budget
+
+Not breaking. All downloads of one realtime verification now share a 4-minute budget, so `realtime.endpoint_timeout` is also given to endpoints the verification did not reach in time. A verification that runs out of time for another reason no longer ends in a rejection or hangs: the submission stays at stage 2 (`current_stage: 2`) and is verified again automatically within about 30 minutes. See [Realtime rejection reasons](feeds.md#realtime-rejection-reasons).
+
+---
+
 ## 2026-11-12: truncated and trickling downloads
 
 Not breaking. A feed body cut off mid-transfer (shorter than its `Content-Length`, or a broken chunked encoding) was recorded as fetch error `invalid_content`; it is now `connection_error`, and in realtime validation `realtime.endpoint_unreachable` instead of `realtime.endpoint_fetch_failed`. A server that sends bytes slowly enough to stay inside the per-read timeout is now cut off at the total time budget as `timeout`. See [Fetch errors](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds) and [Realtime rejection reasons](feeds.md#realtime-rejection-reasons).

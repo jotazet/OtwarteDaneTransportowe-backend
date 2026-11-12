@@ -1085,7 +1085,11 @@ def test_beat_dispatchers_do_not_wait_behind_feeds_jobs():
     # The feeds worker runs one long job at a time (validation/download up to
     # ~10 min); the static dispatcher only catches up 10 minutes, so it must
     # never be queued behind those jobs.
-    for name in ('refresh-static-feeds', 'bootstrap-realtime-tasks'):
+    for name in (
+        'refresh-static-feeds',
+        'bootstrap-realtime-tasks',
+        'retry-stuck-realtime-verifications',
+    ):
         assert settings.CELERY_BEAT_SCHEDULE[name]['options']['queue'] == 'default'
 
 

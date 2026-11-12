@@ -15,6 +15,7 @@ import os
 from urllib.parse import urlparse
 
 import requests
+from celery.exceptions import SoftTimeLimitExceeded
 from django.conf import settings
 from django.core.files.base import File
 from django.utils import timezone
@@ -190,8 +191,14 @@ def _log_static_error(entry, error_type, exc, http_code=None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
-    """Fetch the URL and store it as cached_file. Errors are recorded as FeedFetchError."""
+def _fetch_realtime_endpoint_rt(
+    endpoint: RealtimeEndpointRT, now, total_timeout: float | None = None
+) -> str:
+    """Fetch the URL and store it as cached_file. Errors are recorded as FeedFetchError.
+
+    ``total_timeout`` caps the download below REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS
+    (realtime verification passes what is left of its budget).
+    """
     if not endpoint.is_proxy_managed:
         logger.info(
             'Skipping realtime endpoint_rt=%d — not proxy-managed (hide_original=False)',
@@ -206,7 +213,7 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
             headers=headers,
             timeout=30,
             max_bytes=settings.MAX_REALTIME_FEED_BYTES,
-            total_timeout=settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS,
+            total_timeout=total_timeout or settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS,
         ) as (response, body):
             response.raise_for_status()
 
@@ -244,6 +251,10 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
     except requests.exceptions.ConnectionError as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_CONNECTION, exc)
         return FETCH_TRANSIENT
+    except SoftTimeLimitExceeded:
+        # The task ran out of time, not the endpoint: no failure (and no pause)
+        # is recorded against it.
+        raise
     except Exception as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc)
         return FETCH_PERMANENT
