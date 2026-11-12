@@ -105,8 +105,11 @@ def _rt_alive_key(endpoint_id: int) -> str:
     return f'rt-endpoint-alive:{endpoint_id}'
 
 
-def _new_rt_token() -> str:
-    return uuid.uuid4().hex
+def _reserve_rt_loop(endpoint_id: int, ttl: int) -> str | None:
+    """Atomically claim the endpoint's loop: the token the seeded message must
+    carry, or None when a live loop already holds the marker."""
+    token = uuid.uuid4().hex
+    return token if cache.add(_rt_alive_key(endpoint_id), token, timeout=ttl) else None
 
 
 def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
@@ -131,9 +134,8 @@ def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
         fetch_status=FETCH_STATUS_ACTIVE,
     ).values_list('id', 'interval'):
         interval = interval or 60
-        reserve_ttl = interval + RT_ALIVE_TTL_BUFFER_SECONDS
-        token = _new_rt_token()
-        if not cache.add(_rt_alive_key(endpoint_id), token, timeout=reserve_ttl):
+        token = _reserve_rt_loop(endpoint_id, interval + RT_ALIVE_TTL_BUFFER_SECONDS)
+        if token is None:
             continue
         # Called from requests: a broker outage must not fail the write, nor hold
         # it up once per endpoint. Release the reservation and stop; the periodic
@@ -286,14 +288,8 @@ def fetch_static_entry_task(self, entry_id: int) -> dict:
 def bootstrap_realtime_tasks() -> dict:
     """
     Run by Beat every few minutes as self-healing: seeds a self-scheduling loop
-    for every active realtime endpoint that has no live loop, and resumes every
-    delayed endpoint whose next_fetch_after has passed (the loop does not queue
-    back-off delays itself).
-
-    Deduplication: an endpoint with a live loop has the marker
-    `rt-endpoint-alive:{id}`, so bootstrap skips it. `cache.add` reserves the
-    slot atomically (safe against concurrent bootstraps) and stores the token
-    the seeded message must present.
+    for every active realtime endpoint without a live loop (alive marker), and
+    for every delayed one whose next_fetch_after has passed.
     """
     from django.db.models import Q
 
@@ -321,10 +317,8 @@ def bootstrap_realtime_tasks() -> dict:
         stagger = (index * RT_BOOTSTRAP_STAGGER_SECONDS) + random.randint(
             0, RT_BOOTSTRAP_JITTER_MAX_SECONDS
         )
-        reserve_ttl = stagger + interval + RT_ALIVE_TTL_BUFFER_SECONDS
-        token = _new_rt_token()
-        # Reserve the slot atomically: an existing marker means a live loop.
-        if not cache.add(_rt_alive_key(endpoint_id), token, timeout=reserve_ttl):
+        token = _reserve_rt_loop(endpoint_id, stagger + interval + RT_ALIVE_TTL_BUFFER_SECONDS)
+        if token is None:
             continue
         fetch_realtime_endpoint_task.apply_async(
             args=[endpoint_id, token],
@@ -352,9 +346,7 @@ def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> 
     stale copy of the loop and exits without fetching or rescheduling.
 
     Network errors are recorded as FeedFetchError. The loop follows the stored
-    fetch state: the interval after success, stop on a delay (bootstrap resumes
-    the endpoint once next_fetch_after passes) and stop on an automatic or
-    manual pause.
+    fetch state: the interval after success, stop on a delay or a pause.
     """
     from data_manager.models import (
         FETCH_STATUS_ACTIVE,
@@ -401,8 +393,6 @@ def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> 
 
         now = timezone.now()
         if not endpoint.fetch_is_due(now):
-            # Paused, or delayed before next_fetch_after: stop. Bootstrap resumes
-            # a delayed endpoint once next_fetch_after passes.
             logger.info(
                 'RealtimeEndpointRT id=%d fetch status=%s, stopping loop',
                 endpoint_id,
@@ -437,14 +427,13 @@ def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> 
             'next_fetch_after': endpoint.next_fetch_after,
         }
         if endpoint.fetch_status != FETCH_STATUS_ACTIVE:
-            # Delayed (bootstrap resumes it once next_fetch_after passes) or
-            # paused. Never queue the back-off itself: an ETA beyond the Redis
-            # visibility timeout (1 h) would be redelivered.
+            # Never queue the back-off: Redis redelivers ETAs past its 1 h
+            # visibility timeout. Bootstrap resumes the endpoint instead.
             cache.delete(_rt_alive_key(endpoint_id))
             return outcome
 
         countdown = endpoint.interval
-        next_token = _new_rt_token()
+        next_token = uuid.uuid4().hex
         cache.set(
             _rt_alive_key(endpoint_id),
             next_token,
