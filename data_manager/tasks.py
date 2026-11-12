@@ -53,18 +53,15 @@ RT_BOOTSTRAP_JITTER_MAX_SECONDS = 2
 RT_ALIVE_TTL_BUFFER_SECONDS = 120
 # Ile minut wstecz dispatcher statyczny nadrabia zgubione tiki Beata.
 STATIC_DISPATCH_CATCHUP_MINUTES = 10
-# Realtime verification downloads each endpoint up to twice (link check, then
-# the first cache fetch when hide_original), each download capped at
-# REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS, and GBFS allows the most endpoints (9,
-# see RealtimeSubmission.allowed_endpoint_types). Under the global 90 s limit
-# nine unreachable endpoints (15 s connect timeout each) were already enough
-# to kill the task before it recorded a verdict.
-RT_VERIFICATION_SOFT_TIME_LIMIT = 9 * 2 * settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS + 60
+# One wall-clock budget for every download of a realtime verification (link
+# checks, then first cache fetches): GBFS allows 9 endpoints at up to
+# REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS each, and the task runs on 'default'
+# next to the dispatchers, so the total is capped rather than sized to the sum.
+RT_VERIFICATION_BUDGET_SECONDS = 240
+RT_VERIFICATION_SOFT_TIME_LIMIT = RT_VERIFICATION_BUDGET_SECONDS + 60
 RT_VERIFICATION_TIME_LIMIT = RT_VERIFICATION_SOFT_TIME_LIMIT + 60
-# A verification at stage 2 for longer than this has no run in flight any more
-# (lost by the broker, a worker restart or a hard kill) and is re-queued by
-# retry_stuck_realtime_verifications. Longer than the hard limit plus a queue
-# backlog, so a run still in progress is not doubled.
+# Past the hard limit plus a queue backlog no run is in flight any more, so
+# retry_stuck_realtime_verifications re-queues the submission.
 RT_VERIFICATION_STUCK_AFTER_SECONDS = RT_VERIFICATION_TIME_LIMIT + 600
 
 
@@ -878,13 +875,10 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     try:
         return _verify_realtime_submission(submission_id)
     except SoftTimeLimitExceeded:
-        # An infrastructure error, not a verdict on the provider's data: every
-        # slow or dead endpoint already ends in its own coded reason
-        # (endpoint_timeout, endpoint_unreachable) well inside this limit, so
-        # running out of time means the time went elsewhere (a busy worker, the
-        # database, storage). Rejecting would send the owner to resubmit for a
-        # fault they cannot fix. The submission stays at stage 2 and
-        # retry_stuck_realtime_verifications re-queues it.
+        # Downloads fit RT_VERIFICATION_BUDGET_SECONDS and slow endpoints end
+        # as endpoint_timeout, so the time went elsewhere (worker, database,
+        # storage): an infrastructure error, not a rejection. Stay at stage 2
+        # for retry_stuck_realtime_verifications.
         logger.error(
             'Realtime verification of submission %s hit the soft time limit (%ss); '
             'kept at stage 2 for a retry',
@@ -1016,15 +1010,24 @@ def _verify_realtime_submission(submission_id: int) -> dict:
         (requests.exceptions.ConnectionError, rr.ENDPOINT_UNREACHABLE),
     )
 
+    deadline = time.monotonic() + RT_VERIFICATION_BUDGET_SECONDS
+
+    def _download_budget() -> float:
+        return min(settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS, deadline - time.monotonic())
+
     for ep in endpoints:
         entity_types = set()
         try:
+            budget = _download_budget()
+            if budget <= 0:
+                # The endpoints before this one used up the budget: too slow.
+                raise requests.exceptions.Timeout('verification budget used up')
             resp = safe_get(
                 ep.url,
                 headers=_build_auth_headers(ep.auth_type, ep.auth_value),
                 timeout=15,
                 max_bytes=max_link_bytes,
-                total_timeout=settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS,
+                total_timeout=budget,
             )
             if resp.status_code >= 400:
                 reasons.append(
@@ -1037,8 +1040,7 @@ def _verify_realtime_submission(submission_id: int) -> dict:
             else:
                 entity_types = validate_realtime_feed_content(rts.protocol, resp.content)
         except SoftTimeLimitExceeded:
-            # Not the endpoint's fault: let the task end with timed_out instead
-            # of recording endpoint_fetch_failed and running into the hard kill.
+            # Not the endpoint's fault: end the task as timed_out.
             raise
         except Exception as exc:
             code = next(
@@ -1067,7 +1069,13 @@ def _verify_realtime_submission(submission_id: int) -> dict:
         for ep in endpoints:
             if not ep.hide_original:
                 continue
-            _fetch_realtime_endpoint_rt(ep, now)
+            budget = _download_budget()
+            if budget <= 0:
+                reasons.append(
+                    rr.rejection_reason(rr.ENDPOINT_TIMEOUT, endpoint_type=ep.endpoint_type)
+                )
+                continue
+            _fetch_realtime_endpoint_rt(ep, now, total_timeout=budget)
             ep.refresh_from_db(fields=['cached_file', 'cached_at'])
             if not ep.cached_file:
                 reasons.append(
@@ -1083,12 +1091,9 @@ def _verify_realtime_submission(submission_id: int) -> dict:
 
 @shared_task(name='data_manager.retry_stuck_realtime_verifications')
 def retry_stuck_realtime_verifications() -> dict:
-    """Re-queue realtime verifications that started (stage 2) and never ended.
-
-    Run by Beat. Picks submissions whose latest history entry is the task's own
-    advance to stage 2 (actor None) older than RT_VERIFICATION_STUCK_AFTER_SECONDS:
-    the run was lost or killed before a verdict, or ended timed_out. A stage 2
-    set by a reviewer (actor set) is their decision and is left alone.
+    """Beat: re-queue verifications whose latest history entry is their own
+    advance to stage 2 (actor None) older than RT_VERIFICATION_STUCK_AFTER_SECONDS.
+    A stage 2 set by a reviewer is left alone.
     """
     from datetime import timedelta
 

@@ -46,11 +46,12 @@ DataProvider
      (see "Realtime rejection reasons" in the Feeds API); a published submission
      (stage 4, e.g. after an Admin edits its endpoints) stays published and the
      failure is only logged
-     a verification that runs out of time (task soft time limit) is an infrastructure
+     all downloads of one verification share a 4-minute budget; endpoints that do not fit
+     it are rejected with `realtime.endpoint_timeout`
+     a verification that still runs out of time (task soft time limit) is an infrastructure
      error, not a rejection: the submission stays at stage 2, and a periodic sweep
-     (`retry_stuck_realtime_verifications`, every 15 minutes) re-queues verifications
-     that have been at stage 2 for longer than the task's hard time limit plus a margin
-     (30 minutes with the default fetch timeout); a stage 2 set by a reviewer is left alone
+     (`retry_stuck_realtime_verifications`, every 15 minutes) re-queues verifications that
+     have been at stage 2 for more than 16 minutes; a stage 2 set by a reviewer is left alone
   -> from stage 2 the owner may PATCH only the note, license and interval on endpoints (not the name, URL, auth, is_original, hide_original)
   -> Helper/Admin PATCH { "stage": 4 }
   -> the realtime feed appears publicly in the feed catalogue and /feed/rt/{id}/
