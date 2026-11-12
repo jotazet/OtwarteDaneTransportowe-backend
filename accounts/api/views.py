@@ -17,7 +17,7 @@ from accounts.services import (
     generate_random_password,
     would_remove_last_admin,
 )
-from OtwarteDaneTransportowe.auth_roles import RequiresAdminGroup
+from OtwarteDaneTransportowe.auth_roles import CanManageUserAccount, RequiresAdminGroup
 
 User = get_user_model()
 
@@ -29,6 +29,8 @@ class UserViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ('me', 'change_email', 'change_password'):
             return [IsAuthenticated()]
+        if self.action in ('update', 'partial_update', 'destroy', 'reset_password'):
+            return [IsAuthenticated(), RequiresAdminGroup(), CanManageUserAccount()]
         return [IsAuthenticated(), RequiresAdminGroup()]
 
     def get_serializer_class(self):

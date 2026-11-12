@@ -206,6 +206,25 @@ class RequiresAdminGroup(BasePermission):
         return has_admin_role(request.user)
 
 
+def can_manage_user_account(user, target) -> bool:
+    """Whether ``user`` may edit, delete or reset the password of ``target``.
+
+    Accounts with the Django-level flags (``is_superuser``, ``is_staff``) reach
+    the admin site, so only a superuser may manage them; the ``Admin`` role
+    alone is not enough (see :func:`has_admin_role`).
+    """
+    return bool(user.is_superuser) or not (target.is_superuser or target.is_staff)
+
+
+class CanManageUserAccount(BasePermission):
+    """Object check for user management: ``can_manage_user_account``, 403 with a code."""
+
+    message = {'code': 'users.protected_account', 'details': {}}
+
+    def has_object_permission(self, request, view, obj):
+        return can_manage_user_account(request.user, obj)
+
+
 class AdminGroupOrDebug(BasePermission):
     """Open to everyone with ``DEBUG``, otherwise the ``Admin`` group only (API schema)."""
 

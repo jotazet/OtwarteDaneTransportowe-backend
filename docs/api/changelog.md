@@ -2,6 +2,17 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: protected accounts in user management
+
+Not breaking for regular accounts.
+
+- User objects (`/api/users/`, `/api/users/{id}/`, `/api/users/me/`) gain read-only **`is_staff`** and **`is_superuser`**.
+- An account with either flag is a protected account: `PUT`, `PATCH`, `DELETE` `/api/users/{id}/` and `POST /api/users/{id}/reset-password/` on it need a caller who is a superuser as well as in the `Admin` group. Anyone else gets `403` with `{"code": "users.protected_account", "details": {}}` and nothing changes. The frontend can hide those actions when the target has either flag and the logged-in user (`/api/users/me/`) has `is_superuser: false`.
+
+See [Users](README.md#users-djangocontribauthmodelsuser).
+
+---
+
 ## 2026-10-17: entity types of a realtime endpoint
 
 Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).
