@@ -9,6 +9,7 @@
 # The settings below come from the environment (odt-backup.service reads /etc/odt/backup.env)
 # and are described in docs/deployment.md, section 16. A backup is written under a temporary
 # name and renamed when complete, so a failed run leaves nothing that looks like a backup.
+# Off the host it cannot be renamed, so its file `complete` is copied there last.
 set -eu
 
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/scheduled}"
@@ -38,6 +39,12 @@ partial="$BACKUP_DIR/.partial-$name"
 final="$BACKUP_DIR/$name"
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
+# One run at a time: a second one would delete the first one's partial backup below.
+exec 9> "$BACKUP_DIR/.lock"
+if ! flock -n 9; then
+    log "another backup is running"
+    exit 1
+fi
 # Leftovers of a run that was killed before its cleanup.
 find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -name '.partial-*' -exec rm -rf {} +
 previous="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name "$NAME_PATTERN" \
@@ -61,6 +68,8 @@ fi
 
 for data in uploaded_data planner_data/snapshots; do
     if [ ! -d "$data" ]; then
+        # Without the planner there are no snapshots; uploaded_data/ always exists.
+        [ "$data" = planner_data/snapshots ] || { log "no $data/ in $(pwd)"; exit 1; }
         log "no $data/ in $(pwd), skipped"
         continue
     fi
@@ -73,6 +82,7 @@ for data in uploaded_data planner_data/snapshots; do
         ${previous:+"--link-dest=$previous/$data"} "$data/" "$partial/$data/" || [ $? -eq 24 ]
 done
 
+: > "$partial/complete"
 mv "$partial" "$final"
 log "$final complete (database $(du -h "$final/db.dump" | cut -f1))"
 # Older local backups beyond the newest $BACKUP_KEEP.
@@ -84,9 +94,12 @@ find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name "$NAME_PATTERN" | sort 
 if [ -z "$BACKUP_REMOTE" ]; then
     log "WARNING: BACKUP_REMOTE is not set, so this backup exists on this disk only"
 elif [ "$BACKUP_REMOTE_TOOL" = rclone ]; then
-    rclone copy "$final" "$BACKUP_REMOTE/$name"
+    rclone copy --exclude /complete "$final" "$BACKUP_REMOTE/$name"
+    rclone copy "$final/complete" "$BACKUP_REMOTE/$name"
 else
     # Files linked locally are linked to the previous backup there too, if it has it.
-    rsync -a ${previous:+"--link-dest=../${previous##*/}"} "$final/" "$BACKUP_REMOTE/$name/"
+    rsync -a --exclude=/complete ${previous:+"--link-dest=../${previous##*/}"} \
+        "$final/" "$BACKUP_REMOTE/$name/"
+    rsync -a "$final/complete" "$BACKUP_REMOTE/$name/"
 fi
 [ -z "$BACKUP_REMOTE" ] || log "copied to $BACKUP_REMOTE/$name"

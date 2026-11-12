@@ -629,11 +629,13 @@ every day at 00:15 Europe/Warsaw (before FeedsODT's night jobs and the default p
 | `planner_data/snapshots/`: the last good version of each planner feed | Redis: the cache and the queue; Celery beat queues the periodic tasks again |
 
 Each run writes `~/backups/scheduled/<UTC time>/` (`db.dump`, `uploaded_data/`,
-`planner_data/snapshots/`, mode `700`) and keeps the newest 7. Files unchanged since the
+`planner_data/snapshots/` and an empty `complete`, mode `700`) and keeps the newest 7. Files unchanged since the
 previous backup (compared by content) are hard links to it, so a day costs the dump plus the
 changed files (`du -sh ~/backups/scheduled` counts each file once). A failed or empty dump, a failed copy or
 a failed off-host upload stops the run with a non-zero exit and `backup: ... FAILED` in the
-journal; an unfinished run leaves nothing that looks like a backup. The files are copied a few
+journal; an unfinished run leaves nothing that looks like a backup, and off the host a backup
+without its `complete` file is unfinished. One run at a time; a run that hangs is stopped after
+6 hours. The files are copied a few
 minutes after the dump, so a submission saved in between may be in one and not the other.
 The release backups (`~/backups/release-*`, [section 20](#20-releases-automatic-deployment-from-github))
 are separate.
@@ -652,7 +654,7 @@ Values are `KEY=value` lines:
 | --- | --- | --- |
 | `BACKUP_DIR` | `~/backups/scheduled` | Absolute path of the local backups. |
 | `BACKUP_KEEP` | `7` | How many local backups to keep. |
-| `BACKUP_REMOTE` | unset | Where each new backup is copied off the host, as `$BACKUP_REMOTE/<UTC time>/`. Unset: the backup exists on this disk only, and the journal says so every day. |
+| `BACKUP_REMOTE` | unset | Where each new backup is copied off the host, as `$BACKUP_REMOTE/<UTC time>/` (so name a directory: `host:` alone would mean `host:/<UTC time>/`). Unset: the backup exists on this disk only, and the journal says so every day. |
 | `BACKUP_REMOTE_TOOL` | `rsync` | `rsync` (`BACKUP_REMOTE` is `host:path` over SSH, or a mounted path) or `rclone` (`BACKUP_REMOTE` is `remote:path`, for object storage). |
 
 **Off-host copy.** A backup on the same disk does not survive the loss of the server; the
@@ -677,8 +679,9 @@ On the server, in the checkout. The script itself runs from the checkout, so it 
 each release; reinstall the two unit files when they change.
 
 ```bash
-sudo install -d -o root -g root -m 755 /etc/odt
-sudoedit /etc/odt/backup.env && sudo chmod 600 /etc/odt/backup.env   # the settings above
+sudo mkdir -p /etc/odt
+[ -e /etc/odt/backup.env ] || sudo install -o root -g root -m 600 /dev/null /etc/odt/backup.env
+sudoedit /etc/odt/backup.env               # the settings above; empty is fine
 sudo install -o root -g root -m 644 scripts/deploy/odt-backup.service scripts/deploy/odt-backup.timer \
   /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -707,7 +710,8 @@ dump alone:
 
 ### Restoring
 
-From the off-host copy, first fetch the backup into `~/backups/scheduled/` (`rsync -a
+From the off-host copy, first fetch the newest backup that has its `complete` file into
+`~/backups/scheduled/` (`rsync -a
 odt-backup:<directory>/<time>/ ~/backups/scheduled/<time>/`, or `rclone copy
 <remote>:<bucket>/odt/<time> ~/backups/scheduled/<time>`). Then, in the checkout:
 

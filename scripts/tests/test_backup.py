@@ -1,5 +1,6 @@
 """scripts/deploy/backup.sh: the scheduled backup, with Docker (and rclone) replaced by fakes."""
 
+import fcntl
 import os
 import shutil
 import stat
@@ -90,11 +91,12 @@ def test_backs_up_the_database_and_the_data_that_cannot_be_recreated(checkout, b
     result = run(checkout, backups)
 
     assert result.returncode == 0, result.stderr
-    assert os.listdir(backups) == [complete(backups)[0].name]
+    assert sorted(os.listdir(backups)) == ['.lock', complete(backups)[0].name]
     backup = complete(backups)[0]
     assert (backup / 'db.dump').read_text() == DUMP
     copied = sorted(str(p.relative_to(backup)) for p in backup.rglob('*') if p.is_file())
     assert copied == [
+        'complete',
         'db.dump',
         'planner_data/snapshots/krakow.zip',
         'uploaded_data/1/static/feed.zip',
@@ -125,7 +127,7 @@ def test_a_failed_or_unusable_dump_fails_and_leaves_no_backup(checkout, backups,
     assert result.returncode == 1
     assert message in result.stderr
     assert 'FAILED' in result.stderr
-    assert os.listdir(backups) == ['20260101T000000Z']
+    assert sorted(os.listdir(backups)) == ['.lock', '20260101T000000Z']
 
 
 def test_unchanged_files_are_hard_links_to_the_previous_backup(checkout, backups):
@@ -155,7 +157,7 @@ def test_keeps_the_newest_backups_and_removes_leftovers(checkout, backups):
     assert result.returncode == 0, result.stderr
     names = [p.name for p in complete(backups)]
     assert names[0] == '20260103T000000Z' and len(names) == 2
-    assert sorted(os.listdir(backups)) == sorted([*names, 'release-notes'])
+    assert sorted(os.listdir(backups)) == sorted([*names, '.lock', 'release-notes'])
 
 
 def test_copies_the_new_backup_off_the_host_with_rsync(checkout, backups, tmp_path):
@@ -172,6 +174,7 @@ def test_copies_the_new_backup_off_the_host_with_rsync(checkout, backups, tmp_pa
     new = complete(backups)[-1].name
     assert sorted(os.listdir(remote)) == ['20260101T000000Z', new]
     assert (remote / new / 'db.dump').read_text() == DUMP
+    assert (remote / new / 'complete').exists()
     snapshot = 'planner_data/snapshots/krakow.zip'
     assert (remote / new / snapshot).stat().st_ino == (
         remote / '20260101T000000Z' / snapshot
@@ -184,7 +187,10 @@ def test_copies_the_new_backup_off_the_host_with_rclone(checkout, backups):
     assert result.returncode == 0, result.stderr
     backup = complete(backups)[0]
     calls = (checkout.parent / 'calls.log').read_text()
-    assert f'rclone copy {backup} store:odt/{backup.name}' in calls
+    assert calls.splitlines()[-2:] == [
+        f'rclone copy --exclude /complete {backup} store:odt/{backup.name}',
+        f'rclone copy {backup}/complete store:odt/{backup.name}',
+    ]
 
 
 def test_a_failed_off_host_copy_fails_but_keeps_the_local_backup(checkout, backups, tmp_path):
@@ -193,6 +199,27 @@ def test_a_failed_off_host_copy_fails_but_keeps_the_local_backup(checkout, backu
     assert result.returncode != 0
     assert 'FAILED' in result.stderr
     assert len(complete(backups)) == 1
+
+
+def test_without_uploaded_data_the_backup_fails(checkout, backups):
+    shutil.rmtree(checkout / 'uploaded_data')
+
+    result = run(checkout, backups)
+
+    assert result.returncode == 1
+    assert 'no uploaded_data/' in result.stderr
+    assert complete(backups) == []
+
+
+def test_a_second_run_fails_while_one_is_running(checkout, backups):
+    backups.mkdir()
+    with open(backups / '.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        result = run(checkout, backups)
+
+    assert result.returncode == 1
+    assert 'another backup is running' in result.stderr
+    assert not (checkout.parent / 'calls.log').exists()
 
 
 def test_without_the_planner_the_snapshots_are_skipped(checkout, backups):
