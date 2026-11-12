@@ -306,17 +306,22 @@ def test_documented_gbfs_payload_without_static_submission_is_accepted(provider,
     assert response.status_code == 201, response.data
 
 
-@pytest.mark.parametrize('interval, accepted', [(0, False), (4, False), (5, True)])
-def test_interval_minimum_is_5_seconds(interval, accepted, provider, org, post_as):
+@pytest.mark.parametrize('interval', [0, 4])
+def test_interval_below_5_seconds_is_rejected(interval, provider, org, post_as):
     endpoint = {**_gbfs_payload(org)['endpoints'][0], 'interval': interval}
 
     response = post_as(provider, _gbfs_payload(org, endpoints=[endpoint]))
 
-    if accepted:
-        assert response.status_code == 201, response.data
-        assert RealtimeEndpointRT.objects.get().interval == 5
-    else:
-        assert response.status_code == 400, response.data
-        codes = [error.code for error in response.data['endpoints'][0]['interval']]
-        assert codes == ['realtime.interval_too_short']
-        assert not RealtimeSubmission.objects.exists()
+    assert response.status_code == 400, response.data
+    codes = [error.code for error in response.data['endpoints'][0]['interval']]
+    assert codes == ['realtime.interval_too_short']
+    assert not RealtimeSubmission.objects.exists()
+
+
+def test_interval_of_5_seconds_is_accepted(provider, org, post_as):
+    endpoint = {**_gbfs_payload(org)['endpoints'][0], 'interval': 5}
+
+    response = post_as(provider, _gbfs_payload(org, endpoints=[endpoint]))
+
+    assert response.status_code == 201, response.data
+    assert RealtimeEndpointRT.objects.get().interval == 5

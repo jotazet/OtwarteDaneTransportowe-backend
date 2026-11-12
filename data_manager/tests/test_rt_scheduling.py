@@ -4,7 +4,10 @@ Guards against the previous behaviour where the periodic ``bootstrap_realtime_ta
 re-queued every active endpoint on each run, accumulating duplicate fetch chains.
 """
 
+import importlib
+
 import pytest
+from django.apps import apps
 
 from cases.models import TransportOrganization
 from data_manager import tasks
@@ -15,6 +18,10 @@ from data_manager.models import (
 )
 
 pytestmark = pytest.mark.django_db
+
+min_interval_migration = importlib.import_module(
+    'data_manager.migrations.0015_realtime_endpoint_min_interval'
+)
 
 
 @pytest.fixture
@@ -128,14 +135,9 @@ def test_fetch_task_clamps_stored_interval_below_minimum(published_gbfs_endpoint
 
 
 def test_migration_raises_stored_intervals_below_minimum(published_gbfs_endpoint):
-    from importlib import import_module
-
-    from django.apps import apps
-
-    migration = import_module('data_manager.migrations.0015_realtime_endpoint_min_interval')
     RealtimeEndpointRT.objects.filter(pk=published_gbfs_endpoint.pk).update(interval=0)
 
-    migration.raise_short_intervals(apps, None)
+    min_interval_migration.raise_short_intervals(apps, None)
 
     published_gbfs_endpoint.refresh_from_db()
     assert published_gbfs_endpoint.interval == 5
