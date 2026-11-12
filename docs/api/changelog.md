@@ -2,6 +2,18 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: GTFS validation that could not run no longer rejects
+
+Not breaking: no field is added or removed.
+
+- When GTFS validation cannot run (Docker unreachable, the validator container fails or runs out of memory, no usable `report.json`, the time limit, the feed file missing on ODT's storage), the submission is **no longer rejected** to stage 1 with English exception text as `rejection_cause`. It keeps its stage, `static_entry.validation_status` is `error` and `static_entry.validation_message` is a code: `gtfs_validation.file_missing`, `gtfs_validation.validator_unavailable`, `gtfs_validation.validator_failed` or `gtfs_validation.timeout`. The ODT team re-runs it (`manage.py retry_gtfs_validation`); a proxied feed is also re-validated at its next fetch. See [Static feeds](feeds.md#static-feeds-feedsubmission).
+- `validation_message` is empty while `validation_status` is `pending` (it was `"Validation in progress"`).
+- Errors in the feed itself are unchanged: rejection to stage 1, `validation_status` `invalid`, the validator codes in `rejection_cause` and `validation_message`. A failed download of the provider's non-proxied URL also still rejects, now with `validation_status` `invalid` instead of `error`.
+
+**Frontend:** translate the four codes when showing `validation_message` for `validation_status: "error"`; never show `validation_message` as text in that case.
+
+---
+
 ## 2026-11-12: proxy-feeds pages without duplicates
 
 Not breaking. `GET /api/data_manager/proxy-feeds/` repeated some feeds and left out others across pages once there were more than `page_size` of them: the static and realtime rows were cut to a page in the database and merged in Python, and the two order Polish letters and upper/lower case differently. The whole list is now ordered and paged in the database, so every feed is on exactly one page. The visible order follows the database collation: `Łódzkie` and `śląskie` sit next to `L` and `S` instead of after `z`, and case no longer puts `Mazowieckie` before `lubelskie`. Response shape and envelope are unchanged. See [Fetch errors and pauses of proxied feeds](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
