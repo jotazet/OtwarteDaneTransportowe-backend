@@ -211,8 +211,11 @@ def refresh_static_feeds_task() -> dict:
         .values_list('id', flat=True)
     )
 
+    # The window re-dispatches an entry on every tick until its fetch succeeds,
+    # so a slow or queued fetch piles up copies. Each copy carries the window
+    # start and skips itself once a fetch has succeeded inside that window.
     for entry_id in entry_ids:
-        fetch_static_entry_task.delay(entry_id)
+        fetch_static_entry_task.delay(entry_id, skip_if_fetched_since=window_start.isoformat())
 
     logger.info('Dispatched %d static feed tasks for %s', len(entry_ids), now_time)
     return {'dispatched': len(entry_ids), 'time': str(now_time)}
@@ -229,13 +232,19 @@ def refresh_static_feeds_task() -> dict:
     soft_time_limit=660,
     time_limit=720,
 )
-def fetch_static_entry_task(self, entry_id: int) -> dict:
+def fetch_static_entry_task(self, entry_id: int, skip_if_fetched_since: str | None = None) -> dict:
     """Pobiera i zapisuje cache dla jednego StaticFeedEntry.
 
     Retry nie jest robiony przez Celery. Nieudane pobrania ustawiaja utrwalony
     harmonogram pauz na modelu (5min -> 1h -> 6h -> auto_paused), ktory
     respektuje cykliczny dispatcher.
+
+    ``skip_if_fetched_since`` (ISO instant, set by the dispatcher) makes a
+    duplicate a no-op when a fetch has succeeded since then. Direct callers
+    (a changed URL) omit it and always fetch.
     """
+    from datetime import datetime
+
     from data_manager.models import StaticFeedEntry
 
     _fetch, _, _, _ = _scheduler()
@@ -249,6 +258,13 @@ def fetch_static_entry_task(self, entry_id: int) -> dict:
     if not entry.is_proxy_managed:
         logger.info('StaticFeedEntry id=%d is not proxy-managed, skipping fetch', entry_id)
         return {'status': 'skipped_not_proxied', 'entry_id': entry_id}
+
+    if (
+        skip_if_fetched_since
+        and entry.last_fetch_success_at
+        and entry.last_fetch_success_at >= datetime.fromisoformat(skip_if_fetched_since)
+    ):
+        return {'status': 'already_fetched', 'entry_id': entry_id}
 
     if not entry.fetch_is_due():
         return {
