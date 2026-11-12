@@ -42,7 +42,6 @@ LAST_USED_EVERY_SECONDS = 300
 REJECTION_LOG_EVERY_SECONDS = 60
 REJECTION_STATUSES = (401, 403, 429)
 MAINTENANCE_RETRY_AFTER_SECONDS = 600
-MAINTENANCE_DETAILS = {'reason': 'maintenance'}
 OTP_BUSY_RETRY_AFTER_SECONDS = 5
 
 
@@ -205,7 +204,7 @@ class PlannerPublicAccess(BasePermission):
             raise PlannerError(
                 'planner.unavailable',
                 503,
-                details=MAINTENANCE_DETAILS,
+                details={'reason': 'maintenance'},
                 retry_after=MAINTENANCE_RETRY_AFTER_SECONDS,
             )
         return True
@@ -329,11 +328,10 @@ def _is_rejection(response) -> bool:
     if response.status_code in REJECTION_STATUSES:
         return True
     data = getattr(response, 'data', None)
-    return (
-        response.status_code == 503
-        and isinstance(data, dict)
-        and (data.get('code') == 'planner.disabled' or data.get('details') == MAINTENANCE_DETAILS)
-    )
+    if response.status_code != 503 or not isinstance(data, dict):
+        return False
+    details = data.get('details') or {}
+    return data.get('code') == 'planner.disabled' or details.get('reason') == 'maintenance'
 
 
 def _log_request(request, response, started: float) -> None:

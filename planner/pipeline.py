@@ -703,14 +703,14 @@ def _stage_snapshot(candidate: Candidate) -> tuple[str, str] | None:
 def _remove_unused_graphs(current: str) -> None:
     """Keep the serving graph and the one that served before it (for a rollback).
 
-    Every succeeded build, a rollback too, was active until the next one succeeded,
-    so the newest inactive one served last; a rollback's graph is its target's.
+    Builds run one at a time and every succeeded one, a rollback too, was active
+    until the next succeeded, so the newest inactive one served last; a rollback's
+    graph is its target's.
     """
     keep = {current}
     previous = (
         GraphBuild.objects.filter(status=GraphBuild.STATUS_SUCCEEDED)
         .exclude(is_active=True)
-        .order_by('-finished_at', '-id')
         .first()
     )
     if previous:
