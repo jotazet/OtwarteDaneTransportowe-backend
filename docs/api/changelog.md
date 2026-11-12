@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: realtime submissions link only to the caller's own static feed
+
+Not breaking for the website, which already offers only `eligible-static-submissions`. `POST` and `PATCH /api/data_manager/realtime-submissions/` by a `DataProvider` with a `static_submission` the caller did not submit now answer `400` with field code `realtime.static_submission_not_owned` on `static_submission`; `Admin` may still link any feed. In `GET /api/data_manager/feed-submissions/{id}/` a `DataProvider` sees in `realtime_submissions` only the feed owner's realtime submissions, and `download/realtime/{endpoint_pk}/` returns `404` for other users' endpoints. Helper/Admin responses are unchanged. See [Realtime validation rules](feeds.md#realtime-feeds-realtimesubmission).
+
+---
+
 ## 2026-10-17: entity types of a realtime endpoint
 
 Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).

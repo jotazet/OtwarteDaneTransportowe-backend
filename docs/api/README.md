@@ -261,7 +261,7 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `DELETE` | `/api/data_manager/feed-submissions/{id}/` | `Admin` only (submissions are part of the audit trail) | Delete a submission |
 | `GET` | `/api/data_manager/feed-submissions/{id}/fetch-errors/?days=7` | owner or `Helper`/`Admin` | Fetch error history of a static feed for the last N days |
 | `GET` | `/api/data_manager/feed-submissions/{id}/download/static/{endpoint_pk}/` | owner or `Helper`/`Admin` | Download the private static file of the given submission |
-| `GET` | `/api/data_manager/feed-submissions/{id}/download/realtime/{endpoint_pk}/` | owner or `Helper`/`Admin` | Download the private cache of an RT endpoint linked to the static submission |
+| `GET` | `/api/data_manager/feed-submissions/{id}/download/realtime/{endpoint_pk}/` | owner or `Helper`/`Admin` | Download the private cache of an RT endpoint linked to the static submission (owner: only of its own realtime submissions) |
 | `GET` | `/api/data_manager/static-feed-entries/` | owner or `Helper`/`Admin` | List of static feeds with their fetch status |
 | `GET` | `/api/data_manager/static-feed-entries/{id}/` | owner or `Helper`/`Admin` | Details of a single static feed with its fetch status |
 | `POST` | `/api/data_manager/static-feed-entries/{id}/pause-fetch/` | `Helper`/`Admin` | Manually pause fetching of a static feed |
