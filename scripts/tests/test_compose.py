@@ -38,7 +38,13 @@ def test_every_app_service_runs_the_production_settings():
     services = config('docker-compose.yml', 'docker-compose.prod.yml')
     app = {name: service for name, service in services.items() if 'build' in service}
 
-    assert {'web', 'migrate', 'celery_worker', 'celery_planner_worker'} <= set(app)
+    assert {
+        'web',
+        'migrate',
+        'celery_worker',
+        'celery_realtime_worker',
+        'celery_planner_worker',
+    } <= set(app)
     assert {
         name: s['environment']['DJANGO_SETTINGS_MODULE'] for name, s in app.items()
     } == dict.fromkeys(app, PROD)

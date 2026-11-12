@@ -16,7 +16,8 @@
                                                       │              ▼
                        ┌──────────────────────────────┴──────────────────────────────┐
                        │ celery_beat (DB scheduler)  → dispatches every 1 / 5 min      │
-                       │ celery_worker (queue default) → realtime fetching, dispatch   │
+                       │ celery_worker (queue default) → dispatch, short tasks         │
+                       │ celery_realtime_worker (queue realtime) → realtime fetching   │
                        │ celery_validator_worker (queue feeds) → static downloads,      │
                        │   GTFS validation via docker-socket-proxy → MobilityData image │
                        └──────────────────────────────────────────────────────────────┘

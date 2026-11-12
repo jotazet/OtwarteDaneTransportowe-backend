@@ -971,6 +971,13 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = {k: v for k, v in serializer.validated_data.items()}
         endpoints_data = data.pop('endpoints', None)
+        # Restricted edits only change intervals, which need no re-verification.
+        revalidate = not restricted_realtime and (
+            endpoints_data is not None
+            or data.get('protocol', instance.protocol) != instance.protocol
+            or data.get('static_submission', instance.static_submission)
+            != instance.static_submission
+        )
         with transaction.atomic():
             _lock_unchanged_stage(instance)
             for attr, val in data.items():
@@ -1012,28 +1019,27 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                         except DjangoValidationError as exc:
                             raise_as_drf_validation_error(exc, field='endpoints')
                         o.save()
-                    if not can_confirm_feeds(request.user):
-                        # Owner resubmission (stage 1 / rejected): restart the
-                        # verification flow from stage 1.
-                        RealtimeSubmissionHistory.objects.create(
-                            submission=instance,
-                            event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
-                            stage_before=instance.current_stage,
-                            stage_after=1,
-                            actor=request.user,
-                        )
-                    # Admin edits keep the current stage — a published feed must
-                    # not be silently unpublished by an endpoint tweak. The
-                    # re-validation rejects (with an audit trail) a submission
-                    # that is not published yet if the new endpoints are broken.
-                    enqueue_on_commit(validate_realtime_submission_task, instance.id)
-                    if instance.current_stage == 4:
-                        # Endpoints were replaced (old fetch loops died with their
-                        # rows); re-seed the self-scheduling loops for the new ones
-                        # without waiting for the periodic bootstrap.
-                        transaction.on_commit(
-                            lambda: schedule_realtime_endpoint_fetches(instance.id)
-                        )
+            if revalidate:
+                if not can_confirm_feeds(request.user):
+                    # Owner resubmission (stage 1 / rejected): restart the
+                    # verification flow from stage 1.
+                    RealtimeSubmissionHistory.objects.create(
+                        submission=instance,
+                        event_type=RealtimeSubmissionHistory.EVENT_UPLOADED,
+                        stage_before=instance.current_stage,
+                        stage_after=1,
+                        actor=request.user,
+                    )
+                # Admin edits keep the current stage — a published feed must
+                # not be silently unpublished by an endpoint tweak. The
+                # re-validation rejects (with an audit trail) a submission
+                # that is not published yet if the new content is broken.
+                enqueue_on_commit(validate_realtime_submission_task, instance.id)
+                if endpoints_data is not None and instance.current_stage == 4:
+                    # Endpoints were replaced (old fetch loops died with their
+                    # rows); re-seed the self-scheduling loops for the new ones
+                    # without waiting for the periodic bootstrap.
+                    transaction.on_commit(lambda: schedule_realtime_endpoint_fetches(instance.id))
             if can_confirm_feeds(request.user):
                 _apply_stage_transition(
                     request,

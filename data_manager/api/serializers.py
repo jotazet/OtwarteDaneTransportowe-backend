@@ -790,6 +790,14 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
                         {'endpoints': f"Duplicate endpoint_type '{t}'."}
                     )
                 seen.add(t)
+        elif inst is not None and protocol != inst.protocol:
+            # A protocol change without new endpoints keeps the stored ones,
+            # so they must fit the new protocol too.
+            if any(e.endpoint_type not in allowed for e in inst.endpoints.all()):
+                raise serializers.ValidationError(
+                    {'protocol': 'realtime.endpoints_invalid_for_protocol'},
+                    code='realtime.endpoints_invalid_for_protocol',
+                )
 
         return data
 

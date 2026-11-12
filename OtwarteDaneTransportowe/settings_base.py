@@ -161,6 +161,11 @@ DATABASES = {
         'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'postgres'),
         'HOST': os.getenv('POSTGRES_HOST', '127.0.0.1'),
         'PORT': os.getenv('POSTGRES_PORT', '5420'),
+        # Reuse a connection for this many seconds instead of opening one per request
+        # (0 closes it after every request, as before). The health check replaces a
+        # connection that died in between (e.g. after a Postgres restart).
+        'CONN_MAX_AGE': int(os.getenv('POSTGRES_CONN_MAX_AGE', '60')),
+        'CONN_HEALTH_CHECKS': True,
     }
 }
 
@@ -292,9 +297,11 @@ SIMPLE_JWT = {
 
 # Celery
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/1')
+# No result backend: nothing reads task results (every task is fire-and-forget and
+# records its outcome in the database), so storing one per realtime poll only filled
+# Redis. A task whose result must be read needs a backend AND ignore_result=False.
+CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = True
@@ -346,6 +353,9 @@ CELERY_BEAT_SCHEDULE = {
 CELERY_TASK_QUEUES = {
     'default': {},
     'feeds': {},
+    # Realtime fetches and verifications may each hold a worker for up to 90 s;
+    # on 'default' they could hold back the dispatchers above (issue #47).
+    'realtime': {},
     # Graph builds run for minutes to hours and drive Docker, so they get their
     # own worker (celery_planner_worker) and never delay validations on 'feeds'.
     'planner': {},
@@ -354,6 +364,8 @@ CELERY_TASK_DEFAULT_QUEUE = 'default'
 CELERY_TASK_ROUTES = {
     'data_manager.validate_gtfs_feed': {'queue': 'feeds'},
     'data_manager.fetch_static_entry': {'queue': 'feeds'},
+    'data_manager.fetch_realtime_endpoint': {'queue': 'realtime'},
+    'data_manager.validate_realtime_submission': {'queue': 'realtime'},
     'planner.run_graph_build': {'queue': 'planner'},
     'planner.ensure_serving': {'queue': 'planner'},
     'planner.refresh_index': {'queue': 'planner'},

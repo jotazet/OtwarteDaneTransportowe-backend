@@ -24,7 +24,7 @@ Backend of **Otwarte Dane Transportowe (ODT)**, a Polish portal for open public 
 4. **Django.** Follow the **`django-drf`** skill and the conventions below.
 5. **The API contract is shared with the frontend.** A change to a response shape, a status code or a route updates `docs/api/` and gets an entry in [`docs/api/changelog.md`](docs/api/changelog.md) in the same PR. Breaking changes need a coordinated frontend PR.
 6. **Docs are part of the change.** Update `docs/` on the same branch. A new decision gets an ADR in `docs/architecture/decisions/` (copy `0000-template.md`). New domain knowledge goes in `docs/domain/`. Changed setup, env vars or commands go in `README.md` and [`docs/deployment.md`](docs/deployment.md).
-7. **Git.** Follow the workflow below. It is enforced by `.claude/hooks/protect-main.sh`.
+7. **Git.** Follow the workflow below. `.claude/hooks/protect-main.sh` guards the git commands it recognizes; it is not a guarantee, and GitHub branch protection is not set up yet ([enforcement](docs/development/git-workflow.md#enforcement)).
 
 ## Git workflow
 
