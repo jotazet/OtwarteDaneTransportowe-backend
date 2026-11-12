@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: `vehicles/coverage/` answers `planner.busy` while an operator's first count runs
+
+Not breaking for clients that handle `planner.busy`, which every planner endpoint can answer. `GET /api/planner/v1/vehicles/coverage/` recounts an operator's trips under way in one request at a time. A request that cannot recount an operator now (another request is recounting it, or the server is busy recounting others) gets its previous count (at most 10 minutes old), as before; when there is no previous count yet (after new timetables, or 10 minutes without requests for that operator) it now answers `503` with `{"code": "planner.busy", "details": {}}` and `Retry-After`, instead of recounting in parallel. The limit of 20 operators per request is unchanged. See [Planner API](planner.md#get-apiplannerv1vehiclescoverage).
+
+---
+
 ## 2026-11-12: `409 feeds.stage_changed` when a submission's stage changes mid-request
 
 Not breaking, but clients should handle the new status. `PUT`/`PATCH /api/data_manager/feed-submissions/{id}/` and `realtime-submissions/{id}/` now lock the submission and return `409` with `{"code": "feeds.stage_changed", "details": {}}` when its stage or rejection changed after the request read it (a validation run or another reviewer wrote history in between). Nothing is saved; reload and retry. A reviewer's publish no longer races a validation rejection, so a just-published feed is never rejected automatically, and history rows always record the real `stage_before`. See [Static feeds](feeds.md#static-feeds-feedsubmission).
