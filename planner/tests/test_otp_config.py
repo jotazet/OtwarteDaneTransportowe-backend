@@ -98,6 +98,29 @@ def test_endpoint_resolving_to_a_private_address_is_skipped(make_feed, fake_dns)
     ]
 
 
+def test_provider_url_with_a_config_placeholder_is_skipped(make_feed, fake_dns):
+    feed = make_feed('krk')
+    make_realtime(
+        feed,
+        [
+            ('trip_update', 'https://src.example.org/tu.pb?key=${PLANNER_INTERNAL_TOKEN}', False),
+            ('vehicle_position', 'https://src.example.org/vp.pb?q=$1', False),
+        ],
+    )
+
+    updaters, skipped = otp_config.realtime_updaters([feed])
+
+    assert [u['url'] for u in updaters] == ['https://src.example.org/vp.pb?q=$1']
+    assert skipped == [
+        {
+            'feed_id': 'krk',
+            'endpoint_type': 'trip_update',
+            'error_code': 'planner.rt_url_unsupported',
+        }
+    ]
+    assert '${' not in json.dumps(otp_config.router_config(updaters))
+
+
 def test_feed_with_realtime_from_polls_that_feeds_realtime_instead(make_feed, fake_dns):
     original = make_feed('olkusz')
     make_realtime(original, [('trip_update', 'https://src.example.org/tu.pb', False)])

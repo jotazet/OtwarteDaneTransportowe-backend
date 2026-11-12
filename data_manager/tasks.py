@@ -1,38 +1,50 @@
 """
-Celery tasks — pobieranie i odswiezanie cache feedow.
+Celery tasks: fetching and refreshing the feed cache.
 
-Architektura taskow:
+Task layout:
 ─────────────────────────────────────────────────────────────
-  STATYCZNE (download_time_1/2):
-  ┌─ Beat co minute ──▶ refresh_static_feeds_task()
-  │                        sprawdza download_time_1/2 == teraz
-  │                        └─ .delay() ──▶ fetch_static_entry_task(id)
+  STATIC (download_time_1/2):
+  ┌─ Beat every minute ──▶ refresh_static_feeds_task()
+  │                          checks download_time_1/2 == now
+  │                          └─ .delay() ──▶ fetch_static_entry_task(id)
   └─────────────────────────────────────────────────────────
 
   REALTIME (interval per endpoint):
-  ┌─ Beat raz przy starcie ──▶ bootstrap_realtime_tasks()
-  │                              dla kazdego aktywnego endpointu
-  │                              └─ fetch_realtime_endpoint_task.apply_async(
-  │                                     countdown=stagger)  ← rozlozony start
+  ┌─ Beat every 5 min ──▶ bootstrap_realtime_tasks()
+  │                         for each active endpoint without a live loop
+  │                         (and each delayed one whose next_fetch_after passed)
+  │                         └─ fetch_realtime_endpoint_task.apply_async(
+  │                                (id, token), countdown=stagger)
   │
-  │  fetch_realtime_endpoint_task(id)
-  │    1. pobierz plik
-  │    2. zapisz cached_file
-  │    3. .apply_async(countdown=endpoint.interval)  ← zaplanuj siebie na pozniej
+  │  fetch_realtime_endpoint_task(id, token)
+  │    0. exit at once unless token holds the alive marker (or claims it
+  │       when it is vacant)
+  │    1. fetch the body
+  │    2. store cached_file
+  │    3. active: new token in the marker, .apply_async(countdown=interval)
+  │       delayed/paused: clear the marker and stop; bootstrap resumes a
+  │       delayed endpoint once next_fetch_after passes
   └─────────────────────────────────────────────────────────
 
-Zalety self-scheduling:
-  • Brak pollingu DB co 10 s — Beat nie jest potrzebny dla RT po bootstrapie.
-  • Kazdy endpoint respektuje swoj interval (np. 15 s, 30 s, 60 s).
-  • Skalowalnosc — wiele endpointow moze pracowac niezaleznie.
+Each endpoint has at most one effective loop. The alive marker
+``rt-endpoint-alive:{id}`` holds the token of the one queued message allowed to
+run next, and every run hands a fresh token to its successor. Any other copy
+(a second seed after the marker expired under a lagging queue, a Redis
+redelivery of an ETA message, a message left over from before a pause/resume)
+carries a token that no longer matches and exits without fetching or
+rescheduling. Back-off delays (up to 6 h) are never queued as ETAs, so no
+message waits longer than the endpoint's interval.
 """
 
 import os
 import random
 import time
+import uuid
 
 from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
 from celery.utils.log import get_task_logger
+from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
@@ -41,18 +53,34 @@ from data_manager.validators import REALTIME_MIN_INTERVAL_SECONDS
 
 logger = get_task_logger(__name__)
 
-# Lekki lock per endpoint, aby unikac nakladania fetchy dla tego samego RT.
+# Light per-endpoint lock so that two runs for the same endpoint never overlap.
 RT_ENDPOINT_LOCK_TTL_SECONDS = 300
-# Ogranicza burst po starcie: endpointy sa uruchamiane z malym odstepem.
+# Spreads the start of endpoints after a bootstrap to avoid a burst.
 RT_BOOTSTRAP_STAGGER_SECONDS = 3
 RT_BOOTSTRAP_JITTER_MAX_SECONDS = 2
-# Marker "zywej" petli self-scheduling. Odswiezany przy kazdym zaplanowaniu
-# kolejnego wykonania (TTL = interval + bufor). Gdy petla padnie i marker
-# wygasnie, bootstrap moze ja ponownie zasiac — bez tworzenia duplikatow,
-# dopoki marker istnieje.
+# Alive marker of a self-scheduling loop: holds the token of the next queued run
+# and lives for that run's countdown plus this buffer. Once a loop dies and the
+# marker expires, bootstrap may seed a new loop; a late message of the old loop
+# then carries a stale token and exits.
 RT_ALIVE_TTL_BUFFER_SECONDS = 120
+# Marker value written before loop tokens existed; messages queued then carry no
+# token. Lets those loops survive the deploy. Remove after the next release.
+RT_LEGACY_ALIVE_MARKER = '1'
 # Ile minut wstecz dispatcher statyczny nadrabia zgubione tiki Beata.
 STATIC_DISPATCH_CATCHUP_MINUTES = 10
+# One wall-clock budget for every download of a realtime verification (link
+# checks, then first cache fetches): GBFS allows 9 endpoints at up to
+# REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS each, and the task runs on 'default'
+# next to the dispatchers, so the total is capped rather than sized to the sum.
+RT_VERIFICATION_BUDGET_SECONDS = 240
+# Less than this left counts as none: a download clipped to a second or two
+# would only time out and be recorded as a fetch failure of the endpoint.
+RT_VERIFICATION_MIN_DOWNLOAD_SECONDS = 5
+RT_VERIFICATION_SOFT_TIME_LIMIT = RT_VERIFICATION_BUDGET_SECONDS + 60
+RT_VERIFICATION_TIME_LIMIT = RT_VERIFICATION_SOFT_TIME_LIMIT + 60
+# Past the hard limit plus a queue backlog no run is in flight any more, so
+# retry_stuck_realtime_verifications re-queues the submission.
+RT_VERIFICATION_STUCK_AFTER_SECONDS = RT_VERIFICATION_TIME_LIMIT + 600
 
 
 def enqueue(task, *args, **kwargs) -> bool:
@@ -95,8 +123,11 @@ def _rt_alive_key(endpoint_id: int) -> str:
     return f'rt-endpoint-alive:{endpoint_id}'
 
 
-def _seconds_until(dt) -> int:
-    return max(0, int((dt - timezone.now()).total_seconds()))
+def _reserve_rt_loop(endpoint_id: int, ttl: int) -> str | None:
+    """Atomically claim the endpoint's loop: the token the seeded message must
+    carry, or None when a live loop already holds the marker."""
+    token = uuid.uuid4().hex
+    return token if cache.add(_rt_alive_key(endpoint_id), token, timeout=ttl) else None
 
 
 def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
@@ -121,25 +152,29 @@ def schedule_realtime_endpoint_fetches(submission_id: int) -> int:
         fetch_status=FETCH_STATUS_ACTIVE,
     ).values_list('id', 'interval'):
         interval = interval or 60
-        reserve_ttl = interval + RT_ALIVE_TTL_BUFFER_SECONDS
-        if not cache.add(_rt_alive_key(endpoint_id), '1', timeout=reserve_ttl):
+        token = _reserve_rt_loop(endpoint_id, interval + RT_ALIVE_TTL_BUFFER_SECONDS)
+        if token is None:
             continue
         # Called from requests: a broker outage must not fail the write, nor hold
         # it up once per endpoint. Release the reservation and stop; the periodic
         # bootstrap seeds this loop and the remaining (never reserved) ones.
-        if not enqueue(fetch_realtime_endpoint_task, endpoint_id):
+        if not enqueue(fetch_realtime_endpoint_task, endpoint_id, token):
             cache.delete(_rt_alive_key(endpoint_id))
             break
         scheduled += 1
     return scheduled
 
 
-def _mark_rt_alive(endpoint_id: int, interval: int) -> None:
-    cache.set(
-        _rt_alive_key(endpoint_id),
-        '1',
-        timeout=int(interval) + RT_ALIVE_TTL_BUFFER_SECONDS,
-    )
+def _rt_token_is_current(endpoint_id: int, token: str | None) -> bool:
+    """Whether this message is the one the endpoint's loop is waiting for.
+
+    A message that outlived its marker (queue lag, worker restart) re-claims the
+    vacant slot instead of leaving the endpoint idle until the next bootstrap;
+    it loses only to a loop that has claimed the slot meanwhile.
+    """
+    token = token or RT_LEGACY_ALIVE_MARKER
+    key = _rt_alive_key(endpoint_id)
+    return cache.get(key) == token or cache.add(key, token, timeout=RT_ENDPOINT_LOCK_TTL_SECONDS)
 
 
 def _scheduler():
@@ -166,10 +201,11 @@ def _scheduler():
 
 @shared_task(name='data_manager.refresh_static_feeds')
 def refresh_static_feeds_task() -> dict:
-    """
-    Uruchamiany przez Beat co minutę (crontab).
-    Sprawdza download_time_1/2 == teraz i kolejkuje fetch per wpis.
-    Lekki — tylko jedno zapytanie do DB + N .delay() calls.
+    """Run by Beat every minute; queue a fetch per entry that is due.
+
+    An entry is due when download_time_1/2 falls in the catch-up window and no
+    fetch has succeeded in it, or when its delayed retry time has passed. One
+    DB query plus one .delay() per entry.
     """
     from datetime import timedelta
 
@@ -213,8 +249,10 @@ def refresh_static_feeds_task() -> dict:
         .values_list('id', flat=True)
     )
 
+    # The window re-queues an entry every tick until a fetch succeeds; the
+    # cutoff turns the copies piled up behind a slow fetch into no-ops.
     for entry_id in entry_ids:
-        fetch_static_entry_task.delay(entry_id)
+        fetch_static_entry_task.delay(entry_id, skip_if_fetched_since=window_start.isoformat())
 
     logger.info('Dispatched %d static feed tasks for %s', len(entry_ids), now_time)
     return {'dispatched': len(entry_ids), 'time': str(now_time)}
@@ -231,13 +269,18 @@ def refresh_static_feeds_task() -> dict:
     soft_time_limit=660,
     time_limit=720,
 )
-def fetch_static_entry_task(self, entry_id: int) -> dict:
-    """Pobiera i zapisuje cache dla jednego StaticFeedEntry.
+def fetch_static_entry_task(self, entry_id: int, skip_if_fetched_since: str | None = None) -> dict:
+    """Fetch and cache one StaticFeedEntry.
 
-    Retry nie jest robiony przez Celery. Nieudane pobrania ustawiaja utrwalony
-    harmonogram pauz na modelu (5min -> 1h -> 6h -> auto_paused), ktory
-    respektuje cykliczny dispatcher.
+    Celery does not retry. A failed fetch stores a pause schedule on the model
+    (5 min -> 1 h -> 6 h -> auto_paused) that the periodic dispatcher honours.
+
+    ``skip_if_fetched_since`` (ISO instant, set by the dispatcher) makes a
+    duplicate a no-op when a fetch has succeeded since then. Direct callers
+    (a changed URL) omit it and always fetch.
     """
+    from datetime import datetime
+
     from data_manager.models import StaticFeedEntry
 
     _fetch, _, _, _ = _scheduler()
@@ -251,6 +294,13 @@ def fetch_static_entry_task(self, entry_id: int) -> dict:
     if not entry.is_proxy_managed:
         logger.info('StaticFeedEntry id=%d is not proxy-managed, skipping fetch', entry_id)
         return {'status': 'skipped_not_proxied', 'entry_id': entry_id}
+
+    if (
+        skip_if_fetched_since
+        and entry.last_fetch_success_at
+        and entry.last_fetch_success_at >= datetime.fromisoformat(skip_if_fetched_since)
+    ):
+        return {'status': 'already_fetched', 'entry_id': entry_id}
 
     if not entry.fetch_is_due():
         return {
@@ -270,21 +320,16 @@ def fetch_static_entry_task(self, entry_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# REALTIME — self-scheduling, bez pollingu
+# REALTIME — self-scheduling, no polling
 # ---------------------------------------------------------------------------
 
 
 @shared_task(name='data_manager.bootstrap_realtime_tasks')
 def bootstrap_realtime_tasks() -> dict:
     """
-    Uruchamiany cyklicznie przez Beat (co kilka minut) jako mechanizm
-    samonaprawy: zasiewa petle self-scheduling dla aktywnych endpointow RT,
-    ktore NIE maja jeszcze zywej petli.
-
-    Deduplikacja: dla kazdego endpointu istnieje marker `rt-endpoint-alive:{id}`
-    odswiezany przy kazdym zaplanowaniu kolejnego wykonania. Bootstrap pomija
-    endpointy z aktywnym markerem, dzieki czemu nie mnozy rownoleglych petli.
-    `cache.add` rezerwuje slot atomowo (odporne na rownolegle bootstrapy).
+    Run by Beat every few minutes as self-healing: seeds a self-scheduling loop
+    for every active realtime endpoint without a live loop (alive marker), and
+    for every delayed one whose next_fetch_after has passed.
     """
     from django.db.models import Q
 
@@ -308,16 +353,15 @@ def bootstrap_realtime_tasks() -> dict:
     scheduled = 0
     for index, (endpoint_id, interval) in enumerate(endpoints):
         interval = interval or 60
-        # Rozloz start endpointow, aby uniknac jednoczesnego burstu.
+        # Spread the start of endpoints to avoid a simultaneous burst.
         stagger = (index * RT_BOOTSTRAP_STAGGER_SECONDS) + random.randint(
             0, RT_BOOTSTRAP_JITTER_MAX_SECONDS
         )
-        reserve_ttl = stagger + interval + RT_ALIVE_TTL_BUFFER_SECONDS
-        # Atomowo rezerwuj slot: jesli marker juz istnieje, petla zyje -> pomijamy.
-        if not cache.add(_rt_alive_key(endpoint_id), '1', timeout=reserve_ttl):
+        token = _reserve_rt_loop(endpoint_id, stagger + interval + RT_ALIVE_TTL_BUFFER_SECONDS)
+        if token is None:
             continue
         fetch_realtime_endpoint_task.apply_async(
-            args=[endpoint_id],
+            args=[endpoint_id, token],
             countdown=stagger,
         )
         scheduled += 1
@@ -333,27 +377,30 @@ def bootstrap_realtime_tasks() -> dict:
 @shared_task(
     name='data_manager.fetch_realtime_endpoint',
 )
-def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
+def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> dict:
     """
-    Pobiera cache dla jednego RealtimeEndpointRT, a nastepnie planuje
-    siebie na za `interval` sekund (self-scheduling loop).
+    Fetch the cache for one RealtimeEndpointRT, then schedule itself again in
+    `interval` seconds (self-scheduling loop).
 
-    Bledy sieciowe sa zapisywane do FeedFetchError. Petla kontynuuje zgodnie
-    z utrwalonym stanem feedu: stale interval po sukcesie, next_fetch_after po
-    bledzie, stop dla pauzy automatycznej lub recznej.
+    `token` must match the endpoint's alive marker; otherwise this message is a
+    stale copy of the loop and exits without fetching or rescheduling.
+
+    Network errors are recorded as FeedFetchError. The loop follows the stored
+    fetch state: the interval after success, stop on a delay or a pause.
     """
     from data_manager.models import (
         FETCH_STATUS_ACTIVE,
-        FETCH_STATUS_AUTO_PAUSED,
-        FETCH_STATUS_DELAYED,
-        FETCH_STATUS_MANUAL_PAUSED,
         RealtimeEndpointRT,
     )
+
+    if not _rt_token_is_current(endpoint_id, token):
+        logger.info('RealtimeEndpointRT id=%d stale loop token, exiting', endpoint_id)
+        return {'status': 'stale', 'endpoint_id': endpoint_id}
 
     _, _fetch, _, _completed_rt = _scheduler()
 
     lock_key = f'rt-endpoint-lock:{endpoint_id}'
-    # cache.add zwroci False, jesli lock juz istnieje.
+    # cache.add returns False when the lock already exists.
     lock_acquired = cache.add(lock_key, '1', timeout=RT_ENDPOINT_LOCK_TTL_SECONDS)
     if not lock_acquired:
         logger.info('RealtimeEndpointRT id=%d already running, skipping overlap', endpoint_id)
@@ -385,27 +432,16 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
             return {'status': 'skipped_not_proxied', 'endpoint_id': endpoint_id}
 
         now = timezone.now()
-        if endpoint.fetch_status in (FETCH_STATUS_AUTO_PAUSED, FETCH_STATUS_MANUAL_PAUSED):
+        if not endpoint.fetch_is_due(now):
             logger.info(
                 'RealtimeEndpointRT id=%d fetch status=%s, stopping loop',
                 endpoint_id,
                 endpoint.fetch_status,
             )
             cache.delete(_rt_alive_key(endpoint_id))
-            return {'status': endpoint.fetch_status, 'endpoint_id': endpoint_id}
-
-        if (
-            endpoint.fetch_status == FETCH_STATUS_DELAYED
-            and endpoint.next_fetch_after
-            and endpoint.next_fetch_after > now
-        ):
-            countdown = _seconds_until(endpoint.next_fetch_after)
-            _mark_rt_alive(endpoint_id, countdown)
-            fetch_realtime_endpoint_task.apply_async(args=[endpoint_id], countdown=countdown)
             return {
-                'status': 'deferred',
+                'status': endpoint.fetch_status,
                 'endpoint_id': endpoint_id,
-                'next_in': countdown,
                 'next_fetch_after': endpoint.next_fetch_after,
             }
 
@@ -423,30 +459,30 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
                 'interval',
             ]
         )
-        if endpoint.fetch_status == FETCH_STATUS_ACTIVE:
-            countdown = max(endpoint.interval, REALTIME_MIN_INTERVAL_SECONDS)
-        elif endpoint.fetch_status == FETCH_STATUS_DELAYED and endpoint.next_fetch_after:
-            countdown = _seconds_until(endpoint.next_fetch_after)
-        else:
-            cache.delete(_rt_alive_key(endpoint_id))
-            return {
-                'status': result,
-                'endpoint_id': endpoint_id,
-                'fetch_status': endpoint.fetch_status,
-                'fetch_failure_count': endpoint.fetch_failure_count,
-            }
-
-        _mark_rt_alive(endpoint_id, countdown)
-        fetch_realtime_endpoint_task.apply_async(args=[endpoint_id], countdown=countdown)
-
-        return {
+        outcome = {
             'status': result,
             'endpoint_id': endpoint_id,
             'fetch_status': endpoint.fetch_status,
             'fetch_failure_count': endpoint.fetch_failure_count,
-            'next_in': countdown,
             'next_fetch_after': endpoint.next_fetch_after,
         }
+        if endpoint.fetch_status != FETCH_STATUS_ACTIVE:
+            # Never queue the back-off: Redis redelivers ETAs past its 1 h
+            # visibility timeout. Bootstrap resumes the endpoint instead.
+            cache.delete(_rt_alive_key(endpoint_id))
+            return outcome
+
+        countdown = max(endpoint.interval, REALTIME_MIN_INTERVAL_SECONDS)
+        next_token = uuid.uuid4().hex
+        cache.set(
+            _rt_alive_key(endpoint_id),
+            next_token,
+            timeout=countdown + RT_ALIVE_TTL_BUFFER_SECONDS,
+        )
+        fetch_realtime_endpoint_task.apply_async(
+            args=[endpoint_id, next_token], countdown=countdown
+        )
+        return {**outcome, 'next_in': countdown}
     finally:
         cache.delete(lock_key)
 
@@ -478,8 +514,10 @@ def validate_gtfs_feed_task(self, entry_id: int):
     import shutil
 
     import docker
+    from celery.exceptions import SoftTimeLimitExceeded
     from django.conf import settings
 
+    from data_manager import validation_errors as ve
     from data_manager.models import (
         FeedSubmission,
         FeedSubmissionHistory,
@@ -508,7 +546,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
         entry.validation_message = message
         entry.save(update_fields=['validation_status', 'validation_message'])
 
-    _set_validation_status(StaticFeedEntry.VALIDATION_PENDING, 'Validation in progress')
+    _set_validation_status(StaticFeedEntry.VALIDATION_PENDING)
 
     def _lock_submission() -> FeedSubmission:
         # Overlapping runs (upload signal, proxy refresh, retry command) must read
@@ -519,13 +557,21 @@ def validate_gtfs_feed_task(self, entry_id: int):
             .get(pk=entry.submission_id)
         )
 
-    def _reject_submission(reason: str, *, validation_error: bool = False) -> None:
-        status = (
-            StaticFeedEntry.VALIDATION_ERROR
-            if validation_error
-            else StaticFeedEntry.VALIDATION_INVALID
+    def _record_infra_error(code: str, detail) -> None:
+        # Validation could not run (our side, not the feed): no rejection, the
+        # stage stays as it is and manage.py retry_gtfs_validation re-runs it.
+        # The provider sees only the code; the details go to the server log.
+        _set_validation_status(StaticFeedEntry.VALIDATION_ERROR, code)
+        logger.error(
+            'GTFS validation of StaticFeedEntry %s (submission %s) could not run: %s: %s',
+            entry.id,
+            entry.submission_id,
+            code,
+            detail,
         )
-        _set_validation_status(status, reason)
+
+    def _reject_submission(reason: str) -> None:
+        _set_validation_status(StaticFeedEntry.VALIDATION_INVALID, reason)
         with transaction.atomic():
             submission = _lock_submission()
             stage = submission.current_stage
@@ -606,20 +652,14 @@ def validate_gtfs_feed_task(self, entry_id: int):
                         shutil.copyfileobj(body, fh)
                 container_input_dir = validation_temp_dir
             except OutboundURLBlocked as exc:
-                _reject_submission(str(exc), validation_error=True)
+                # The provider's URL, not our infrastructure: rejected as before.
+                _reject_submission(str(exc))
                 return
             except requests.exceptions.RequestException as exc:
-                _reject_submission(
-                    f'Failed to download feed for validation: {exc}',
-                    validation_error=True,
-                )
+                _reject_submission(f'Failed to download feed for validation: {exc}')
                 return
         elif not file_field:
-            logger.info(f"No file found for StaticFeedEntry {entry_id}. Skipping validation.")
-            _set_validation_status(
-                StaticFeedEntry.VALIDATION_ERROR,
-                'No file available for validation.',
-            )
+            _record_infra_error(ve.FILE_MISSING, 'no file, cached file or URL')
             return
         else:
             # file_field.name is relative to MEDIA_ROOT (e.g. '1/2/static/feed.zip')
@@ -640,10 +680,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
         host_output_dir = os.path.join(host_input_dir, report_dir_name)
 
         if not os.path.exists(container_file_path):
-            _reject_submission(
-                f"File not found in container: {container_file_path}",
-                validation_error=True,
-            )
+            _record_infra_error(ve.FILE_MISSING, f'not on disk: {container_file_path}')
             return
 
         # NOTE: Do not check that the file exists at the host path here.
@@ -662,8 +699,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             except Exception:
                 pass
         except OSError as e:
-            logger.error(f"Failed to create validation output dir: {e}")
-            _set_validation_status(StaticFeedEntry.VALIDATION_ERROR, str(e))
+            _record_infra_error(ve.VALIDATOR_FAILED, f'cannot create the output dir: {e}')
             return
 
         logger.info(f"Validating {filename}...")
@@ -672,9 +708,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
         try:
             client = docker.from_env()
         except docker.errors.DockerException as e:
-            _reject_submission(
-                f"Cannot connect to Docker (check the docker-socket-proxy service / DOCKER_HOST): {e}",
-                validation_error=True,
+            _record_infra_error(
+                ve.VALIDATOR_UNAVAILABLE,
+                f'cannot connect to Docker (check docker-socket-proxy / DOCKER_HOST): {e}',
             )
             return
 
@@ -707,10 +743,13 @@ def validate_gtfs_feed_task(self, entry_id: int):
             logger.info("Validation container finished.")
 
         except docker.errors.ContainerError as e:
-            _reject_submission(f"Validator container failed: {e}", validation_error=True)
+            # Non-zero exit, e.g. 137 when the memory limit killed it.
+            _record_infra_error(ve.VALIDATOR_FAILED, f'container failed: {e}')
             return
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as e:
-            _reject_submission(f"Docker execution error: {e}", validation_error=True)
+            _record_infra_error(ve.VALIDATOR_UNAVAILABLE, f'Docker execution error: {e}')
             return
 
         # Parse results
@@ -733,9 +772,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
             )
             time.sleep(retry_delay)
         else:
-            _reject_submission(
-                f"report.json not found in output directory after {max_retries} retries: {container_output_dir}",
-                validation_error=True,
+            _record_infra_error(
+                ve.VALIDATOR_FAILED,
+                f'report.json not found after {max_retries} retries: {container_output_dir}',
             )
             return
 
@@ -743,7 +782,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             with open(report_file, encoding='utf-8') as f:
                 report_data = json.load(f)
         except json.JSONDecodeError as e:
-            _reject_submission(f"Failed to decode report.json: {e}", validation_error=True)
+            _record_infra_error(ve.VALIDATOR_FAILED, f'cannot decode report.json: {e}')
             return
 
         def extract_notice_counts(payload: dict) -> tuple[int, int, dict]:
@@ -852,12 +891,35 @@ def validate_gtfs_feed_task(self, entry_id: int):
                     logger.info(
                         f"Submission {submission.id} advanced to Stage 3 (valid GTFS, awaiting admin)."
                     )
+    except SoftTimeLimitExceeded:
+        _record_infra_error(ve.TIMEOUT, 'soft time limit exceeded')
     finally:
         _cleanup_workdirs()
 
 
-@shared_task(name='data_manager.validate_realtime_submission')
+@shared_task(
+    name='data_manager.validate_realtime_submission',
+    soft_time_limit=RT_VERIFICATION_SOFT_TIME_LIMIT,
+    time_limit=RT_VERIFICATION_TIME_LIMIT,
+)
 def validate_realtime_submission_task(submission_id: int) -> dict:
+    try:
+        return _verify_realtime_submission(submission_id)
+    except SoftTimeLimitExceeded:
+        # Downloads fit RT_VERIFICATION_BUDGET_SECONDS and slow endpoints end
+        # as endpoint_timeout, so the time went elsewhere (worker, database,
+        # storage): an infrastructure error, not a rejection. Stay at stage 2
+        # for retry_stuck_realtime_verifications.
+        logger.error(
+            'Realtime verification of submission %s hit the soft time limit (%ss); '
+            'kept at stage 2 for a retry',
+            submission_id,
+            RT_VERIFICATION_SOFT_TIME_LIMIT,
+        )
+        return {'status': 'timed_out', 'id': submission_id}
+
+
+def _verify_realtime_submission(submission_id: int) -> dict:
     """
     Realtime verification (stage 2): link-check every endpoint, validate the
     response format, and do the first cache fetch for hide_original endpoints.
@@ -875,7 +937,6 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
     validate_realtime_feed_content.
     """
     import requests
-    from django.conf import settings
 
     from data_manager import rejection_reasons as rr
     from data_manager.models import (
@@ -980,15 +1041,24 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
         (requests.exceptions.ConnectionError, rr.ENDPOINT_UNREACHABLE),
     )
 
+    deadline = time.monotonic() + RT_VERIFICATION_BUDGET_SECONDS
+
+    def _download_budget() -> float:
+        return min(settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS, deadline - time.monotonic())
+
     for ep in endpoints:
         entity_types = set()
         try:
+            budget = _download_budget()
+            if budget < RT_VERIFICATION_MIN_DOWNLOAD_SECONDS:
+                # The endpoints before this one used up the budget: too slow.
+                raise requests.exceptions.Timeout('verification budget used up')
             resp = safe_get(
                 ep.url,
                 headers=_build_auth_headers(ep.auth_type, ep.auth_value),
                 timeout=15,
                 max_bytes=max_link_bytes,
-                total_timeout=settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS,
+                total_timeout=budget,
             )
             if resp.status_code >= 400:
                 reasons.append(
@@ -1000,6 +1070,9 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
                 )
             else:
                 entity_types = validate_realtime_feed_content(rts.protocol, resp.content)
+        except SoftTimeLimitExceeded:
+            # Not the endpoint's fault: end the task as timed_out.
+            raise
         except Exception as exc:
             code = next(
                 (c for exc_type, c in exception_codes if isinstance(exc, exc_type)),
@@ -1027,7 +1100,13 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
         for ep in endpoints:
             if not ep.hide_original:
                 continue
-            _fetch_realtime_endpoint_rt(ep, now)
+            budget = _download_budget()
+            if budget < RT_VERIFICATION_MIN_DOWNLOAD_SECONDS:
+                reasons.append(
+                    rr.rejection_reason(rr.ENDPOINT_TIMEOUT, endpoint_type=ep.endpoint_type)
+                )
+                continue
+            _fetch_realtime_endpoint_rt(ep, now, total_timeout=budget)
             ep.refresh_from_db(fields=['cached_file', 'cached_at'])
             if not ep.cached_file:
                 reasons.append(
@@ -1039,3 +1118,51 @@ def validate_realtime_submission_task(submission_id: int) -> dict:
 
     _advance(3)
     return {'status': 'ok', 'id': submission_id}
+
+
+@shared_task(name='data_manager.retry_stuck_realtime_verifications')
+def retry_stuck_realtime_verifications() -> dict:
+    """Beat: re-queue verifications whose latest history entry is their own
+    advance to stage 2 (actor None) older than RT_VERIFICATION_STUCK_AFTER_SECONDS.
+    A stage 2 set by a reviewer is left alone.
+    """
+    from datetime import timedelta
+
+    from django.db.models import OuterRef, Subquery
+
+    from data_manager.models import RealtimeSubmissionHistory
+
+    cutoff = timezone.now() - timedelta(seconds=RT_VERIFICATION_STUCK_AFTER_SECONDS)
+    latest_entry = (
+        RealtimeSubmissionHistory.objects.filter(submission=OuterRef('submission'))
+        .order_by('-created_at', '-id')
+        .values('id')[:1]
+    )
+    submission_ids = list(
+        RealtimeSubmissionHistory.objects.filter(
+            id=Subquery(latest_entry),
+            stage_after=2,
+            actor__isnull=True,
+            created_at__lte=cutoff,
+        ).values_list('submission_id', flat=True)
+    )
+
+    queued = 0
+    for submission_id in submission_ids:
+        # Re-queuing does not move the stage-2 timestamp, so without this marker
+        # every sweep would queue another run while one is still in progress.
+        marker = f'rt-verification-requeued:{submission_id}'
+        if not cache.add(marker, '1', timeout=RT_VERIFICATION_STUCK_AFTER_SECONDS):
+            continue
+        if not enqueue(validate_realtime_submission_task, submission_id):
+            cache.delete(marker)
+            break
+        queued += 1
+
+    if submission_ids:
+        logger.warning(
+            'Re-queued %d of %d realtime verifications stuck at stage 2',
+            queued,
+            len(submission_ids),
+        )
+    return {'stuck': len(submission_ids), 'queued': queued}

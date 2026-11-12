@@ -6,7 +6,9 @@ turn a successful write into an HTTP 500. Every other queued job had a way back:
 static validations via ``retry_gtfs_validation``, realtime fetch loops via the
 periodic ``bootstrap_realtime_tasks``. A lost ``validate_realtime_submission_task``
 had none — the submission simply sat at stage 1/2 forever with nothing to retry
-it. This command closes that gap.
+it. This command closes that gap. Verifications stuck at stage 2 are now also
+re-queued by the periodic ``retry_stuck_realtime_verifications``; this command
+still covers stage 1 (a run lost before it started) and retries by ID.
 
 Usage:
     python manage.py retry_realtime_validation

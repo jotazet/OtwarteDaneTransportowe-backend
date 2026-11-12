@@ -15,6 +15,7 @@ import os
 from urllib.parse import urlparse
 
 import requests
+from celery.exceptions import SoftTimeLimitExceeded
 from django.conf import settings
 from django.core.files.base import File
 from django.utils import timezone
@@ -78,7 +79,7 @@ def _completed_realtime_submission_ids() -> list[int]:
 def _delete_stale_cache_file(field_file, old_name: str | None) -> None:
     """Remove the previous cache file when a fetch stored it under a new name.
 
-    Same-name refreshes are rewritten in place by OverwriteStorage and must
+    Same-name refreshes are replaced atomically by OverwriteStorage and must
     not be deleted here.
     """
     if old_name and old_name != field_file.name and field_file.storage.exists(old_name):
@@ -132,10 +133,22 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
             old_cached_name = entry.cached_file.name if entry.cached_file else None
             entry.cached_file.save(filename, File(body), save=False)
 
-        StaticFeedEntry.objects.filter(pk=entry.pk).update(
-            cached_file=entry.cached_file.name,
-            cached_at=now,
-        )
+        # Only while the entry still proxies the URL just downloaded: a source
+        # change during the download drops the cache, and this copy of the
+        # old URL must not come back.
+        updated = StaticFeedEntry.objects.filter(
+            pk=entry.pk, url=entry.url, hide_original=True
+        ).update(cached_file=entry.cached_file.name, cached_at=now)
+        if not updated:
+            current = (
+                StaticFeedEntry.objects.filter(pk=entry.pk)
+                .values_list('cached_file', flat=True)
+                .first()
+            )
+            if current != entry.cached_file.name:
+                entry.cached_file.storage.delete(entry.cached_file.name)
+            logger.info('Discarded fetch of static entry=%d: source changed', entry.pk)
+            return FETCH_PERMANENT
         _delete_stale_cache_file(entry.cached_file, old_cached_name)
         entry.mark_fetch_success(now)
         logger.info('Refreshed static entry=%d  url=%s', entry.pk, entry.url)
@@ -178,8 +191,14 @@ def _log_static_error(entry, error_type, exc, http_code=None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
-    """Fetch the URL and store it as cached_file. Errors are recorded as FeedFetchError."""
+def _fetch_realtime_endpoint_rt(
+    endpoint: RealtimeEndpointRT, now, total_timeout: float | None = None
+) -> str:
+    """Fetch the URL and store it as cached_file. Errors are recorded as FeedFetchError.
+
+    ``total_timeout`` caps the download below REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS
+    (realtime verification passes what is left of its budget).
+    """
     if not endpoint.is_proxy_managed:
         logger.info(
             'Skipping realtime endpoint_rt=%d — not proxy-managed (hide_original=False)',
@@ -194,7 +213,7 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
             headers=headers,
             timeout=30,
             max_bytes=settings.MAX_REALTIME_FEED_BYTES,
-            total_timeout=settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS,
+            total_timeout=total_timeout or settings.REALTIME_FETCH_TOTAL_TIMEOUT_SECONDS,
         ) as (response, body):
             response.raise_for_status()
 
@@ -232,6 +251,10 @@ def _fetch_realtime_endpoint_rt(endpoint: RealtimeEndpointRT, now) -> str:
     except requests.exceptions.ConnectionError as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_CONNECTION, exc)
         return FETCH_TRANSIENT
+    except SoftTimeLimitExceeded:
+        # The task ran out of time, not the endpoint: no failure (and no pause)
+        # is recorded against it.
+        raise
     except Exception as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc)
         return FETCH_PERMANENT
