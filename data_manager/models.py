@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -116,15 +117,29 @@ class FetchControlMixin:
 
 
 class OverwriteStorage(FileSystemStorage):
-    """Saves a new version of a file under the same name, rewriting it in place.
+    """Saves a new version of a file under the same name, replacing it atomically.
 
-    Django's own overwrite (truncate on open) instead of deleting the old file
-    first: two saves of one file at once (e.g. overlapping validations writing
-    report.json) made the second delete fail or remove the first's new file.
+    Each save writes its own temporary file next to the target and renames it
+    over the target with ``os.replace``, so a reader (a download being served,
+    OTP polling a realtime feed) sees the complete old or the complete new file,
+    never a truncated one. Two overlapping saves of one name (e.g. validations
+    writing report.json) both succeed and the last rename wins; delete-then-save
+    made the second delete fail or remove the first's new file.
     """
 
     def __init__(self, **kwargs):
         super().__init__(allow_overwrite=True, **kwargs)
+
+    def _save(self, name, content):
+        directory, basename = os.path.split(name)
+        tmp_name = os.path.join(directory, f'.{basename}.{secrets.token_hex(8)}.tmp')
+        try:
+            tmp_name = super()._save(tmp_name, content)
+            os.replace(self.path(tmp_name), self.path(name))
+        except BaseException:  # also on worker shutdown, so no temp file is left
+            self.delete(tmp_name)
+            raise
+        return name.replace('\\', '/')
 
 
 def feed_file_path(instance, filename):

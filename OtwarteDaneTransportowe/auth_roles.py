@@ -151,6 +151,12 @@ def can_manage_cases(user) -> bool:
     return has_role(user, ROLE_HELPER)
 
 
+def can_delete_transport_organization(user) -> bool:
+    """Admin only: deleting an organization cascades to all its feed submissions,
+    and deleting a submission is Admin-only too."""
+    return is_admin(user)
+
+
 class RoleReadOnlyOrWritePermission(BasePermission):
     write_check = staticmethod(lambda user: False)
 
@@ -197,6 +203,15 @@ class IsEditorOrOwnBloggerOrReadOnly(BasePermission):
 
 class IsCaseManagerOrReadOnly(RoleReadOnlyOrWritePermission):
     write_check = staticmethod(can_manage_cases)
+
+
+class IsTransportOrganizationManagerOrReadOnly(IsCaseManagerOrReadOnly):
+    """Case managers create and update organizations; only Admin deletes them."""
+
+    def has_permission(self, request, view):
+        if request.method == 'DELETE':
+            return can_delete_transport_organization(request.user)
+        return super().has_permission(request, view)
 
 
 class RequiresAdminGroup(BasePermission):

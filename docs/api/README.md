@@ -67,7 +67,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 | `Blogger` | Creating blog posts; editing and deleting **only their own** posts. |
 | `Editor` | Editing and deleting **any** blog posts (including other users' posts). |
 | `DataProvider` | Adding static and realtime feeds and managing their own submissions before review. |
-| `Helper` | Feed queue: **only** confirming/rejecting (`stage`, `rejection_cause`); cases (data providers, organizations, statuses). **No** editing of the URL/file or the submission content. |
+| `Helper` | Feed queue: **only** confirming/rejecting (`stage`, `rejection_cause`); cases (data providers, organizations, statuses), except deleting an organization. **No** editing of the URL/file or the submission content. |
 | Anonymous | Public reads, blog reactions, downloading published feeds. |
 
 ### Access matrix
@@ -78,7 +78,7 @@ Roles are plain Django groups (`auth.Group`). A migration creates the groups:
 | Blog reactions | Yes, `POST` without login | Anyone, limited per IP |
 | Data providers | Yes | `Helper` or `Admin` |
 | Case statuses | Yes | `Helper` or `Admin` |
-| Transport organizations | Yes | `Helper` or `Admin` |
+| Transport organizations | Yes | `Helper` or `Admin`; delete: `Admin` |
 | Static feed submissions | No | `DataProvider` creates; `Helper`/`Admin` confirms |
 | Realtime submissions | No | `DataProvider` creates; `Helper`/`Admin` confirms |
 | Published feeds catalog | Yes | No writes through the public API |
