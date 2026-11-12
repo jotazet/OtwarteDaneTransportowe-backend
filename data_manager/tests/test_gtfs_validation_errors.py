@@ -449,3 +449,19 @@ def test_expired_validator_containers_are_removed_before_a_run(org, user):
     assert removed == ['orphan', client.containers.run.call_args.kwargs['name']]
     entry.refresh_from_db()
     assert entry.validation_status == StaticFeedEntry.VALIDATION_VALID
+
+
+def test_a_malformed_expiry_label_does_not_stop_the_validation(org, user):
+    entry = _entry(org, user)
+    stray = {
+        'Id': 'stray',
+        'Names': ['/stray'],
+        'Labels': {tasks.GTFS_VALIDATOR_EXPIRES_LABEL: 'x'},
+    }
+    from_env = _docker(_write_report(_report(0)), listed=[stray])
+
+    with patch('docker.from_env', from_env):
+        validate_gtfs_feed_task(entry.id)
+
+    entry.refresh_from_db()
+    assert entry.validation_status == StaticFeedEntry.VALIDATION_VALID

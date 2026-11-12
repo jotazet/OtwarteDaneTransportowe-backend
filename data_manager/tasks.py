@@ -731,13 +731,15 @@ def validate_gtfs_feed_task(self, entry_id: int):
         logger.info(f"Validating {filename}...")
         logger.info(f"Host Input: {host_input_dir}, Host Output: {host_output_dir}")
 
-        wait_seconds = (
-            started
-            + GTFS_VALIDATION_SOFT_TIME_LIMIT
-            - GTFS_VALIDATOR_STOP_MARGIN_SECONDS
-            - time.monotonic()
-        )
-        if wait_seconds <= 0:
+        def _seconds_left() -> float:
+            return (
+                started
+                + GTFS_VALIDATION_SOFT_TIME_LIMIT
+                - GTFS_VALIDATOR_STOP_MARGIN_SECONDS
+                - time.monotonic()
+            )
+
+        if _seconds_left() <= 0:
             _record_infra_error(ve.TIMEOUT, 'no time left for the validator after the download')
             return
 
@@ -752,7 +754,12 @@ def validate_gtfs_feed_task(self, entry_id: int):
 
         try:
             _remove_expired_validators(client)
-        except (docker.errors.DockerException, requests.exceptions.RequestException) as e:
+        except (
+            docker.errors.DockerException,
+            requests.exceptions.RequestException,
+            KeyError,
+            ValueError,  # a hand-made container with a malformed label
+        ) as e:
             logger.warning('Cannot remove orphaned GTFS validator containers: %s', e)
 
         # Detached with a unique name, so the finally below can remove it whatever
@@ -784,6 +791,8 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 cap_drop=['ALL'],
                 security_opt=['no-new-privileges:true'],
             )
+            # Measured after run(), which may have pulled the image first.
+            wait_seconds = max(_seconds_left(), 1)
             wait_started = time.monotonic()
             try:
                 exit_code = container.wait(timeout=wait_seconds).get('StatusCode', -1)
