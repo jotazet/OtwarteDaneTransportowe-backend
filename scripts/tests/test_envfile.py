@@ -205,8 +205,9 @@ def test_compose_interpolates_no_release_key():
         for name in re.findall(r'(?<!\$)\$\{([A-Z_][A-Z0-9_]*)', path.read_text())
     }
 
-    # The planner token only becomes an environment value of the otp container.
-    assert interpolated & envfile.RELEASE_KEYS == {'PLANNER_INTERNAL_TOKEN'}
+    # Both only become environment values: the planner token of the otp container,
+    # the Redis password of redis and of the redis:// URLs of the app services.
+    assert interpolated & envfile.RELEASE_KEYS == {'PLANNER_INTERNAL_TOKEN', 'REDIS_PASSWORD'}
 
 
 @pytest.mark.skipif(shutil.which('docker') is None, reason='needs Docker Compose')
