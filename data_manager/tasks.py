@@ -49,6 +49,8 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
+from data_manager.validators import REALTIME_MIN_INTERVAL_SECONDS
+
 logger = get_task_logger(__name__)
 
 # Light per-endpoint lock so that two runs for the same endpoint never overlap.
@@ -470,7 +472,7 @@ def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> 
             cache.delete(_rt_alive_key(endpoint_id))
             return outcome
 
-        countdown = endpoint.interval
+        countdown = max(endpoint.interval, REALTIME_MIN_INTERVAL_SECONDS)
         next_token = uuid.uuid4().hex
         cache.set(
             _rt_alive_key(endpoint_id),

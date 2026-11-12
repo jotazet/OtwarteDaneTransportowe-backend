@@ -54,7 +54,7 @@ DataProvider
      error, not a rejection: the submission stays at stage 2, and a periodic sweep
      (`retry_stuck_realtime_verifications`, every 15 minutes) re-queues verifications that
      have been at stage 2 for more than 16 minutes; a stage 2 set by a reviewer is left alone
-  -> from stage 2 the owner may PATCH only the note, license and interval on endpoints (not the name, URL, auth, is_original, hide_original)
+  -> from stage 2 the owner may PATCH only the note, license and interval on endpoints (not the name, URL, auth, is_original, hide_original); an interval is never below 5 s
   -> Helper/Admin PATCH { "stage": 4 }
   -> the realtime feed appears publicly in the feed catalogue and /feed/rt/{id}/
 ```

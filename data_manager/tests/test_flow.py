@@ -630,6 +630,14 @@ def test_owner_realtime_restricted_after_stage_2(api_client, normal_user, org):
     assert rts.name == 'GBFS org'
     assert rts.license == 'CC0'
 
+    too_short = api_client.patch(
+        f'/api/data_manager/realtime-submissions/{rts.id}/',
+        {'endpoints': [{'endpoint_type': 'gbfs', 'interval': 4}]},
+        format='json',
+    )
+    assert too_short.status_code == 400, too_short.data
+    assert too_short.data['endpoints'][0]['interval'][0].code == 'realtime.interval_too_short'
+
 
 def test_owner_realtime_restricted_cannot_change_hide_or_original(api_client, normal_user, org):
     rts = RealtimeSubmission.objects.create(

@@ -4,9 +4,11 @@ Guards against the previous behaviour where the periodic ``bootstrap_realtime_ta
 re-queued every active endpoint on each run, accumulating duplicate fetch chains.
 """
 
+import importlib
 from datetime import timedelta
 
 import pytest
+from django.apps import apps
 from django.core.cache import cache
 from django.utils import timezone
 
@@ -21,6 +23,10 @@ from data_manager.models import (
 )
 
 pytestmark = pytest.mark.django_db
+
+min_interval_migration = importlib.import_module(
+    'data_manager.migrations.0015_realtime_endpoint_min_interval'
+)
 
 
 @pytest.fixture
@@ -109,6 +115,33 @@ def test_schedule_stops_and_releases_reservation_when_broker_is_down(
     assert len(attempts) == 1
     for endpoint in (published_gbfs_endpoint, second):
         assert cache.get(tasks._rt_alive_key(endpoint.id)) is None
+
+
+def test_fetch_task_clamps_stored_interval_below_minimum(published_gbfs_endpoint, monkeypatch):
+    """A row stored before the 5 s minimum existed must not loop with countdown 0."""
+    from data_manager import scheduler
+
+    RealtimeEndpointRT.objects.filter(pk=published_gbfs_endpoint.pk).update(interval=0)
+    monkeypatch.setattr(scheduler, '_fetch_realtime_endpoint_rt', lambda endpoint, now: 'ok')
+    calls = []
+    monkeypatch.setattr(
+        tasks.fetch_realtime_endpoint_task,
+        'apply_async',
+        lambda *args, **kwargs: calls.append(kwargs),
+    )
+
+    tasks.fetch_realtime_endpoint_task(published_gbfs_endpoint.id)
+
+    assert [call['countdown'] for call in calls] == [5]
+
+
+def test_migration_raises_stored_intervals_below_minimum(published_gbfs_endpoint):
+    RealtimeEndpointRT.objects.filter(pk=published_gbfs_endpoint.pk).update(interval=0)
+
+    min_interval_migration.raise_short_intervals(apps, None)
+
+    published_gbfs_endpoint.refresh_from_db()
+    assert published_gbfs_endpoint.interval == 5
 
 
 @pytest.fixture

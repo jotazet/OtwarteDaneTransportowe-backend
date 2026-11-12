@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 # sniffing checks must never read the whole file.
 CONTENT_SNIFF_BYTES = 8192
 
+# Shortest realtime refresh interval ODT accepts (product decision, issue #42):
+# lower values hammer the provider and keep a worker slot busy.
+REALTIME_MIN_INTERVAL_SECONDS = 5
+
 
 class InvalidFeedContent(Exception):
     """Fetched bytes do not look like the expected feed format.
@@ -183,3 +187,13 @@ def validate_feed_file_size(value):
         raise ValidationError(
             f'File is too large ({size} bytes). Maximum allowed is {limit} bytes.'
         )
+
+
+def validate_realtime_interval(value):
+    """Reject a realtime refresh interval below ``REALTIME_MIN_INTERVAL_SECONDS``.
+
+    The message is the error code itself (ADR 0006), so the API response carries it;
+    ModelSerializer copies this validator into the API field.
+    """
+    if value < REALTIME_MIN_INTERVAL_SECONDS:
+        raise ValidationError('realtime.interval_too_short', code='realtime.interval_too_short')

@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: realtime refresh interval of at least 5 seconds
+
+Not breaking for clients that send sensible intervals. A realtime endpoint's `interval` in `POST`/`PUT`/`PATCH /api/data_manager/realtime-submissions/` must now be at least **5** seconds; `0` to `4` return `400` with `["realtime.interval_too_short"]` as the messages of `endpoints.{index}.interval` (it used to be accepted, and `0` made ODT fetch the provider in a tight loop). Endpoints stored with an interval below 5 were raised to 5 by a migration, so the published `interval` in the catalogue is never below 5 either. See [Realtime validation rules](feeds.md).
+
+---
+
 ## 2026-11-12: realtime verification time budget
 
 Not breaking. All downloads of one realtime verification now share a 4-minute budget, so `realtime.endpoint_timeout` is also given to endpoints the verification did not reach in time. A verification that runs out of time for another reason no longer ends in a rejection or hangs: the submission stays at stage 2 (`current_stage: 2`) and is verified again automatically within about 30 minutes. See [Realtime rejection reasons](feeds.md#realtime-rejection-reasons).
