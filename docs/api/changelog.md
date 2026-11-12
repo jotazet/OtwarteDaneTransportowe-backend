@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: unchanged static feeds are not downloaded and validated again
+
+Not breaking. A scheduled fetch of a proxied static feed sends `If-None-Match` / `If-Modified-Since` and compares the SHA-256 of the body with the cached copy. When the upstream file has not changed, `last_fetch_success_at` is updated but `cached_at`, the copy and the validation report are not, and no GTFS validation runs. `cached_at` therefore moves only when a new copy is stored; `last_fetch_success_at` tells when the upstream was last checked. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
 ## 2026-11-12: non-numeric ids and filters no longer return `500`
 
 Not breaking. The `transport_organization` query filter of `GET /api/data_manager/submissions/`, `feed-submissions/` and `realtime-submissions/` returns `400` with `{"transport_organization": ["feeds.invalid_integer"]}` for a value that is not an integer (it used to be a `500`). A non-numeric id in `realtime-submissions/eligible-static-submissions/{id}/` and `feed-submissions/{pk}/download/static|realtime/{endpoint_pk}/` returns `404`. See [Feeds API](feeds.md).
