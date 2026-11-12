@@ -1168,11 +1168,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     # defer_source_refresh: the rejected-resubmission flow in the
                     # view schedules the refresh itself (unconditionally, so a
                     # resubmission with an unchanged url still re-validates).
-                    if (
-                        entry.url
-                        and url_changed
-                        and not self.context.get('defer_source_refresh')
-                    ):
+                    if entry.url and url_changed and not self.context.get('defer_source_refresh'):
                         self._schedule_source_refresh(entry)
                 else:
                     if static_entry_data.get('auth_type'):

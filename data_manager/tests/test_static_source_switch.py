@@ -175,3 +175,31 @@ def test_schedule_change_keeps_the_cache(org, owner, client_as):
 
     assert response.status_code == 200, response.data
     _assert_cache_kept(entry, old_cache)
+
+
+def test_fetch_finishing_after_a_switch_does_not_restore_the_cache(monkeypatch, org, owner):
+    import io
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    from data_manager.scheduler import FETCH_PERMANENT, _fetch_static_entry
+
+    submission, entry = _proxied_entry(org, owner)
+    stale = StaticFeedEntry.objects.get(pk=entry.pk)  # what the fetch task loaded
+
+    @contextmanager
+    def download_while_switching(*args, **kwargs):
+        # The owner switches to a file while the body is still downloading.
+        StaticFeedEntry.objects.filter(pk=entry.pk).update(
+            url='', hide_original=False, cached_file='', cached_at=None
+        )
+        yield MagicMock(), io.BytesIO(b'PK\x03\x04late')
+
+    monkeypatch.setattr('data_manager.scheduler.safe_download', download_while_switching)
+    monkeypatch.setattr('data_manager.scheduler.validate_static_feed_stream', lambda *a: None)
+
+    assert _fetch_static_entry(stale) == FETCH_PERMANENT
+
+    entry.refresh_from_db()
+    assert not entry.cached_file and entry.cached_at is None
+    assert not entry.cached_file.storage.exists(stale.cached_file.name)
