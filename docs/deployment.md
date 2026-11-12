@@ -574,7 +574,7 @@ docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB
 ## 14. Deployment verification
 
 ```bash
-# Service status and healthcheck
+# Service status and healthcheck: web, the workers and beat should be (healthy)
 docker compose ps
 
 # Application and worker logs
@@ -678,6 +678,14 @@ directly to clients without a proxy, set `ALLOW_UNTRUSTED_PROXY_IPS=True` instea
 → Make sure you are using `./scripts/deploy.sh` (prod overlay). In older
 versions the cause was `SECURE_SSL_REDIRECT=True` (the healthcheck goes over HTTP) —
 it now defaults to `False` in `settings_prod`.
+
+**A Celery worker or `celery_beat` is `unhealthy`**
+→ A worker is healthy while it answers `celery inspect ping` over Redis (checked every
+minute, unhealthy after about 3 minutes without a reply), also during a long task such as a
+graph build: look at its logs and at Redis. `celery_beat` is healthy while its scheduler
+finishes a tick at least once a minute (`/tmp/celery-beat-heartbeat`); a beat that waits on
+the database stops ticking. Docker does not restart an unhealthy container: restart it with
+`./scripts/deploy.sh restart <service>` once the cause is fixed.
 
 **`Control server error: Permission denied: '/.gunicorn'`**
 → Fixed in the image (`HOME=/app`, `--no-control-socket`). Rebuild the image:
@@ -873,13 +881,16 @@ flowchart LR
    checks it out and runs that tag's `release.sh`.
 3. **`release.sh`**: stops while a planner graph build or feed test is running (a container
    labelled `odt.planner`), refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
-   `POSTGRES_PASSWORD`, tags the running image `odt-backend:previous`, builds
-   `odt-backend:latest` with `--pull` (nothing running changes yet), dumps the database with
-   the current `.env` and commit into `~/backups/release-<UTC time>-<tag>/` (keeps the newest
-   10), installs the new `.env`, runs `up -d` (the `migrate` service first, then every
-   service is recreated), waits up to 3 minutes for the API to answer, then removes replaced
-   `odt-backend` images and build cache older than 7 days (of every project on the host).
-   Any failure stops it and the job turns red.
+   `POSTGRES_PASSWORD`, builds `odt-backend:latest` with `--pull` (nothing running changes
+   yet), dumps the database with the current `.env` and commit into
+   `~/backups/release-<UTC time>-<tag>/` (keeps the newest 10), installs the new `.env`,
+   runs `up -d --wait` (the `migrate` service first, then every service is recreated) and
+   waits up to 5 minutes for every service to pass its healthcheck: `web` answers, each
+   Celery worker answers a ping and `celery_beat` ticks. A service that exits, keeps
+   restarting or turns unhealthy fails the release. Only then is the image tagged
+   `odt-backend:<tag>` (the newest 3 `vX.Y.Z` tags are kept, for a rollback), and replaced
+   `odt-backend` images and build cache older than 7 days (of every project on the host)
+   are removed. Any failure stops it and the job turns red.
 
 A release during a **planner graph build** stops before it changes anything (the build takes
 up to 8 GB of RAM and swap, and the release would restart its worker): re-run the job when the
@@ -1047,6 +1058,16 @@ release's run (it uses the workflow of that tag and today's settings).
 
   Data written between the release and the restore is lost; reversing the migrations
   instead (section 15) keeps it, when the migrations are reversible.
-- **Emergency, code only:** `docker image tag odt-backend:previous odt-backend:latest &&
-  ./scripts/deploy.sh up -d` runs the previous image without a build. The checkout and
-  `.env` stay on the new release until the next deployment.
+- **Emergency, code only:** run the image of an earlier release without a build. Only a
+  release that passed its health checks has an image tag, so a failed release, retried or
+  not, never replaces one:
+
+  ```bash
+  docker image ls odt-backend          # vX.Y.Z of the last 3 releases that went live
+  docker image tag odt-backend:<last good vX.Y.Z> odt-backend:latest && ./scripts/deploy.sh up -d
+  ```
+
+  The checkout and `.env` stay on the new release until the next deployment. Releases
+  before this scheme tagged the image `odt-backend:previous`, which may point at a failed
+  build; remove it with `docker image rm odt-backend:previous` once a release has a
+  `vX.Y.Z` tag.

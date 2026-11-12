@@ -272,7 +272,8 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = True
-CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+# DatabaseScheduler with a heartbeat file for the container healthcheck.
+CELERY_BEAT_SCHEDULER = 'OtwarteDaneTransportowe.celery_beat:HeartbeatScheduler'
 
 from celery.schedules import crontab  # noqa: E402
 
