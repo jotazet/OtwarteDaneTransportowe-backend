@@ -153,7 +153,7 @@ POST /api/data_manager/realtime-endpoints/{id}/pause-fetch/
 POST /api/data_manager/realtime-endpoints/{id}/resume-fetch/
 ```
 
-`GET /api/data_manager/proxy-feeds/` returns a single, paginated list of all proxied feeds (static and realtime). Each item has a `source` (`static` or `realtime`) and the entry `id` — these values indicate which `pause-fetch` / `resume-fetch` endpoint to call. The list is sorted by `region`, `organization`, `feed_name`.
+`GET /api/data_manager/proxy-feeds/` returns a single, paginated list of all proxied feeds (static and realtime). Each item has a `source` (`static` or `realtime`) and the entry `id` — these values indicate which `pause-fetch` / `resume-fetch` endpoint to call. The list is sorted by `region`, `organization`, `feed_name`, then `source` and `id`, in the database with its collation (`en_US.utf8` in the `postgres:16` image): case does not decide the order and Polish letters sort next to their base letters (`łódzkie` next to `lubelskie`, not after `z`). Pages are cut from that one order, so every feed appears on exactly one page.
 
 Example item from `GET /api/data_manager/proxy-feeds/`:
 

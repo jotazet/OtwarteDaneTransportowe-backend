@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: proxy-feeds pages without duplicates
+
+Not breaking. `GET /api/data_manager/proxy-feeds/` repeated some feeds and left out others across pages once there were more than `page_size` of them: the static and realtime rows were cut to a page in the database and merged in Python, and the two order Polish letters and upper/lower case differently. The whole list is now ordered and paged in the database, so every feed is on exactly one page. The visible order follows the database collation: `Łódzkie` and `śląskie` sit next to `L` and `S` instead of after `z`, and case no longer puts `Mazowieckie` before `lubelskie`. Response shape and envelope are unchanged. See [Fetch errors and pauses of proxied feeds](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
 ## 2026-10-17: entity types of a realtime endpoint
 
 Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).
