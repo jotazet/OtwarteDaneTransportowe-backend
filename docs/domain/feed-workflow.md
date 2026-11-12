@@ -65,6 +65,8 @@ The pause, retry and background cache mechanism applies **only to proxied feeds*
 - the fields `fetch_status`, `fetch_failure_count`, `next_fetch_after` etc. are **not returned** by the API (`is_proxy_managed=false`)
 - the Celery schedule and the realtime loop **skip** these feeds
 
+When a proxied static feed stops being proxied, or its URL changes, the cache of the old URL is dropped with the change, so it is never validated or served for the new source.
+
 Exception: **validation stage 2** — for a static GTFS feed with a non-proxied URL, the server may download the file **once** into a temporary directory solely for the validator (without saving to `cached_file` and without starting the proxy mechanism). For realtime, stage 2 validation performs a link-check on the URL, checks the response format in process (`data_manager/validators.py`) and creates a cache only for `hide_original=true`.
 
 Proxy fetching applies to static feeds and realtime endpoints with `hide_original=true`. Every fetch error is stored as a `FeedFetchError` and can be read from these endpoints:

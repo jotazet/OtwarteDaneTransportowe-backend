@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: switching a proxied static feed to another source
+
+Not breaking. A `PATCH` that switches a proxied static submission (`hide_original=true`) to an uploaded file used to answer `400` because of the server's cached copy, also for an Admin; it now succeeds. Any source change of a proxied feed (to a file, to another URL, `hide_original` to `false`) sets `cached_file` and `cached_at` to `null` and deletes the copy, so validation and `/feed/{id}/` no longer use the old URL's file. See [Feeds API](feeds.md).
+
+---
+
 ## 2026-11-12: GTFS validation that could not run no longer rejects
 
 Not breaking: no field is added or removed.

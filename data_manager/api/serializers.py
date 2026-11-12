@@ -1169,6 +1169,15 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     if static_entry_data.get('auth_type'):
                         entry.hide_original = True
                         update_fields.add('hide_original')
+                    url_changed = entry.url != old_url
+                    # The cache is a copy of the old proxied URL: once the source
+                    # is a file, another URL or not proxied, it must not be
+                    # validated or served. The cleanup_files pre_save signal
+                    # deletes the old file.
+                    if url_changed or not entry.is_proxy_managed:
+                        entry.cached_file = None
+                        entry.cached_at = None
+                        update_fields |= {'cached_file', 'cached_at'}
                     try:
                         entry.full_clean()
                     except DjangoValidationError as exc:
@@ -1180,11 +1189,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     # defer_source_refresh: the rejected-resubmission flow in the
                     # view schedules the refresh itself (unconditionally, so a
                     # resubmission with an unchanged url still re-validates).
-                    if (
-                        entry.url
-                        and entry.url != old_url
-                        and not self.context.get('defer_source_refresh')
-                    ):
+                    if entry.url and url_changed and not self.context.get('defer_source_refresh'):
                         self._schedule_source_refresh(entry)
                 else:
                     if static_entry_data.get('auth_type'):
