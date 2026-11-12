@@ -19,9 +19,8 @@ The planner graph (OTP) is built from the published GTFS feeds an admin selects,
   - `planner_data/serving` is a symlink to `graphs/<build>`, mounted read-only into `otp`; Docker resolves it on each start.
   - Activation repoints the symlink, starts OTP, waits for `/otp/actuators/health` and checks that every included feed is served.
   - If a step fails, OTP is stopped, the symlink is pointed back at the previous graph, and OTP is started on it. The failed graph is deleted (a failed rollback keeps the graph it rolled back to). The previous graph is kept on disk for a rollback from the panel.
-  - The database records the new graph as active only after these checks, so a worker killed in between leaves OTP running on a graph that is not active. Recovery handles that.
 - **Recovery.** A watchdog (every 5 minutes) fails builds whose heartbeat stopped (worker killed by a deploy or reboot). While no build is running, it then serves the active graph again:
-  - If `serving` does not point at the active graph, OTP is stopped, the symlink is repointed and OTP is started. Otherwise OTP is only started if it is stopped.
+  - If `serving` does not point at the active graph (a worker killed during activation leaves OTP on a graph the database never made active), OTP is stopped, the symlink is repointed and OTP is started. Otherwise OTP is only started if it is stopped.
   - It deletes `builds/<id>` and `graphs/<id>` of finished builds, except the active graph and the rollback candidate. Directories of queued or running builds, and names that are not a build's id, are left alone.
   - A running build refreshes its heartbeat before each feed download and once a minute while osmium and the OTP containers run.
   - Every write of the build checks that its row is still `running`. A build the watchdog has failed stops at its next heartbeat: it removes its containers, never becomes active and leaves restarting OTP to the watchdog.

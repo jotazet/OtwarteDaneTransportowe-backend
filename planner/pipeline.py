@@ -153,6 +153,13 @@ def run_build(build_id: int) -> None:
         shutil.rmtree(workdir, ignore_errors=True)
         if build.otp_stopped_at and owns_row:
             _start_serving()
+        # A failed build's graph (~1.8 GB for Poland) is never served. A rollback's
+        # graph is an earlier build's: it served before and may be retried.
+        if (
+            not build.rollback_of_id
+            and not GraphBuild.objects.filter(pk=build.pk, is_active=True).exists()
+        ):
+            shutil.rmtree(graph_dir(build), ignore_errors=True)
     refresh_index()
 
 
@@ -226,10 +233,8 @@ def refresh_index() -> None:
 def ensure_serving() -> None:
     """Serve the active graph and clean up, unless a build is using the maintenance window.
 
-    Covers a worker killed mid-build or mid-activation (deploy, reboot): nothing
-    else would restart a stopped OTP, restart one serving a graph that never
-    became active (Docker resolved ``serving`` when it started), or remove the
-    build's files.
+    Covers a worker killed mid-build or mid-activation (deploy, reboot), which
+    can leave OTP stopped or on a graph that never became active, and its files.
     """
     if GraphBuild.objects.filter(status=GraphBuild.STATUS_RUNNING).exists():
         return
@@ -246,7 +251,7 @@ def ensure_serving() -> None:
         _point_serving_at(target)
     if not otp_runtime.server_running():
         otp_runtime.start_server()
-    _remove_finished_build_dirs(data_path('builds'), keep=set())
+    _remove_finished_build_dirs(data_path('builds'))
     _remove_unused_graphs(current=target)
 
 
@@ -592,10 +597,6 @@ def _activate(build: GraphBuild, included_feed_ids: list[str], fresh: list[Candi
         else:
             # First build: nothing to go back to, so serve nothing rather than this graph.
             os.remove(data_path('serving'))
-        if not build.rollback_of_id:
-            # ~1.8 GB for Poland that would never be served. A rollback's target
-            # stays: it served before and the rollback may be retried.
-            shutil.rmtree(target, ignore_errors=True)
         raise
     for tmp, snapshot in staged:
         os.replace(tmp, snapshot)
@@ -693,7 +694,7 @@ def _remove_unused_graphs(current: str) -> None:
     _remove_finished_build_dirs(data_path('graphs'), keep)
 
 
-def _remove_finished_build_dirs(root: str, keep: set[str]) -> None:
+def _remove_finished_build_dirs(root: str, keep: set[str] | frozenset[str] = frozenset()) -> None:
     """Remove ``root/<id>`` of finished builds except ``keep``; leave anything else alone.
 
     A queued or running build may be about to write its directory, and a name
@@ -702,12 +703,14 @@ def _remove_finished_build_dirs(root: str, keep: set[str]) -> None:
     if not os.path.isdir(root):
         return
     names = [name for name in os.listdir(root) if name.isdigit()]
-    finished = GraphBuild.objects.filter(
-        pk__in=names, status__in=(GraphBuild.STATUS_SUCCEEDED, GraphBuild.STATUS_FAILED)
-    ).values_list('pk', flat=True)
-    for pk in finished:
-        path = os.path.join(root, str(pk))
-        if path not in keep:
+    finished = set(
+        GraphBuild.objects.filter(
+            pk__in=names, status__in=(GraphBuild.STATUS_SUCCEEDED, GraphBuild.STATUS_FAILED)
+        ).values_list('pk', flat=True)
+    )
+    for name in names:
+        path = os.path.join(root, name)
+        if int(name) in finished and path not in keep:
             shutil.rmtree(path, ignore_errors=True)
 
 

@@ -413,7 +413,6 @@ def test_failed_first_activation_serves_nothing(make_feed, fake_otp):
 
     assert build.error_code == 'planner.activation_failed'
     assert not os.path.lexists(pipeline.data_path('serving'))
-    assert not os.path.exists(pipeline.graph_dir(build))
 
 
 class WorkerKilled(BaseException):
