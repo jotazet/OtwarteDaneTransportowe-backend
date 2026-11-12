@@ -485,7 +485,9 @@ def fetch_realtime_endpoint_task(endpoint_id: int, token: str | None = None) -> 
             )
             < RT_BOOTSTRAP_PERIOD_SECONDS
         ):
-            countdown = max(wait, 1)
+            # Floored like an active loop: a fetch that failed without recording
+            # it (e.g. the soft time limit) leaves the endpoint due already.
+            countdown = max(wait, REALTIME_MIN_INTERVAL_SECONDS)
         else:
             # Never queue a long back-off: Redis redelivers ETAs past its 1 h
             # visibility timeout. Bootstrap resumes the endpoint instead.

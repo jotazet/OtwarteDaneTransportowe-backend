@@ -394,3 +394,23 @@ def test_bootstrap_period_matches_the_beat_schedule(settings):
     assumption that bootstrap runs that often."""
     schedule = settings.CELERY_BEAT_SCHEDULE['bootstrap-realtime-tasks']['schedule']
     assert schedule == crontab(minute=f'*/{tasks.RT_BOOTSTRAP_PERIOD_SECONDS // 60}')
+
+
+def test_due_delayed_endpoint_is_not_requeued_faster_than_the_minimum_interval(
+    published_gbfs_endpoint, queued, monkeypatch
+):
+    """A fetch that dies without recording a failure leaves the endpoint due."""
+    RealtimeEndpointRT.objects.filter(pk=published_gbfs_endpoint.pk).update(
+        fetch_status=FETCH_STATUS_DELAYED, fetch_failure_count=1
+    )
+    _make_due(published_gbfs_endpoint)
+
+    def dying_fetch(endpoint, now):
+        raise RuntimeError('soft time limit')
+
+    monkeypatch.setattr('data_manager.scheduler._fetch_realtime_endpoint_rt', dying_fetch)
+    tasks.bootstrap_realtime_tasks()
+
+    _replay(queued()[-1][0])
+
+    assert queued()[-1][1] == 5
