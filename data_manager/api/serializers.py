@@ -1148,6 +1148,14 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     if static_entry_data.get('auth_type'):
                         entry.hide_original = True
                         update_fields.add('hide_original')
+                    # The cache is a copy of the old proxied URL. Once the source
+                    # is a file, another URL or no longer proxied, it must not be
+                    # validated or served (and clean() rejects it on a file).
+                    # The pre_save signal in cleanup_files deletes the old file.
+                    if entry.url != old_url or not entry.is_proxy_managed:
+                        entry.cached_file = None
+                        entry.cached_at = None
+                        update_fields |= {'cached_file', 'cached_at'}
                     try:
                         entry.full_clean()
                     except DjangoValidationError as exc:

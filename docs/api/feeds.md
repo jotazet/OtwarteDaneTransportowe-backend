@@ -234,6 +234,8 @@ If `auth_type` is non-empty (anything but `""`), the backend automatically sets 
 
 For a URL source, `hide_original=true` **does not require** authorization to be set — the server can download a public URL and serve a copy without disclosing the original link.
 
+Changing the source of a proxied static feed (to an uploaded file, to another URL, or `hide_original` to `false`) drops the server's copy of the old URL in the same `PATCH`: `cached_file` and `cached_at` become `null` and the file is deleted. Validation and the public download then use the new source. Changing only `license` or the download schedule keeps the copy.
+
 **Create - file upload:**
 
 ```http

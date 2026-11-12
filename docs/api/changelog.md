@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: switching a proxied static feed to another source
+
+Not breaking. A `PATCH` that switches a proxied static submission (`hide_original=true`) to an uploaded file used to answer `400` because of the server's cached copy, also for an Admin; it now succeeds. Any source change of a proxied feed (to a file, to another URL, `hide_original` to `false`) sets `cached_file` and `cached_at` to `null` and deletes the copy, so validation and `/feed/{id}/` no longer use the old URL's file. See [Feeds API](feeds.md).
+
+---
+
 ## 2026-10-17: entity types of a realtime endpoint
 
 Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).
