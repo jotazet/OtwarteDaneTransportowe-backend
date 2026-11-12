@@ -13,7 +13,7 @@ import json
 import os
 import time
 from contextlib import contextmanager
-from unittest.mock import ANY, MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import docker
 import pytest
@@ -80,7 +80,8 @@ def _entry(org, user, stage=2, **kwargs):
 def _docker(run=lambda volumes: None, *, exit_code=0, wait=None, listed=()):
     """docker.from_env() stand-in whose containers.run() calls ``run(volumes)``.
 
-    The started container exits with ``exit_code``, or its wait() is ``wait``.
+    The started container (``client.container``) exits with ``exit_code``, or its
+    wait() is ``wait``. ``listed`` is what the low-level container list returns.
     ``from_env.return_value`` is the client, to check what the task asked of it.
     """
     client = MagicMock()
@@ -93,8 +94,8 @@ def _docker(run=lambda volumes: None, *, exit_code=0, wait=None, listed=()):
         return container
 
     client.containers.run.side_effect = containers_run
-    client.containers.run.return_value = container  # what containers_run returns
-    client.containers.list.return_value = list(listed)
+    client.container = container
+    client.api.containers.return_value = list(listed)
     return MagicMock(return_value=client)
 
 
@@ -318,8 +319,8 @@ def test_retry_command_recovers_an_infrastructure_error(org, user, source):
 # ---------------------------------------------------------------------------
 
 
-def _removed(from_env) -> list:
-    return from_env.return_value.api.remove_container.call_args_list
+def _remove_container(from_env):
+    return from_env.return_value.api.remove_container
 
 
 def test_validator_runs_detached_labelled_and_is_removed(org, user):
@@ -339,10 +340,10 @@ def test_validator_runs_detached_labelled_and_is_removed(org, user):
     expires = int(run['labels'][tasks.GTFS_VALIDATOR_EXPIRES_LABEL])
     assert abs(expires - time.time() - tasks.GTFS_VALIDATION_TIME_LIMIT) <= 5
     assert run['nano_cpus'] == 2_000_000_000
-    wait_timeout = client.containers.run.return_value.wait.call_args.kwargs['timeout']
+    wait_timeout = client.container.wait.call_args.kwargs['timeout']
     limit = tasks.GTFS_VALIDATION_SOFT_TIME_LIMIT - tasks.GTFS_VALIDATOR_STOP_MARGIN_SECONDS
     assert limit - 5 < wait_timeout <= limit
-    assert _removed(from_env) == [call(run['name'], force=True)]
+    _remove_container(from_env).assert_called_once_with(run['name'], force=True)
 
 
 def test_non_zero_exit_is_a_validator_failure_and_the_container_is_removed(org, user):
@@ -355,7 +356,7 @@ def test_non_zero_exit_is_a_validator_failure_and_the_container_is_removed(org, 
     entry.refresh_from_db()
     assert entry.validation_message == ve.VALIDATOR_FAILED
     assert entry.submission.current_stage == 2
-    assert len(_removed(from_env)) == 1
+    _remove_container(from_env).assert_called_once_with(ANY, force=True)
 
 
 def _wait_times_out(timeout):
@@ -379,7 +380,7 @@ def test_validator_running_too_long_is_removed_and_recorded_as_timeout(org, user
     assert entry.validation_message == ve.TIMEOUT
     assert entry.submission.current_stage == 3
     assert not _rejections(entry).exists()
-    assert _removed(from_env) == [call(ANY, force=True)]
+    _remove_container(from_env).assert_called_once_with(ANY, force=True)
 
 
 def test_docker_lost_during_the_wait_is_not_a_timeout(org, user):
@@ -391,7 +392,7 @@ def test_docker_lost_during_the_wait_is_not_a_timeout(org, user):
 
     entry.refresh_from_db()
     assert entry.validation_message == ve.VALIDATOR_UNAVAILABLE
-    assert len(_removed(from_env)) == 1
+    _remove_container(from_env).assert_called_once_with(ANY, force=True)
 
 
 def test_soft_time_limit_during_the_wait_removes_the_container(org, user):
@@ -405,11 +406,10 @@ def test_soft_time_limit_during_the_wait_removes_the_container(org, user):
     assert entry.validation_message == ve.TIMEOUT
     assert entry.submission.current_stage == 2
     assert not _rejections(entry).exists()
-    assert len(_removed(from_env)) == 1
-    output = from_env.return_value.containers.run.call_args.kwargs['volumes']
-    assert not any(
-        os.path.exists(host) for host, spec in output.items() if spec['bind'] == '/output'
-    )
+    _remove_container(from_env).assert_called_once_with(ANY, force=True)
+    volumes = from_env.return_value.containers.run.call_args.kwargs['volumes']
+    output_dir = next(host for host, spec in volumes.items() if spec['bind'] == '/output')
+    assert not os.path.exists(output_dir)
 
 
 def test_no_container_starts_when_the_download_used_up_the_budget(org, user, monkeypatch):
@@ -428,22 +428,24 @@ def test_no_container_starts_when_the_download_used_up_the_budget(org, user, mon
 
 
 def test_expired_validator_containers_are_removed_before_a_run(org, user):
-    def leftover(expires):
-        container = MagicMock()
-        container.labels = {tasks.GTFS_VALIDATOR_EXPIRES_LABEL: str(int(expires))}
-        return container
+    def leftover(container_id, expires):
+        labels = {tasks.GTFS_VALIDATOR_EXPIRES_LABEL: str(int(expires))}
+        return {'Id': container_id, 'Names': [f'/{container_id}'], 'Labels': labels}
 
-    orphan, running = leftover(time.time() - 1), leftover(time.time() + 600)
     entry = _entry(org, user)
-    from_env = _docker(_write_report(_report(0)), listed=[orphan, running])
+    from_env = _docker(
+        _write_report(_report(0)),
+        listed=[leftover('orphan', time.time() - 1), leftover('running', time.time() + 600)],
+    )
 
     with patch('docker.from_env', from_env):
         validate_gtfs_feed_task(entry.id)
 
-    from_env.return_value.containers.list.assert_called_once_with(
+    client = from_env.return_value
+    client.api.containers.assert_called_once_with(
         all=True, filters={'label': tasks.GTFS_VALIDATOR_EXPIRES_LABEL}
     )
-    orphan.remove.assert_called_once_with(force=True)
-    running.remove.assert_not_called()
+    removed = [c.args[0] for c in client.api.remove_container.call_args_list]
+    assert removed == ['orphan', client.containers.run.call_args.kwargs['name']]
     entry.refresh_from_db()
     assert entry.validation_status == StaticFeedEntry.VALIDATION_VALID

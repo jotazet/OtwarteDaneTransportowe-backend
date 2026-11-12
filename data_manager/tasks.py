@@ -509,12 +509,13 @@ def _remove_expired_validators(client) -> None:
     Only expired ones: another feeds worker may be running a validator right now.
     """
     now = time.time()
-    for container in client.containers.list(
+    # The low-level list carries the labels: one API call, no inspect per container.
+    for container in client.api.containers(
         all=True, filters={'label': GTFS_VALIDATOR_EXPIRES_LABEL}
     ):
-        if int(container.labels[GTFS_VALIDATOR_EXPIRES_LABEL]) < now:
-            logger.warning('Removing orphaned GTFS validator container %s', container.name)
-            container.remove(force=True)
+        if int(container['Labels'][GTFS_VALIDATOR_EXPIRES_LABEL]) < now:
+            logger.warning('Removing orphaned GTFS validator container %s', container['Names'])
+            client.api.remove_container(container['Id'], force=True)
 
 
 @shared_task(

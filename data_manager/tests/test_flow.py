@@ -139,9 +139,6 @@ def _mock_docker_from_env(error_count: int, runs: list | None = None):
             container.wait.return_value = {'StatusCode': 0}
             return container
 
-        def list(self, **kwargs):
-            return []
-
     class _DockerClient:
         containers = _Containers()
         api = MagicMock()
