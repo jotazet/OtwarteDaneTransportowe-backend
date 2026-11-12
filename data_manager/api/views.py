@@ -311,7 +311,10 @@ def _lock_unchanged_stage(submission):
     that read (the prefetched history), and a validation task or another reviewer
     may have written history since. Call first inside ``transaction.atomic()``.
     """
-    fresh = lock_submission(type(submission), submission.pk)
+    try:
+        fresh = lock_submission(type(submission), submission.pk)
+    except type(submission).DoesNotExist:
+        raise Http404 from None  # deleted by an Admin since get_object()
     if (fresh.current_stage, fresh.is_rejected) != (
         submission.current_stage,
         submission.is_rejected,
