@@ -219,6 +219,12 @@ def realtime_feed_cached_file_path(instance, filename):
     return f'{submission_id}/dynamic/cached/{endpoint_type}/{filename}'
 
 
+def _coded(code: str, field: str | None = None) -> ValidationError:
+    """A ``clean()`` error whose message is its API error code (ADR 0006)."""
+    error = ValidationError(code, code=code)
+    return ValidationError({field: error}) if field else error
+
+
 def validation_file_path(instance, filename):
     """
     file will be uploaded to MEDIA_ROOT/<submission_id>/validation/<filename>
@@ -562,33 +568,22 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         has_url = bool(self.url)
         has_file = bool(self.file)
 
-        # User chooses exactly one input source: url XOR file.
+        # User chooses exactly one input source: url XOR file. Messages are API
+        # error codes (ADR 0006): the feed API passes them through.
         if has_url and has_file:
-            raise ValidationError('Provide either a URL or a file upload, not both.')
+            raise _coded('feeds.static_source_url_and_file')
         if not has_url and not has_file:
-            raise ValidationError('Either a URL or a file upload must be provided.')
+            raise _coded('feeds.static_source_missing')
 
         # download_time_1 required if url, forbidden if file
         if has_url:
             if self.download_time_1 is None:
-                raise ValidationError(
-                    {'download_time_1': 'This field is required when a URL is provided.'}
-                )
-            if self.download_time_2 is not None and self.download_time_1 is None:
-                raise ValidationError(
-                    {
-                        'download_time_2': 'download_time_2 can only be set if download_time_1 is set.'
-                    }
-                )
+                raise _coded('feeds.download_time_required', 'download_time_1')
         if has_file:
             if self.download_time_1 is not None:
-                raise ValidationError(
-                    {'download_time_1': 'This field must be empty when a file is provided.'}
-                )
+                raise _coded('feeds.download_time_with_file', 'download_time_1')
             if self.download_time_2 is not None:
-                raise ValidationError(
-                    {'download_time_2': 'This field must be empty when a file is provided.'}
-                )
+                raise _coded('feeds.download_time_with_file', 'download_time_2')
 
         # Auto-set hide_original when auth_type is set
         if self.auth_type:
@@ -598,17 +593,9 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         if not has_url:
             # file upload – URL-only fields must not be filled
             if self.hide_original:
-                raise ValidationError(
-                    '"Hide original" is only applicable when a URL is provided, not a file upload.'
-                )
-            if self.download_time_1 or self.download_time_2:
-                raise ValidationError(
-                    'Download schedule is only applicable when a URL is provided, not a file upload.'
-                )
+                raise _coded('feeds.hide_original_with_file', 'hide_original')
             if self.cached_file or self.cached_at:
-                raise ValidationError(
-                    'Server-downloaded static file fields cannot be used for a manual file upload.'
-                )
+                raise _coded('feeds.cached_file_with_upload')
 
     @property
     def validation_source_file(self):
@@ -1058,10 +1045,7 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
         if self.submission_id:
             allowed = self.submission.allowed_endpoint_types()
             if self.endpoint_type not in allowed:
-                raise ValidationError(
-                    f"Endpoint type '{self.endpoint_type}' is not valid for "
-                    f"protocol '{self.submission.protocol}'. Allowed: {sorted(allowed)}."
-                )
+                raise _coded('realtime.endpoints_invalid_for_protocol', 'endpoint_type')
 
     @property
     def is_proxy_managed(self) -> bool:

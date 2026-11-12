@@ -54,6 +54,18 @@ def test_create_post_by_role(role, expected, make_user, client_as):
         assert not Post.objects.exists()
 
 
+def test_too_many_tags_returns_a_code(make_user, client_as):
+    response = client_as(make_user(ROLE_BLOGGER)).post(
+        POSTS_URL,
+        {'title': 'New post', 'tags': ['a', 'b', 'c', 'd', 'e', 'f'], 'content': 'Body'},
+        format='json',
+    )
+
+    assert response.status_code == 400
+    # DRF's own max_length message comes with it.
+    assert 'blog.too_many_tags' in response.data['tags']
+
+
 def test_create_ignores_author_in_payload(make_user, client_as):
     """The author is always the caller; a Blogger cannot post as someone else."""
     blogger = make_user(ROLE_BLOGGER)

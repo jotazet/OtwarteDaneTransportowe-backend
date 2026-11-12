@@ -9,6 +9,7 @@ This documentation describes the REST API of the OtwarteDaneTransportowe (Open T
 - [JWT authentication](#jwt-authentication)
 - [Endpoint map](#endpoint-map)
 - [Notes for client developers](#notes-for-client-developers)
+- [Error codes](#error-codes)
 - [Blog API](blog.md)
 - [Organizations and cases API](cases.md)
 - [Feeds API and public file downloads](feeds.md)
@@ -217,7 +218,7 @@ Requires the Django group **`Admin`** (`has_admin_role`) — `is_staff` / `is_su
 | `GET` | `/api/users/{id}/` | `Admin` (group) | User details |
 | `PUT` | `/api/users/{id}/` | `Admin` (group)¹ | Same fields and rules as `PATCH`; none is required, and with a JSON body omitted fields keep their values |
 | `PATCH` | `/api/users/{id}/` | `Admin` (group)¹ | Edit `email`, `first_name`, `last_name`, `is_active`, `roles` |
-| `DELETE` | `/api/users/{id}/` | `Admin` (group)¹ | Permanent deletion (you cannot delete yourself or the last `Admin`) |
+| `DELETE` | `/api/users/{id}/` | `Admin` (group)¹ | Permanent deletion; not yourself (`users.cannot_delete_self`) nor the last `Admin` (`users.last_admin`) |
 | `POST` | `/api/users/{id}/reset-password/` | `Admin` (group)¹ | New random password in `generated_password`; ends all sessions of that user |
 | `GET` | `/api/users/me/` | logged in | Current user's profile |
 | `POST` | `/api/users/me/change-email/` | logged in | `current_password`, `new_email`; rate limit `account_change` |
@@ -225,7 +226,7 @@ Requires the Django group **`Admin`** (`has_admin_role`) — `is_staff` / `is_su
 
 ¹ A **protected account** (`is_superuser` or `is_staff` true; both are read-only fields of every user object) can be edited, deleted or have its password reset only by a caller who is a superuser as well as in the `Admin` group. Anyone else gets `403` with `{"code": "users.protected_account", "details": {}}`. Reading such an account (`GET`) is not restricted. The flags themselves are set only through Django (`createsuperuser`, the admin site), never through this API.
 
-Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PUT`/`PATCH` fully replace the list of groups).
+Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PUT`/`PATCH` fully replace the list of groups); any other value returns `400` with `{"roles": ["users.unknown_role"]}`. Removing the `Admin` role from, or deactivating, the last active admin returns `400` with `{"code": "users.last_admin", "details": {}}`. `change-email` and `change-password` return `{"current_password": ["users.wrong_password"]}` for a wrong current password, and `change-password` returns `users.password_*` codes on `new_password` for a password Django's validators refuse ([error codes](#error-codes)).
 
 For `POST /api/users/` the body does **not** contain a password — example `201` response:
 
@@ -377,7 +378,7 @@ Details: [Journey planner: admin API](planner-admin.md).
 
 | Method | Endpoint | Permissions | Description |
 |--------|----------|-------------|------|
-| `GET` | `/feed/` | public | Returns a 400 error; a feed ID is required |
+| `GET` | `/feed/` | public | Returns `400` with `{"code": "feeds.feed_id_required", "details": {}}`; a feed ID is required |
 | `GET` | `/feed/{feed_submission_id}/` | public | Returns a link to the published static file |
 | `GET` | `/feed/{feed_submission_id}/{filename}` | public | Downloads the published static file |
 | `GET` | `/feed/rt/{realtime_submission_id}/` | public | Returns links to the published realtime files (per `endpoint_type`) |
@@ -424,6 +425,73 @@ Most common responses:
 | `409` | Conflict with the current state, e.g. a feed submission's stage changed while the request ran (`feeds.stage_changed`, see [Feeds API](feeds.md)) or a planner job already runs |
 | `429` | Rate limit: DRF throttling of login (`/api/auth/token/`, `/api/auth/token/refresh/` and the Django admin login form share one budget), feed downloads and blog reaction changes (`login`, `feed_download`, `reaction`; rates set by the `THROTTLE_*` settings; counted per client IP), of password and email changes (`account_change`, counted per user), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
 
+### Error codes
+
+Errors that the backend itself decides carry a stable code instead of prose ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). Codes are `<area>.<snake_case_reason>` and never change once released; the frontend translates them and never shows backend text. They come in two shapes:
+
+- **Request errors** (the whole request is refused): `{"code": "users.last_admin", "details": {}}`. `details` is an object, empty unless stated.
+- **Field errors**: DRF's field dictionary, with the code as the message, e.g. `{"stage": ["feeds.invalid_stage"]}` or `{"static_entry": {"url": ["feeds.url_blocked"]}}`. A field error of a nested object that is not tied to one of its fields is under `__all__`, e.g. `{"static_entry": {"__all__": ["feeds.static_source_url_and_file"]}}`.
+
+Errors produced by DRF or Django themselves (`This field is required.`, an invalid choice, `401`, a permission class's default `403`, `404`, throttling's `429`) are still English prose; match on the status and the field name for those.
+
+Request errors:
+
+| Status | Code | Where | Meaning |
+|---|---|---|---|
+| `400` | `feeds.feed_id_required` | `GET /feed/` | The download URL has no feed ID. |
+| `400` | `feeds.not_proxy_managed` | `pause-fetch`, `resume-fetch` | The feed is not proxied, so its fetching cannot be paused. |
+| `403` | `feeds.submissions_forbidden` | `GET /api/data_manager/submissions/` | The user has none of the `DataProvider`, `Helper`, `Admin` roles. |
+| `403` | `feeds.review_forbidden` | `PUT`/`PATCH` of a static or realtime submission | Only `Helper`/`Admin` may send `stage` or `rejection_cause`. |
+| `403` | `feeds.helper_content_edit_forbidden` | `PUT`/`PATCH` of a static or realtime submission | A `Helper` may send only `stage` and `rejection_cause`. |
+| `403` | `feeds.delete_forbidden` | `DELETE` of a static or realtime submission | Only `Admin` deletes submissions. |
+| `403` | `feeds.fetch_control_forbidden` | `pause-fetch`, `resume-fetch` | Only `Helper`/`Admin` pause or resume fetching. |
+| `409` | `feeds.stage_changed` | `PUT`/`PATCH` of a static or realtime submission | The stage changed while the request ran; reload and retry. |
+| `400` | `users.cannot_delete_self` | `DELETE /api/users/{id}/` | An admin cannot delete their own account. |
+| `400` | `users.last_admin` | `DELETE`, `PUT`/`PATCH /api/users/{id}/` | The change would delete, deactivate or remove the `Admin` role from the last active admin. |
+| `403` | `users.protected_account` | `PUT`/`PATCH`/`DELETE /api/users/{id}/`, `reset-password` | The account is a superuser or staff account. |
+| `400` | `blog.client_ip_unknown` | `POST /api/blog/reactions/{post_id}/` | The server could not determine the client's IP address. |
+| `400` | `blog.post_id_required` | `POST /api/blog/reactions/{post_id}/` | The URL has no post ID. |
+| `429` | `blog.reaction_daily_limit` | `POST /api/blog/reactions/{post_id}/` | The IP has added 10 reactions in the last 24 hours. |
+
+Field errors:
+
+| Code | Field | Meaning |
+|---|---|---|
+| `feeds.invalid_integer` | list query params, e.g. `transport_organization` | The value is not an integer. |
+| `feeds.invalid_stage` | `stage` | The stage is not an integer from 1 to 4. |
+| `feeds.field_locked` | `name`, `transport_organization`, `data_type`, `static_entry.<field>`, `protocol`, `static_submission`, `endpoints` | The owner cannot change this field while the submission is in review or published (stages 2–4 without a rejection). |
+| `feeds.url_blocked` | `static_entry.url`, an endpoint's `url` | The URL is refused by ODT's outbound security rules: not http(s), no host name, the host does not resolve, or it resolves to a non-public address. |
+| `feeds.static_source_missing` | `static_entry`, `static_entry.__all__` | Neither a URL nor a file was given. |
+| `feeds.static_source_url_and_file` | `static_entry.__all__` | Both a URL and a file were given. |
+| `feeds.download_time_required` | `static_entry.download_time_1` | A URL source needs `download_time_1`. |
+| `feeds.download_time_with_file` | `static_entry.download_time_1`, `static_entry.download_time_2` | An uploaded file has no download schedule. |
+| `feeds.hide_original_with_file` | `static_entry.hide_original` | `hide_original` (or `auth_type`) applies only to a URL source. |
+| `feeds.cached_file_with_upload` | `static_entry.__all__` | A server-downloaded copy exists for an uploaded file; not expected from clients. |
+| `feeds.gtfs_not_zip` | `static_entry.file` | The uploaded GTFS file is not a ZIP archive. |
+| `feeds.file_too_large` | `static_entry.file` | The uploaded file exceeds `MAX_FEED_FILE_SIZE_BYTES`. |
+| `realtime.endpoints_required` | `endpoints` | A realtime submission needs at least one endpoint. |
+| `realtime.endpoints_locked` | `endpoints` | Endpoints cannot be added or removed in review or after publication. |
+| `realtime.endpoint_type_unknown` | `endpoints` | In review or after publication, an endpoint type the submission does not have. |
+| `realtime.endpoint_type_duplicate` | `endpoints` | Two endpoints of the same type. |
+| `realtime.endpoints_invalid_for_protocol` | `endpoints`, `endpoints.endpoint_type`, `protocol` | An endpoint type does not fit the protocol. |
+| `realtime.interval_too_short` | an endpoint's `interval` | The interval is under 5 seconds. |
+| `realtime.static_submission_required` | `static_submission` | GTFS-RT and SIRI need a static submission. |
+| `realtime.static_submission_not_allowed` | `static_submission` | GBFS cannot link a static submission. |
+| `realtime.static_submission_other_organization` | `static_submission` | The static submission belongs to another organization. |
+| `realtime.static_submission_type_mismatch` | `static_submission` | The static feed type does not fit the protocol (GTFS-RT needs GTFS, SIRI needs NeTEx). |
+| `realtime.static_submission_not_published` | `static_submission` | The static submission is not published yet. |
+| `realtime.static_submission_not_owned` | `static_submission` | A `DataProvider` may link only a static feed it submitted. |
+| `users.unknown_role` | `roles` | A role is not one of `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper`. |
+| `users.wrong_password` | `current_password` | The current password is wrong. |
+| `users.password_too_short` | `new_password` | Shorter than 8 characters. |
+| `users.password_too_similar` | `new_password` | Too similar to the username, name or email. |
+| `users.password_too_common` | `new_password` | On the list of common passwords. |
+| `users.password_entirely_numeric` | `new_password` | Only digits. |
+| `blog.too_many_tags` | `tags` | More than 5 tags (DRF's own `max_length` message comes with it). |
+| `blog.image_too_large` | `image` | The image exceeds `MAX_IMAGE_FILE_SIZE_BYTES`. |
+
+The planner has its own codes ([planner.md](planner.md), [planner-admin.md](planner-admin.md)), and stored causes have theirs: [realtime rejection reasons](feeds.md#realtime-rejection-reasons) and GTFS validation codes in [static feeds](feeds.md#static-feeds-feedsubmission).
+
 ### Multipart nested fields
 
 For a static file upload, the backend accepts the nested file field as:
@@ -441,7 +509,7 @@ static_entry.license
 
 ### Empty text fields
 
-Text fields (`name`, `note`, `license`, `url`, `description`, `website`, `contact_email`, `phone_number`, `auth_type`, `cause`, `reaction`, ...) have one empty value: `""`. Responses never contain `null` for them, and a request that sends `null` gets `400` with DRF's default field error, e.g. `{"name": ["This field may not be null."]}`; send `""` or omit the field. The body carries no machine-readable error code: codes will come with the custom exception handler proposed in [ADR 0006](../architecture/decisions/0006-api-error-codes.md), so match on the status and the field name, not on the message. Computed fields and fields that are not text keep `null` for "none", e.g. `rejection_cause`, `published_at`, `download_time_2`, `file`, `download_url`.
+Text fields (`name`, `note`, `license`, `url`, `description`, `website`, `contact_email`, `phone_number`, `auth_type`, `cause`, `reaction`, ...) have one empty value: `""`. Responses never contain `null` for them, and a request that sends `null` gets `400` with DRF's default field error, e.g. `{"name": ["This field may not be null."]}`; send `""` or omit the field. This is DRF's own message, not a code (see [error codes](#error-codes)), so match on the status and the field name, not on the message. Computed fields and fields that are not text keep `null` for "none", e.g. `rejection_cause`, `published_at`, `download_time_2`, `file`, `download_url`.
 
 ### Important constraints
 

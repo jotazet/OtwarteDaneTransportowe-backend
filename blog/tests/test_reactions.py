@@ -161,6 +161,7 @@ def test_daily_limit_of_ten_active_reactions(api_client, settings):
 
     response = api_client.post(f'/api/blog/reactions/{posts[10].id}/', {'reaction': 'like'})
     assert response.status_code == 429
+    assert response.data == {'code': 'blog.reaction_daily_limit', 'details': {}}
 
 
 def test_your_reaction_ignores_forged_xff(api_client, post, settings):
