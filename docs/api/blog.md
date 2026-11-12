@@ -117,4 +117,5 @@ Removing a reaction:
 
 - Reactions are limited per IP.
 - At most 10 active new reactions per IP within 24h.
+- Responses: `201` first reaction, `200` change of an existing one, `204` empty reaction. Two simultaneous first reactions from one IP (double click) give `201` and `200`, never `500`.
 - The endpoint supports only `POST` and `OPTIONS`; list/retrieve are deliberately disabled so as not to expose IP addresses.
