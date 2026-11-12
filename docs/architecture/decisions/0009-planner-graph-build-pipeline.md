@@ -43,6 +43,7 @@ The planner graph (OTP) is built from the published GTFS feeds an admin selects,
 - The planner is down during builds. On the spike machine (swap in RAM) building all of Poland took about 13 minutes, plus 8 when the street graph is rebuilt and about 1 minute to start; disk swap on the VPS is slower and must be measured after deployment.
 - Snapshots of the last good version are kept under `planner_data/snapshots/`, and they cannot be recreated, so back them up.
   - A new snapshot is linked next to the old one as `<feed>.zip.tmp`, the database records its hash, then the file is renamed over the old one. A crash between the commit and the rename leaves the old file under the new hash; the leftover `.tmp` makes the next build that fetches that version write the snapshot again. Until then a fallback to that feed's last good version would use the older file.
+  - Deleting a `PlannerFeed` (directly or with its submission) removes its snapshot once the deletion commits. The served graph and the one kept for a rollback hold their own copies of the feeds.
 - The planner worker can create containers through `docker-socket-proxy`, the same accepted risk as the GTFS validator ([ADR 0005](0005-feed-validation.md)).
 
 ## Alternatives considered

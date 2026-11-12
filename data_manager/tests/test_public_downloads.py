@@ -261,3 +261,22 @@ def test_catalogue_shows_the_entity_types_of_a_realtime_endpoint(api_client, org
     (feed,) = [f for f in response.data['feeds'] if f['id'] == static.id]
     (endpoint,) = feed['realtime_feed']['endpoints']
     assert endpoint['entity_types'] == ['trip_update', 'vehicle_position']
+
+
+def test_catalogue_drops_a_published_feed_once_it_is_rejected(api_client, org, provider_user):
+    # A rejection always records stage_after=1, so the stage-4 filter alone hides it.
+    rejected = _make_submission(org, provider_user)
+    FeedSubmissionHistory.objects.create(
+        submission=rejected,
+        event_type=FeedSubmissionHistory.EVENT_REJECTED,
+        stage_before=4,
+        stage_after=1,
+        actor=provider_user,
+        cause='broken',
+    )
+    kept = _make_submission(org, provider_user)
+
+    response = api_client.get(f'/api/data_manager/feeds/{org.id}/')
+
+    assert response.status_code == 200
+    assert [feed['id'] for feed in response.data['feeds']] == [kept.id]
