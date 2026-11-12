@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: admin login shares the login limit
+
+Not breaking. `POST /admin/login/` (the Django admin login form) now counts against the `login` limit (`THROTTLE_LOGIN`, 10/min per client IP by default) and answers `429` with `Retry-After` when it is used up. The budget is shared with `POST /api/auth/token/` and `POST /api/auth/token/refresh/`, so attempts on either path count together. Opening the form (`GET`) is not limited.
+
+---
+
 ## 2026-11-12: logout and session revocation
 
 Not breaking for the ODT frontend, which ignores the body of `me/change-password/`; a client that reads its `detail` must stop. The frontend should adopt the first two points.

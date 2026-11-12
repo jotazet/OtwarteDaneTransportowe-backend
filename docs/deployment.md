@@ -215,7 +215,7 @@ CELERY_FEEDS_CONCURRENCY=1
 # MAX_IMAGE_FILE_SIZE_BYTES=10485760       # 10 MB
 # DATA_UPLOAD_MAX_MEMORY_SIZE=10485760
 # FILE_UPLOAD_MAX_MEMORY_SIZE=5242880
-# THROTTLE_LOGIN=10/min
+# THROTTLE_LOGIN=10/min                   # token + refresh + admin login POSTs, one budget per client IP
 # THROTTLE_ACCOUNT_CHANGE=5/min      # me/change-password, me/change-email; per user
 # THROTTLE_FEED_DOWNLOAD=120/min
 # THROTTLE_REACTION=30/min
@@ -534,7 +534,8 @@ in compose (`WEB_HOST_BIND` / `WEB_HOST_PORT`) so that it is reachable by the pr
 
 ### Client IP: CDN and the frontend
 
-Anonymous clients are told apart by IP: DRF throttling of login and feed downloads, the blog reaction
+Anonymous clients are told apart by IP: DRF throttling of login (the token views and the
+Django admin login form) and feed downloads, the blog reaction
 limits and the journey planner's limits, bans and request log (section 19). Two hops can hide it ([ADR 0011](architecture/decisions/0011-client-ip-behind-cloudflare-and-ssr.md)):
 
 - **A CDN in front of Caddy (Cloudflare).** Caddy ignores an incoming `X-Forwarded-For`

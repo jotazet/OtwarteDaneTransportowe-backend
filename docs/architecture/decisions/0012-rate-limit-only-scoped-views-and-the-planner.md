@@ -21,6 +21,7 @@ Remove the global `anon` and `user` throttles. Only views with a `throttle_scope
 - Blog, catalogue and cases reads have no rate limit in Django; abusive traffic must be stopped at Cloudflare or Caddy. The `THROTTLE_ANON` and `THROTTLE_USER` variables are ignored.
 - ADR 0011 is still needed: without it the login, feed download and planner limits, the planner's bans and the blog reaction limits still see one shared client.
 - A new expensive endpoint outside the planner needs its own `throttle_scope`.
+- Since 2026-11-12 the Django admin login form (`POST /admin/login/`) counts against the same `login` budget per client IP as the token views, so passwords cannot be tried there without a limit.
 
 ## Alternatives considered
 
