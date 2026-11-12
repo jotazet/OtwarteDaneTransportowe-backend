@@ -22,6 +22,7 @@ from django.core.files.base import File
 from django.utils import timezone
 
 from data_manager.models import (
+    REALTIME_TRANSIENT_RETRY_DELAYS,
     FeedFetchError,
     RealtimeEndpointRT,
     StaticFeedEntry,
@@ -91,8 +92,13 @@ def _delete_stale_cache_file(field_file, old_name: str | None) -> None:
 # whether a retry is warranted. Exceptions are still swallowed here so direct
 # callers (management commands) stay resilient.
 FETCH_OK = 'ok'
-FETCH_TRANSIENT = 'transient'  # timeout / connection / 5xx -> worth retrying
-FETCH_PERMANENT = 'permanent'  # blocked URL / 4xx / invalid -> do not retry
+FETCH_TRANSIENT = 'transient'  # timeout / connection / 5xx / 429 -> worth retrying
+FETCH_PERMANENT = 'permanent'  # blocked URL / other 4xx / invalid -> do not retry
+
+
+def _http_error_outcome(code: int | None) -> str:
+    """5xx and 429 Too Many Requests are the upstream's passing trouble."""
+    return FETCH_TRANSIENT if code and (code >= 500 or code == 429) else FETCH_PERMANENT
 
 
 def _fetch_static_entry(entry: StaticFeedEntry) -> str:
@@ -213,7 +219,7 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
     except requests.exceptions.HTTPError as exc:
         code = exc.response.status_code if exc.response is not None else None
         _log_static_error(entry, FeedFetchError.ERROR_HTTP, exc, http_code=code)
-        return FETCH_TRANSIENT if (code and code >= 500) else FETCH_PERMANENT
+        return _http_error_outcome(code)
     except requests.exceptions.ConnectionError as exc:
         _log_static_error(entry, FeedFetchError.ERROR_CONNECTION, exc)
         return FETCH_TRANSIENT
@@ -288,28 +294,32 @@ def _fetch_realtime_endpoint_rt(
         logger.debug('Refreshed realtime endpoint_rt=%d', endpoint.pk)
         return FETCH_OK
     except (OutboundURLBlocked, InvalidFeedContent) as exc:
-        _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc)
-        return FETCH_PERMANENT
+        return _log_endpoint_rt_error(
+            endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc, FETCH_PERMANENT
+        )
     except requests.exceptions.Timeout as exc:
-        _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_TIMEOUT, exc)
-        return FETCH_TRANSIENT
+        return _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_TIMEOUT, exc, FETCH_TRANSIENT)
     except requests.exceptions.HTTPError as exc:
         code = exc.response.status_code if exc.response is not None else None
-        _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_HTTP, exc, http_code=code)
-        return FETCH_TRANSIENT if (code and code >= 500) else FETCH_PERMANENT
+        return _log_endpoint_rt_error(
+            endpoint, FeedFetchError.ERROR_HTTP, exc, _http_error_outcome(code), http_code=code
+        )
     except requests.exceptions.ConnectionError as exc:
-        _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_CONNECTION, exc)
-        return FETCH_TRANSIENT
+        return _log_endpoint_rt_error(
+            endpoint, FeedFetchError.ERROR_CONNECTION, exc, FETCH_TRANSIENT
+        )
     except SoftTimeLimitExceeded:
         # The task ran out of time, not the endpoint: no failure (and no pause)
         # is recorded against it.
         raise
     except Exception as exc:
-        _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc)
-        return FETCH_PERMANENT
+        return _log_endpoint_rt_error(
+            endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc, FETCH_PERMANENT
+        )
 
 
-def _log_endpoint_rt_error(endpoint, error_type, exc, http_code=None) -> None:
+def _log_endpoint_rt_error(endpoint, error_type, exc, outcome, http_code=None) -> str:
+    """Record the error and back off on the ladder of its class; returns ``outcome``."""
     FeedFetchError.objects.create(
         endpoint_rt=endpoint,
         error_type=error_type,
@@ -317,5 +327,9 @@ def _log_endpoint_rt_error(endpoint, error_type, exc, http_code=None) -> None:
         message=str(exc),
         url_attempted=endpoint.url,
     )
-    endpoint.mark_fetch_failure(str(exc))
+    if outcome == FETCH_TRANSIENT:
+        endpoint.mark_fetch_failure(str(exc), delays=REALTIME_TRANSIENT_RETRY_DELAYS)
+    else:
+        endpoint.mark_fetch_failure(str(exc))
     logger.warning('Fetch error endpoint_rt=%d type=%s: %s', endpoint.pk, error_type, exc)
+    return outcome
