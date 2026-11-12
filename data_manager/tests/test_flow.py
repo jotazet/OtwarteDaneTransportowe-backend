@@ -63,6 +63,7 @@ def fake_download(body: bytes, status_code: int = 200):
     def _cm(*args, **kwargs):
         response = MagicMock()
         response.status_code = status_code
+        response.headers = {}
         response.content = body
         response.raise_for_status = MagicMock()
         yield response, io.BytesIO(body)

@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager, nullcontext, suppress
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -33,21 +33,25 @@ class ResponseTooLarge(OutboundURLBlocked):
         self.max_bytes = max_bytes
 
 
+# NAT64 prefixes embed an IPv4 address in the low bits, so a NAT64 gateway would
+# reach whatever IPv4 host is encoded. ``is_global`` still accepts the well-known
+# prefix, hence the explicit list.
+_NAT64_NETWORKS = (ip_network("64:ff9b::/96"), ip_network("64:ff9b:1::/48"))
+
+
 def _is_public_ip(ip: str) -> bool:
+    """True only for globally routable unicast addresses.
+
+    ``is_global`` excludes private, loopback, link-local, reserved and
+    unspecified ranges as well as shared address space (100.64.0.0/10), but it
+    accepts some multicast ranges, so multicast is rejected separately.
+    """
     addr = ip_address(ip)
-    if addr.is_private:
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    if addr.version == 6 and any(addr in network for network in _NAT64_NETWORKS):
         return False
-    if addr.is_loopback:
-        return False
-    if addr.is_link_local:
-        return False
-    if addr.is_multicast:
-        return False
-    if addr.is_reserved:
-        return False
-    if addr.is_unspecified:
-        return False
-    return True
+    return addr.is_global and not addr.is_multicast
 
 
 def split_userinfo(url: str) -> tuple[str, dict]:

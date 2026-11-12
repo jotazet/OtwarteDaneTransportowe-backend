@@ -401,6 +401,8 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         ('basic_auth', 'Basic Auth (user:pass)'),
     ]
 
+    CACHE_VALIDATOR_FIELDS = ('cached_etag', 'cached_last_modified', 'cached_sha256')
+
     VALIDATION_PENDING = 'pending'
     VALIDATION_VALID = 'valid'
     VALIDATION_INVALID = 'invalid'
@@ -454,6 +456,11 @@ class StaticFeedEntry(FetchControlMixin, models.Model):
         blank=True,
         help_text='When the cached copy was last downloaded by the server.',
     )
+    # Describe the cached copy, so an unchanged upstream file is neither saved
+    # nor validated again (CACHE_VALIDATOR_FIELDS). Cleared with the cache.
+    cached_etag = models.TextField(blank=True, default='')
+    cached_last_modified = models.TextField(blank=True, default='')
+    cached_sha256 = models.CharField(max_length=64, blank=True, default='')
     fetch_status = models.CharField(
         max_length=20,
         choices=FETCH_STATUS_CHOICES,
