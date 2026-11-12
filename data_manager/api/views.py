@@ -187,12 +187,11 @@ class ProxyManagedFeedListView(APIView):
                 ProxyManagedFeedListSerializer.from_realtime_endpoint,
             ),
         }
+        static_keys, rt_keys = (self._sort_keys(qs, source) for source, (qs, *_) in sources.items())
         page_keys = list(
-            self._sort_keys(static_qs, 'static')
-            .union(self._sort_keys(rt_qs, 'realtime'), all=True)
-            .order_by('sort_region', 'sort_org', 'sort_feed', 'source', 'id')[
-                offset : offset + page_size
-            ]
+            static_keys.union(rt_keys, all=True).order_by(
+                'sort_region', 'sort_org', 'sort_feed', 'source', 'id'
+            )[offset : offset + page_size]
         )
 
         # Only the rows of the requested page are built, with select_related
