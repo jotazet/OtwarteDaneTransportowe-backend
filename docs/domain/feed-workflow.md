@@ -12,7 +12,9 @@ DataProvider
   -> backend saves FeedSubmission + StaticFeedEntry
   -> backend creates an uploaded history entry (stage 1 -> 2), so a new submission starts at stage 2
   -> data_type=gtfs: GTFS validation (Celery feeds queue, worker with Docker) runs after the file upload,
-     the URL submission or the proxy fetch; no errors -> stage 3, errors -> rejection (stage 1)
+     the URL submission or the proxy fetch; no errors -> stage 3, errors -> rejection (stage 1);
+     validation that could not run (Docker, validator, time limit) -> no rejection, the stage stays,
+     validation_status=error with a code, re-run by manage.py retry_gtfs_validation
   -> netex / other: no automatic validation; the submission stays at stage 2 until Helper/Admin sets the stage
   -> StaticFeedEntry.validation_status: pending / valid / invalid / error
   -> from stage 2 the owner may PATCH only the note, license and download schedule (not the name, URL/file, auth, is_original, hide_original)
@@ -62,6 +64,8 @@ The pause, retry and background cache mechanism applies **only to proxied feeds*
 - `pause-fetch` / `resume-fetch` return `400 Bad Request` with `{"code": "feeds.not_proxy_managed", "details": {}}`
 - the fields `fetch_status`, `fetch_failure_count`, `next_fetch_after` etc. are **not returned** by the API (`is_proxy_managed=false`)
 - the Celery schedule and the realtime loop **skip** these feeds
+
+When a proxied static feed stops being proxied, or its URL changes, the cache of the old URL is dropped with the change, so it is never validated or served for the new source.
 
 Exception: **validation stage 2** — for a static GTFS feed with a non-proxied URL, the server may download the file **once** into a temporary directory solely for the validator (without saving to `cached_file` and without starting the proxy mechanism). For realtime, stage 2 validation performs a link-check on the URL, checks the response format in process (`data_manager/validators.py`) and creates a cache only for `hide_original=true`.
 
@@ -143,6 +147,8 @@ After consecutive failed fetches the system automatically postpones the next att
 
 The first successful fetch resets the error counter to zero and sets `fetch_status=active`.
 
+A delayed realtime endpoint has no fetch queued: the periodic realtime bootstrap (every 5 minutes) resumes it once `next_fetch_after` has passed, so the actual retry comes up to 5 minutes after the time in the table. Static feeds are retried by the per-minute dispatcher.
+
 A manual pause is never undone by a fetch: a download that was already running when `pause-fetch` was called still records `last_fetch_success_at` or `last_fetch_error_at` (and its `FeedFetchError`), but `fetch_status`, the error counter and `fetch_pause_reason` stay as the pause set them, and the realtime loop stops. Only `resume-fetch` lifts it.
 
 `Helper` or `Admin` can manually pause or resume a single **proxied** feed (`is_proxy_managed=true`). The `proxy-feeds` list is available to any logged-in user (a `DataProvider` sees only its own feeds), but `pause-fetch` / `resume-fetch` return `403` for anyone other than `Helper`/`Admin`:
@@ -155,7 +161,7 @@ POST /api/data_manager/realtime-endpoints/{id}/pause-fetch/
 POST /api/data_manager/realtime-endpoints/{id}/resume-fetch/
 ```
 
-`GET /api/data_manager/proxy-feeds/` returns a single, paginated list of all proxied feeds (static and realtime). Each item has a `source` (`static` or `realtime`) and the entry `id` — these values indicate which `pause-fetch` / `resume-fetch` endpoint to call. The list is sorted by `region`, `organization`, `feed_name`.
+`GET /api/data_manager/proxy-feeds/` returns a single, paginated list of all proxied feeds (static and realtime). Each item has a `source` (`static` or `realtime`) and the entry `id` — these values indicate which `pause-fetch` / `resume-fetch` endpoint to call. The list is sorted by `region`, `organization`, `feed_name`, then `source` and `id`, in the database with its collation (`en_US.utf8` in the `postgres:16` image): case does not decide the order and Polish letters sort next to their base letters (`łódzkie` next to `lubelskie`, not after `z`). Pages are cut from that one order, so every feed appears on exactly one page.
 
 Example item from `GET /api/data_manager/proxy-feeds/`:
 
