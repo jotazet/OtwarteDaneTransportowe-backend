@@ -1,6 +1,7 @@
 """scripts/deploy/envfile.py: the production .env the deploy job writes and the server checks."""
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -10,7 +11,8 @@ import pytest
 
 from scripts.deploy import envfile
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'deploy' / 'envfile.py'
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / 'scripts' / 'deploy' / 'envfile.py'
 SECRETS = {
     'DJANGO_SECRET_KEY': 'k+/=$HOME#x',
     'POSTGRES_PASSWORD': 'p1',
@@ -122,6 +124,89 @@ def test_check_passes_without_an_old_env(tmp_path):
     new, _ = write(tmp_path, {})
 
     assert run('check', str(tmp_path / 'missing.env'), str(new)).returncode == 0
+
+
+# A host file as root writes it by hand.
+HOST = 'DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod\nexport UID=1001  # rocky\nGID="1001"\n'
+
+
+def merge(tmp_path, release_variables, host=HOST):
+    release, _ = write(tmp_path, release_variables)
+    if host is not None:
+        (tmp_path / 'host.env').write_text(host)
+    out = tmp_path / 'merged.env'
+    return out, run('merge', str(release), str(tmp_path / 'host.env'), str(out))
+
+
+def test_merge_adds_the_host_file(tmp_path):
+    out, result = merge(tmp_path, {'DJANGO_LOG_LEVEL': 'WARNING', 'CORS_URLS_REGEX': '^/api/.*$'})
+
+    assert result.returncode == 0, result.stdout
+    assert parse(out) == {
+        **REQUIRED,
+        **SECRETS,
+        'DJANGO_LOG_LEVEL': 'WARNING',
+        'CORS_URLS_REGEX': '^/api/.*$',
+        'DJANGO_SETTINGS_MODULE': 'OtwarteDaneTransportowe.settings_prod',
+        'UID': '1001',
+        'GID': '1001',
+    }
+    assert out.stat().st_mode & 0o777 == 0o600
+
+
+def test_merge_host_file_wins(tmp_path):
+    out, result = merge(tmp_path, {'DJANGO_LOG_LEVEL': 'DEBUG'}, HOST + 'DJANGO_LOG_LEVEL=INFO\n')
+
+    assert result.returncode == 0, result.stdout
+    assert parse(out)['DJANGO_LOG_LEVEL'] == 'INFO'
+
+
+@pytest.mark.parametrize(
+    'name',
+    [
+        'UID',
+        'HOST_MEDIA_ROOT',
+        'GTFS_VALIDATOR_IMAGE',
+        'PLANNER_OTP_IMAGE',
+        'COMPOSE_PROFILES',
+        'DJANGO_SETTINGS_MODULE',
+        'GUNICORN_WORKERS',
+        'NOT_A_SETTING',
+    ],
+)
+def test_merge_refuses_a_key_a_release_may_not_set(tmp_path, name):
+    out, result = merge(tmp_path, {name: '0'})
+
+    assert result.returncode == 1
+    assert f'A release may not set {name};' in result.stdout
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    ('host', 'message'),
+    [
+        (None, 'No host file'),
+        ('UID=1001\nGID=1001\n', 'has no DJANGO_SETTINGS_MODULE'),
+    ],
+)
+def test_merge_refuses_a_missing_or_incomplete_host_file(tmp_path, host, message):
+    out, result = merge(tmp_path, {}, host)
+
+    assert result.returncode == 1
+    assert message in result.stdout
+    assert not out.exists()
+
+
+def test_compose_interpolates_no_release_key():
+    """What Compose puts into images, commands, ports, mounts and users stays on the host."""
+    interpolated = {
+        name
+        for path in ROOT.glob('docker-compose*.yml')
+        for name in re.findall(r'(?<!\$)\$\{([A-Z_][A-Z0-9_]*)', path.read_text())
+    }
+
+    # The planner token only becomes an environment value of the otp container.
+    assert interpolated & envfile.RELEASE_KEYS == {'PLANNER_INTERNAL_TOKEN'}
 
 
 @pytest.mark.skipif(shutil.which('docker') is None, reason='needs Docker Compose')

@@ -3,7 +3,7 @@
 # the image (which changes nothing running), a database dump, the new .env, migrations and
 # new containers, then an answer from the API. Any failure stops it there. odt-deploy runs
 # it after checking out the tag (docs/deployment.md, section 20); it also works by hand from
-# the checkout:
+# the checkout, with a complete .env (odt-deploy adds the host file's settings to the job's):
 #
 #   sh scripts/deploy/release.sh <label> <new .env>
 set -eu
