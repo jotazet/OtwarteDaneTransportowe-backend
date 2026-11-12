@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Count, OuterRef, Q, Subquery
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 from rest_framework.settings import api_settings
 
@@ -21,6 +22,7 @@ from data_manager.models import (
 )
 from data_manager.net_security import OutboundURLBlocked, assert_safe_outbound_url
 from data_manager.validators import validate_uploaded_gtfs_zip
+from OtwarteDaneTransportowe.auth_roles import is_submitter_or_reviewer
 
 # ---------------------------------------------------------------------------
 # FeedSubmissionHistory
@@ -746,6 +748,16 @@ class RealtimeSubmissionWriteSerializer(serializers.ModelSerializer):
                         'static_submission': 'Static feed must be published (completed) before adding realtime.'
                     }
                 )
+            # Matches eligible-static-submissions: a provider links realtime only
+            # to its own static feed; the (static_submission, protocol) slot is
+            # unique, so another provider's link would block the owner's.
+            if (inst is None or ss.pk != inst.static_submission_id) and not (
+                is_submitter_or_reviewer(self.context['request'].user, ss)
+            ):
+                raise serializers.ValidationError(
+                    {'static_submission': 'Static submission must be your own.'},
+                    code='realtime.static_submission_not_owned',
+                )
         tmp = RealtimeSubmission(protocol=protocol)
         allowed = tmp.allowed_endpoint_types()
         if endpoints is not None:
@@ -839,7 +851,7 @@ class UserFeedSubmissionListSerializer(FeedSubmissionListSerializer):
 
 class FeedSubmissionSerializer(serializers.ModelSerializer):
     static_entry = StaticFeedEntrySerializer(read_only=True)
-    realtime_submissions = RealtimeSubmissionSerializer(many=True, read_only=True)
+    realtime_submissions = serializers.SerializerMethodField()
     current_stage = serializers.IntegerField(read_only=True)
     current_stage_label = serializers.CharField(read_only=True)
     is_rejected = serializers.BooleanField(read_only=True)
@@ -879,6 +891,15 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
             'published_at',
             'history',
         ]
+
+    @extend_schema_field(RealtimeSubmissionSerializer(many=True))
+    def get_realtime_submissions(self, obj):
+        # Another user's realtime on this feed may carry hidden (hide_original) URLs.
+        user = self.context['request'].user
+        visible = [
+            rt for rt in obj.realtime_submissions.all() if is_submitter_or_reviewer(user, rt)
+        ]
+        return RealtimeSubmissionSerializer(visible, many=True, context=self.context).data
 
 
 # ---------------------------------------------------------------------------

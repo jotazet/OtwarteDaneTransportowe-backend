@@ -15,21 +15,25 @@ from accounts.api.serializers import (
 )
 from accounts.services import (
     generate_random_password,
+    set_password_and_end_sessions,
     would_remove_last_admin,
 )
-from OtwarteDaneTransportowe.auth_roles import RequiresAdminGroup
+from OtwarteDaneTransportowe.auth_roles import CanManageUserAccount, RequiresAdminGroup
+from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairSerializer
 
 User = get_user_model()
 
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.prefetch_related('groups').order_by('username')
-    permission_classes = [IsAuthenticated, RequiresAdminGroup]
+    permission_classes = [IsAuthenticated, RequiresAdminGroup, CanManageUserAccount]
+    # Unthrottled by default; declared so that @action can set a scope.
+    throttle_scope = None
 
     def get_permissions(self):
         if self.action in ('me', 'change_email', 'change_password'):
             return [IsAuthenticated()]
-        return [IsAuthenticated(), RequiresAdminGroup()]
+        return super().get_permissions()
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -81,8 +85,7 @@ class UserViewSet(viewsets.ModelViewSet):
     def reset_password(self, request, pk=None):
         user = self.get_object()
         password = generate_random_password(user=user)
-        user.set_password(password)
-        user.save(update_fields=['password'])
+        set_password_and_end_sessions(user, password)
         data = {
             'id': user.id,
             'username': user.username,
@@ -95,16 +98,25 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer = UserSerializer(request.user)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['post'], url_path='me/change-email')
+    @action(
+        detail=False, methods=['post'], url_path='me/change-email', throttle_scope='account_change'
+    )
     def change_email(self, request):
         serializer = ChangeEmailSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(UserSerializer(request.user).data)
 
-    @action(detail=False, methods=['post'], url_path='me/change-password')
+    @action(
+        detail=False,
+        methods=['post'],
+        url_path='me/change-password',
+        throttle_scope='account_change',
+    )
     def change_password(self, request):
         serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response({'detail': 'Password updated.'})
+        user = serializer.save()
+        # All sessions were ended; this one continues with a fresh pair.
+        refresh = RolesInTokenObtainPairSerializer.get_token(user)
+        return Response({'refresh': str(refresh), 'access': str(refresh.access_token)})

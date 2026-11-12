@@ -8,6 +8,54 @@ Not breaking. `GET /api/data_manager/proxy-feeds/` repeated some feeds and left 
 
 ---
 
+## 2026-11-12: admin login shares the login limit
+
+Not breaking. `POST /admin/login/` (the Django admin login form) now counts against the `login` limit (`THROTTLE_LOGIN`, 10/min per client IP by default) and answers `429` with `Retry-After` when it is used up. The budget is shared with `POST /api/auth/token/` and `POST /api/auth/token/refresh/`, so attempts on either path count together. Opening the form (`GET`) is not limited.
+
+---
+
+## 2026-11-12: logout and session revocation
+
+Not breaking for the ODT frontend, which ignores the body of `me/change-password/`; a client that reads its `detail` must stop. The frontend should adopt the first two points.
+
+- **`POST /api/auth/logout/`** (new, public) takes `{"refresh": "..."}`, blacklists that refresh token and returns `200 {}`. An invalid, expired or already blacklisted token returns `401` (`token_not_valid`). Access tokens stay valid until they expire. See [Logout](README.md#post-apiauthlogout).
+- **`POST /api/users/me/change-password/`** blacklists all refresh tokens of the user and now returns a fresh pair `{"access", "refresh"}` for the calling session instead of `{"detail": "Password updated."}`. A client that does not store the new pair is logged out at its next refresh.
+- **`POST /api/users/{id}/reset-password/`** blacklists all refresh tokens of that user. The response is unchanged.
+- `me/change-password/` and `me/change-email/` are rate-limited (`account_change`, 5/min per user by default, `THROTTLE_ACCOUNT_CHANGE`) and answer `429` beyond it.
+
+See [Ending all sessions of a user](README.md#ending-all-sessions-of-a-user).
+
+---
+
+## 2026-11-12: realtime submissions link only to the caller's own static feed
+
+Not breaking for the website, which already offers only `eligible-static-submissions`. `POST /api/data_manager/realtime-submissions/` and `PUT`/`PATCH .../{id}/` by a `DataProvider` with a `static_submission` the caller did not submit now answer `400` on `static_submission` (code `realtime.static_submission_not_owned`; until the ADR 0006 exception handler lands, the body carries an English message, so match on status and field); `Admin` may still link any feed. In `GET /api/data_manager/feed-submissions/{id}/` a `DataProvider` sees in `realtime_submissions` only the feed owner's realtime submissions, and `download/realtime/{endpoint_pk}/` returns `404` for other users' endpoints. Helper/Admin responses are unchanged. See [Realtime validation rules](feeds.md#realtime-feeds-realtimesubmission).
+
+---
+
+## 2026-11-12: protected accounts in user management
+
+Not breaking for regular accounts.
+
+- User objects (`/api/users/`, `/api/users/{id}/`, `/api/users/me/`) gain read-only **`is_staff`** and **`is_superuser`**.
+- An account with either flag is a protected account: `PUT`, `PATCH`, `DELETE` `/api/users/{id}/` and `POST /api/users/{id}/reset-password/` on it need a caller who is a superuser as well as in the `Admin` group. Anyone else gets `403` with `{"code": "users.protected_account", "details": {}}` and nothing changes. The frontend can hide those actions when the target has either flag and the logged-in user (`/api/users/me/`) has `is_superuser: false`.
+
+See [Users](README.md#users-djangocontribauthmodelsuser).
+
+---
+
+## 2026-11-12: planner skips provider URLs with `${`
+
+Not breaking. A realtime or GBFS endpoint polled from the provider's URL whose URL contains `${` is left out of the planner's OTP configuration, because OTP would read it as a placeholder for an environment variable. It is reported with the new error code **`planner.rt_url_unsupported`** in `feed_results[].realtime_skipped` of a build and in a rental source's `active_result`. Proxied endpoints are unaffected. See [Graph builds](planner-admin.md#graph-builds).
+
+---
+
+## 2026-11-12: only Admin deletes transport organizations
+
+**Breaking** for `Helper` accounts. `DELETE /api/cases/transport-organizations/{id}/` now needs the `Admin` role; a `Helper` gets `403`. Creating and updating organizations stays open to `Helper` and `Admin`. Deleting an organization also deletes all its feed submissions, and deleting a submission was already `Admin` only. Clients should offer the delete action to `Admin` only. See [TransportOrganization](cases.md#transportorganization).
+
+---
+
 ## 2026-10-17: entity types of a realtime endpoint
 
 Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).

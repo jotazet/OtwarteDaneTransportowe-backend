@@ -59,6 +59,7 @@ from OtwarteDaneTransportowe.auth_roles import (
     can_edit_static_feed_source,
     is_admin,
     is_helper_reviewer,
+    is_submitter_or_reviewer,
     patch_request_includes_submission_content,
 )
 from OtwarteDaneTransportowe.internal_requests import has_internal_token
@@ -474,8 +475,6 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
             .order_by('id')
         )
         org_qs = TransportOrganization.objects.prefetch_related(
-            'data_providers',
-            'case_status',
             Prefetch('feed_submissions', queryset=feeds_qs, to_attr='feeds'),
             Prefetch('realtime_submissions', queryset=gbfs_qs, to_attr='published_gbfs_feeds'),
         ).order_by('region', 'transport_organization')
@@ -546,11 +545,7 @@ class UserSubmissionsView(APIView):
         static_qs = (
             FeedSubmission.objects.filter(submitted_by=user)
             .select_related('transport_organization', 'submitted_by', 'static_entry')
-            .prefetch_related(
-                'history',
-                'realtime_submissions__endpoints',
-                'realtime_submissions__history',
-            )
+            .prefetch_related('history')
             .order_by('-created_at')
         )
         realtime_qs = (
@@ -588,15 +583,16 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
     queryset = (
         FeedSubmission.objects.all()
         .select_related('transport_organization', 'submitted_by', 'static_entry')
-        .prefetch_related(
-            'history',
-            'realtime_submissions__endpoints',
-            'realtime_submissions__history',
-        )
+        .prefetch_related('history')
     )
 
     def get_queryset(self):
         qs = super().get_queryset()
+        if self.action != 'list':
+            # Only the detail serializers embed realtime submissions.
+            qs = qs.prefetch_related(
+                'realtime_submissions__endpoints', 'realtime_submissions__history'
+            )
         if not can_confirm_feeds(self.request.user):
             qs = qs.filter(submitted_by=self.request.user)
         data_type = self.request.query_params.get('data_type')
@@ -750,13 +746,15 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='download/realtime/(?P<endpoint_pk>[^/.]+)')
     def download_realtime(self, request, pk=None, endpoint_pk=None):
-        """Pobierz plik cache endpointu RT (RealtimeSubmission powiązany ze static submission pk)."""
+        """Download the cached file of a realtime endpoint linked to static submission pk."""
         submission = self.get_object()
         endpoint = get_object_or_404(
             RealtimeEndpointRT.objects.select_related('submission'),
             pk=endpoint_pk,
             submission__static_submission_id=submission.pk,
         )
+        if not is_submitter_or_reviewer(request.user, endpoint.submission):
+            raise Http404
         if not endpoint.cached_file:
             raise Http404
 
