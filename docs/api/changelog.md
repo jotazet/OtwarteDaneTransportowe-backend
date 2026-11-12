@@ -4,7 +4,7 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ## 2026-11-12: logout and session revocation
 
-Not breaking; the frontend should adopt the first two points.
+Not breaking for the ODT frontend, which ignores the body of `me/change-password/`; a client that reads its `detail` must stop. The frontend should adopt the first two points.
 
 - **`POST /api/auth/logout/`** (new, public) takes `{"refresh": "..."}`, blacklists that refresh token and returns `200 {}`. An invalid, expired or already blacklisted token returns `401` (`token_not_valid`). Access tokens stay valid until they expire. See [Logout](README.md#post-apiauthlogout).
 - **`POST /api/users/me/change-password/`** blacklists all refresh tokens of the user and now returns a fresh pair `{"access", "refresh"}` for the calling session instead of `{"detail": "Password updated."}`. A client that does not store the new pair is logged out at its next refresh.

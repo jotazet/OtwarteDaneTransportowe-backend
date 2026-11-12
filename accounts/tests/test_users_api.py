@@ -116,7 +116,8 @@ def _change_password(client, current_password):
 
 
 def test_reset_password_ends_the_users_sessions(api_client, admin_user, regular_user):
-    sessions = [_session(regular_user) for _ in range(2)]
+    rotated = _refresh(_session(regular_user)).data['refresh']
+    sessions = [_session(regular_user), rotated]
     admin_session = _session(admin_user)
     api_client.force_authenticate(user=admin_user)
 
