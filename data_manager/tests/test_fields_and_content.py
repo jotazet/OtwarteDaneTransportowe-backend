@@ -2,6 +2,7 @@
 derivation, orphaned-file cleanup and the production secret-key guard."""
 
 import io
+import threading
 from contextlib import contextmanager
 
 import pytest
@@ -535,9 +536,20 @@ def test_overwrite_storage_overlapping_saves_of_one_name_both_succeed(storage, t
             )
             yield b'1}'
 
-    first_result = storage.save('7/validation/report.json', SlowStream(io.BytesIO()))
+    # In a thread with a timeout: an in-place write deadlocks here (both saves
+    # flock the same file), which must fail the test, not hang the suite.
+    first_result = []
+    writer = threading.Thread(
+        target=lambda: first_result.append(
+            storage.save('7/validation/report.json', SlowStream(io.BytesIO()))
+        ),
+        daemon=True,
+    )
+    writer.start()
+    writer.join(timeout=10)
+    assert not writer.is_alive(), 'overlapping saves deadlocked'
 
-    assert first_result == second_result[0] == '7/validation/report.json'
+    assert first_result[0] == second_result[0] == '7/validation/report.json'
     # The last rename wins and the file is one complete version, never a mix.
     assert (tmp_path / '7/validation/report.json').read_bytes() == b'{"run": 1}'
     assert not list(tmp_path.rglob('*.tmp'))
