@@ -800,3 +800,118 @@ def test_pin_answers_the_lookup_real_requests_makes(monkeypatch, url):
     # urllib3 asked for the URL's name; only the pin's own lookup of the
     # validated IP got through to the resolver.
     assert connect_lookups == ['2606:2800:220:1::1' if '[' in url else '93.184.216.34']
+
+
+def _leaf_with_aia_and_intermediate_der():
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import AuthorityInformationAccessOID, NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.datetime.now(datetime.UTC)
+
+    def cert(common_name, *extensions):
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+        builder = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + datetime.timedelta(days=1))
+        )
+        for extension in extensions:
+            builder = builder.add_extension(extension, critical=False)
+        return builder.sign(key, hashes.SHA256())
+
+    aia = x509.AuthorityInformationAccess(
+        [
+            x509.AccessDescription(
+                AuthorityInformationAccessOID.CA_ISSUERS,
+                x509.UniformResourceIdentifier('http://ca.example.org/int.der'),
+            )
+        ]
+    )
+    leaf = cert('feed.example.org', aia).public_bytes(serialization.Encoding.PEM).decode()
+    return leaf, cert('Intermediate').public_bytes(serialization.Encoding.DER)
+
+
+@pytest.fixture
+def aia_server(monkeypatch, tmp_path):
+    """Fake handshake and CA repository; records the (host, port) of each handshake."""
+    import ssl
+    from types import SimpleNamespace
+
+    import data_manager.net_security as ns
+
+    leaf_pem, intermediate_der = _leaf_with_aia_and_intermediate_der()
+    handshakes = []
+
+    def fake_get_server_certificate(addr, timeout=None):
+        socket.getaddrinfo(*addr)  # through the pin, like the real handshake
+        handshakes.append(addr)
+        return leaf_pem
+
+    monkeypatch.setattr(ssl, 'get_server_certificate', fake_get_server_certificate)
+    monkeypatch.setattr(
+        ns, 'safe_get', lambda *a, **kw: SimpleNamespace(status_code=200, content=intermediate_der)
+    )
+    monkeypatch.setattr(ns, '_AIA_BUNDLE_DIR', str(tmp_path / 'aia'))
+    monkeypatch.setattr(ns, '_AIA_BUNDLE_CACHE', {})
+    return handshakes
+
+
+def test_aia_bundle_cache_key_includes_the_port(aia_server):
+    import data_manager.net_security as ns
+
+    ips = {'93.184.216.34'}
+    first = ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, ips)
+    assert ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, ips) == first
+    ns._ca_bundle_with_aia_intermediates('feed.example.org', 8443, ips)
+
+    assert aia_server == [('feed.example.org', 443), ('feed.example.org', 8443)]
+
+
+def test_aia_bundles_do_not_accumulate_across_worker_processes(aia_server):
+    """A recycled worker child (empty cache) rewrites the same file (issue #47)."""
+    import os
+
+    import data_manager.net_security as ns
+
+    first = ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, {'93.184.216.34'})
+    ns._AIA_BUNDLE_CACHE.clear()
+    again = ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, {'93.184.216.34'})
+
+    assert again == first
+    assert os.listdir(ns._AIA_BUNDLE_DIR) == [os.path.basename(first)]
+    assert os.stat(ns._AIA_BUNDLE_DIR).st_mode & 0o777 == 0o700
+    with open(first) as fh:
+        assert fh.read().rstrip().endswith('-----END CERTIFICATE-----')
+
+
+def test_aia_bundle_is_rebuilt_when_its_file_is_gone(aia_server):
+    import os
+
+    import data_manager.net_security as ns
+
+    first = ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, {'93.184.216.34'})
+    os.unlink(first)
+
+    assert ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, {'93.184.216.34'}) == first
+    assert os.path.exists(first)
+
+
+def test_aia_bundle_refused_in_a_directory_others_can_write(aia_server):
+    """A bundle is a trust anchor: a planted root there would pass verification."""
+    import os
+
+    import data_manager.net_security as ns
+
+    os.makedirs(ns._AIA_BUNDLE_DIR)
+    os.chmod(ns._AIA_BUNDLE_DIR, 0o777)
+
+    assert ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, {'93.184.216.34'}) is None
