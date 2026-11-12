@@ -30,7 +30,9 @@ def set_password_and_end_sessions(user, password: str) -> None:
     """Set a new password and blacklist all of the user's refresh tokens.
 
     Every session must log in again. Access tokens are stateless and stay
-    valid until they expire (``JWT_ACCESS_MINUTES``).
+    valid until they expire (``JWT_ACCESS_MINUTES``). Password changes outside
+    the API (the Django admin form, ``manage.py changepassword``) do not call
+    this and leave the sessions open.
     """
     user.set_password(password)
     user.save(update_fields=['password'])
