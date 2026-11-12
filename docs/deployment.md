@@ -307,14 +307,12 @@ CORS is handled by `django-cors-headers`. Rules:
 
 The `celery_validator_worker` service runs the GTFS validator as a container through the
 `docker-socket-proxy` service (`tecnativa/docker-socket-proxy`); `celery_planner_worker`
-uses it to build graphs in short-lived OTP containers and to stop and start `otp`. Only the proxy
+also uses it ([section 19](#19-journey-planner-opentripplanner)). Only the proxy
 mounts `/var/run/docker.sock` (read-only); the workers connect via
 `DOCKER_HOST=tcp://docker-socket-proxy:2375`, and only the
-`CONTAINERS`/`IMAGES` (+`POST`) endpoints are allowed. The proxy is only on the
-`docker-api` network (`internal: true`, no route out), which only these two workers join,
-so `web`, `celery_worker` and `celery_beat` cannot resolve or reach it. A new service that
-needs the Docker API must join `docker-api` explicitly. Compose creates the network on
-`up -d`; nothing needs to be configured on the host.
+`CONTAINERS`/`IMAGES` (+`POST`) endpoints are allowed. The proxy is only on the internal
+`docker-api` network, joined by these two workers alone; a service that needs the Docker
+API must join it explicitly. Nothing needs to be configured on the host.
 
 Both images are pinned: the proxy in `docker-compose.yml`, the validator through
 `GTFS_VALIDATOR_IMAGE` (default in `OtwarteDaneTransportowe/settings_base.py`). A new
@@ -708,8 +706,7 @@ so rebuild it; in development the `migrate` service collects them at startup. If
 **GTFS validation does not work / "Cannot connect to Docker"**
 → Check that the `docker-socket-proxy` service is running (`docker compose ps`,
 `docker compose logs docker-socket-proxy`) and that `celery_validator_worker`
-has `DOCKER_HOST=tcp://docker-socket-proxy:2375` and is on the `docker-api` network
-(`docker compose ps --format '{{.Name}} {{.Networks}}'`).
+has `DOCKER_HOST=tcp://docker-socket-proxy:2375` and is on the `docker-api` network.
 
 **Files in `uploaded_data/` are owned by root / cannot write**
 → Set `UID`/`GID` in `.env` and reload (the `init_uploads` service will run `chown`).
