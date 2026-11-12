@@ -6,13 +6,13 @@ from django.db import transaction
 from django.db.models import CharField, F, OuterRef, Prefetch, Q, Subquery, Value
 from django.db.models.functions import Coalesce, Concat
 from django.http import FileResponse, Http404
-from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
 
 # DRF's ValidationError renders as HTTP 400; Django's would bubble up as 500.
 from rest_framework.exceptions import ValidationError
+from rest_framework.generics import get_object_or_404
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
