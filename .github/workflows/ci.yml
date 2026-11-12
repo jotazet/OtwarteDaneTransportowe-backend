@@ -96,7 +96,7 @@ jobs:
         run: >-
           docker run --rm odt-backend python -c
           "import django.conf as c; c.settings.DEBUG" 2>&1
-          | grep -q 'DJANGO_SECRET_KEY'
+          | grep -q 'ImproperlyConfigured'
 
   # A release: a green vX.Y.Z tag on main goes to production.
   deploy:
