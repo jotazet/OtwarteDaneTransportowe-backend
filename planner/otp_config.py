@@ -85,9 +85,7 @@ def otp_link(submission_id: int, endpoint) -> tuple[str, dict]:
             f'{settings.PLANNER_ODT_INTERNAL_URL}/feed/rt/{submission_id}/{endpoint.endpoint_type}/',
             {INTERNAL_TOKEN_HEADER: '${PLANNER_INTERNAL_TOKEN}'},
         )
-    # OTP expands every '${' in the config file text before parsing the JSON
-    # (environment variables, ${includeFile:...}), so a provider URL must not
-    # contain one; JSON encoding leaves '${' as is.
+    # OTP expands ${...} in the config file text before parsing it (ADR 0009).
     if '${' in endpoint.url:
         raise LinkSkipped('planner.rt_url_unsupported')
     try:
@@ -103,9 +101,10 @@ def realtime_updaters(planner_feeds) -> tuple[list[dict], list[dict]]:
     OTP reads the same links the public catalogue shows: proxied endpoints from
     this app's cached copy (over the internal network, with the token header),
     the others from the provider's URL. Those URLs are checked like any other
-    outbound URL first; a blocked or unusable one is skipped. A feed with ``realtime_from``
-    gets the GTFS-RT published for that feed instead of its own. Returns
-    ``(updaters, skipped)`` where ``skipped`` lists ``{feed_id, endpoint_type, error_code}``.
+    outbound URL first; a blocked or unusable one is skipped. A feed with
+    ``realtime_from`` gets the GTFS-RT published for that feed instead of its
+    own. Returns ``(updaters, skipped)`` where ``skipped`` lists
+    ``{feed_id, endpoint_type, error_code}``.
     """
     feed_ids = defaultdict(list)
     for feed in planner_feeds:
