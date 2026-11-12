@@ -124,6 +124,16 @@ def test_delete_organization_by_role(role, allowed, org, make_user, client_as):
     assert TransportOrganization.objects.filter(pk=org.pk).exists() is not allowed
 
 
+def test_superuser_without_admin_group_may_delete_organization(org, django_user_model, client_as):
+    # Same rule as deleting a submission (is_admin), not the stricter has_admin_role.
+    superuser = django_user_model.objects.create_user('root', is_superuser=True)
+
+    response = client_as(superuser).delete(f'/api/cases/transport-organizations/{org.pk}/')
+
+    assert response.status_code == 204
+    assert not TransportOrganization.objects.filter(pk=org.pk).exists()
+
+
 def test_created_organization_starts_with_status_none(make_user, client_as):
     response = client_as(make_user(ROLE_HELPER)).post(
         '/api/cases/transport-organizations/',
