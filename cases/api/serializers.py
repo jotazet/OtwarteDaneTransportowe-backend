@@ -49,10 +49,16 @@ class TransportOrganizationSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_at', 'updated_at', 'latest_status', 'data_providers']
 
     def get_data_providers(self, obj: TransportOrganization):
-        return [{'id': dp.id, 'name': dp.name} for dp in obj.data_providers.all().order_by('name')]
+        providers = obj.data_providers.all()
+        # The viewset prefetches them ordered by name; an object just created
+        # or updated has no prefetch, so order in the query instead.
+        if 'data_providers' not in getattr(obj, '_prefetched_objects_cache', {}):
+            providers = providers.order_by('name')
+        return [{'id': dp.id, 'name': dp.name} for dp in providers]
 
     def get_latest_status(self, obj: TransportOrganization):
-        status = obj.case_status.order_by('-date').first()
+        # Newest first by CaseStatus.Meta.ordering; .all() reads the prefetch.
+        status = next(iter(obj.case_status.all()), None)
         if not status:
             return None
         return {
@@ -86,7 +92,7 @@ class TransportOrganizationDetailSerializer(TransportOrganizationSerializer):
         read_only_fields = ['created_at', 'updated_at', 'data_providers', 'statuses']
 
     def get_statuses(self, obj: TransportOrganization):
-        statuses = obj.case_status.order_by('-date')
+        statuses = obj.case_status.all()  # newest first (Meta.ordering)
         return [
             {
                 'id': s.id,

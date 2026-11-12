@@ -1,3 +1,4 @@
+from django.db.models import Prefetch
 from rest_framework import viewsets
 
 from cases.api.serializers import (
@@ -28,7 +29,12 @@ class CaseStatusViewSet(viewsets.ModelViewSet):
 class TransportOrganizationViewSet(viewsets.ModelViewSet):
     queryset = (
         TransportOrganization.objects.all()
-        .prefetch_related('data_providers', 'case_status')
+        # The serializers read these from the prefetch cache: providers by
+        # name, statuses newest first (CaseStatus.Meta.ordering).
+        .prefetch_related(
+            Prefetch('data_providers', queryset=DataProvider.objects.order_by('name')),
+            'case_status',
+        )
         .order_by('region', 'transport_organization')
     )
     serializer_class = TransportOrganizationSerializer
