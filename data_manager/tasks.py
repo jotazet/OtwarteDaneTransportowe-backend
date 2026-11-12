@@ -164,10 +164,11 @@ def _scheduler():
 
 @shared_task(name='data_manager.refresh_static_feeds')
 def refresh_static_feeds_task() -> dict:
-    """
-    Uruchamiany przez Beat co minutę (crontab).
-    Sprawdza download_time_1/2 == teraz i kolejkuje fetch per wpis.
-    Lekki — tylko jedno zapytanie do DB + N .delay() calls.
+    """Run by Beat every minute; queue a fetch per entry that is due.
+
+    An entry is due when download_time_1/2 falls in the catch-up window and no
+    fetch has succeeded in it, or when its delayed retry time has passed. One
+    DB query plus one .delay() per entry.
     """
     from datetime import timedelta
 
@@ -232,11 +233,10 @@ def refresh_static_feeds_task() -> dict:
     time_limit=720,
 )
 def fetch_static_entry_task(self, entry_id: int, skip_if_fetched_since: str | None = None) -> dict:
-    """Pobiera i zapisuje cache dla jednego StaticFeedEntry.
+    """Fetch and cache one StaticFeedEntry.
 
-    Retry nie jest robiony przez Celery. Nieudane pobrania ustawiaja utrwalony
-    harmonogram pauz na modelu (5min -> 1h -> 6h -> auto_paused), ktory
-    respektuje cykliczny dispatcher.
+    Celery does not retry. A failed fetch stores a pause schedule on the model
+    (5 min -> 1 h -> 6 h -> auto_paused) that the periodic dispatcher honours.
 
     ``skip_if_fetched_since`` (ISO instant, set by the dispatcher) makes a
     duplicate a no-op when a fetch has succeeded since then. Direct callers
