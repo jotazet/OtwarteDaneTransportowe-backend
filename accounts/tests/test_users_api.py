@@ -217,6 +217,10 @@ def _manage(api_client, method, target, suffix, body):
     return getattr(api_client, method)(f'/api/users/{target.pk}/{suffix}', body, format='json')
 
 
+def _success_status(method):
+    return 204 if method == 'delete' else 200
+
+
 @pytest.fixture
 def superuser_admin(admin_group):
     user = User.objects.create_user('root_admin', 'root@example.com', 'rootpass', is_superuser=True)
@@ -255,7 +259,7 @@ def test_superuser_admin_can_manage_protected_account(
 
     response = _manage(api_client, method, target, suffix, body)
 
-    assert response.status_code == (204 if method == 'delete' else 200), response.data
+    assert response.status_code == _success_status(method), response.data
 
 
 @pytest.mark.parametrize('method, suffix, body', MANAGE_ACTIONS)
@@ -266,7 +270,7 @@ def test_admin_can_manage_regular_account(
 
     response = _manage(api_client, method, regular_user, suffix, body)
 
-    assert response.status_code == (204 if method == 'delete' else 200), response.data
+    assert response.status_code == _success_status(method), response.data
 
 
 def test_admin_can_read_protected_account_flags(api_client, admin_user, superuser_admin):

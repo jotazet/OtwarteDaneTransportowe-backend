@@ -213,16 +213,16 @@ def can_manage_user_account(user, target) -> bool:
     the admin site, so only a superuser may manage them; the ``Admin`` role
     alone is not enough (see :func:`has_admin_role`).
     """
-    return bool(user.is_superuser) or not (target.is_superuser or target.is_staff)
+    return user.is_superuser or not (target.is_superuser or target.is_staff)
 
 
 class CanManageUserAccount(BasePermission):
-    """Object check for user management: ``can_manage_user_account``, 403 with a code."""
+    """Object check for user management: reads pass, writes need ``can_manage_user_account``."""
 
     message = {'code': 'users.protected_account', 'details': {}}
 
     def has_object_permission(self, request, view, obj):
-        return can_manage_user_account(request.user, obj)
+        return request.method in SAFE_METHODS or can_manage_user_account(request.user, obj)
 
 
 class AdminGroupOrDebug(BasePermission):

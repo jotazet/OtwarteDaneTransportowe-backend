@@ -24,14 +24,12 @@ User = get_user_model()
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.prefetch_related('groups').order_by('username')
-    permission_classes = [IsAuthenticated, RequiresAdminGroup]
+    permission_classes = [IsAuthenticated, RequiresAdminGroup, CanManageUserAccount]
 
     def get_permissions(self):
         if self.action in ('me', 'change_email', 'change_password'):
             return [IsAuthenticated()]
-        if self.action in ('update', 'partial_update', 'destroy', 'reset_password'):
-            return [IsAuthenticated(), RequiresAdminGroup(), CanManageUserAccount()]
-        return [IsAuthenticated(), RequiresAdminGroup()]
+        return super().get_permissions()
 
     def get_serializer_class(self):
         if self.action == 'create':
