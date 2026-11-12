@@ -261,7 +261,8 @@ def test_my_reactions_ignores_soft_removed_and_bad_input(api_client, post, setti
     )
     assert response.data == {}  # soft-removed reaction is not "mine"
 
-    for query in ('', '?post_ids=', '?post_ids=abc,,-1'):
+    # '²' passes str.isdigit() but int() rejects it.
+    for query in ('', '?post_ids=', '?post_ids=abc,,-1', '?post_ids=%C2%B2'):
         response = api_client.get(f'/api/blog/reactions/mine/{query}', REMOTE_ADDR='203.0.113.10')
         assert response.status_code == 200
         assert response.data == {}

@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: non-numeric ids and filters no longer return `500`
+
+Not breaking. The `transport_organization` query filter of `GET /api/data_manager/submissions/`, `feed-submissions/` and `realtime-submissions/` returns `400` with `{"transport_organization": ["feeds.invalid_integer"]}` for a value that is not an integer (it used to be a `500`). A non-numeric id in `realtime-submissions/eligible-static-submissions/{id}/` and `feed-submissions/{pk}/download/static|realtime/{endpoint_pk}/` returns `404`. See [Feeds API](feeds.md).
+
+---
+
 ## 2026-11-12: simultaneous first reactions no longer return 500
 
 Not breaking. Two simultaneous first `POST /api/blog/reactions/{post_id}/` requests from one IP (a double click) used to make one of them fail with `500`. The request that loses the race now updates the row the other created and answers `200`. See [Blog API](blog.md).
