@@ -2,6 +2,14 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: changing a realtime submission's protocol or static feed restarts verification
+
+Not breaking for the website. `PUT`/`PATCH /api/data_manager/realtime-submissions/{id}/` that changes `protocol` without sending `endpoints` now checks the stored endpoints against the new protocol and answers `400` with `{"protocol": ["realtime.endpoints_invalid_for_protocol"]}` when they do not fit (it used to save a submission whose endpoints were invalid for its protocol). Send the new `endpoints` together with the new `protocol`. A change of `protocol` or `static_submission` by the owner (stage 1 or after a rejection) now restarts verification like an endpoint change: an `uploaded` history entry is added and realtime validation runs again; an Admin's change re-runs validation without changing the stage. See [Realtime feeds](feeds.md#realtime-feeds-realtimesubmission).
+
+**Frontend:** translate `realtime.endpoints_invalid_for_protocol` on the `protocol` field.
+
+---
+
 ## 2026-11-12: coded errors for a source credential ODT cannot decrypt
 
 Not breaking. When ODT cannot decrypt a stored `auth_value` (a key configuration problem on ODT's side), the download is not attempted and the failure is reported as a code:
