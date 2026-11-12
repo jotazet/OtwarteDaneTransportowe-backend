@@ -107,6 +107,8 @@ def is_submitter_or_reviewer(user, submission) -> bool:
     A DataProvider works only with its own submissions: it links realtime to
     its own static feed and sees only its own realtime on that feed.
     """
+    if not user or not user.is_authenticated:
+        return False
     return submission.submitted_by_id == user.id or can_confirm_feeds(user)
 
 

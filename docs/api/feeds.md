@@ -408,7 +408,7 @@ No type means all types (`gtfs`, `netex`, `other`). The endpoint requires JWT. `
 - `siri` can only be attached to a static `netex` feed.
 - `static_submission` must be a published static feed (`current_stage=4`).
 - `static_submission` must belong to the same `transport_organization`.
-- For a `DataProvider`, `static_submission` must be a feed it submitted itself, as listed by `eligible-static-submissions`; otherwise `400` with field code `realtime.static_submission_not_owned` on `static_submission`. Checked on create and whenever `static_submission` changes. `Admin` may link any feed.
+- For a `DataProvider`, `static_submission` must be a feed it submitted itself, as listed by `eligible-static-submissions`; otherwise `400` on `static_submission` (code `realtime.static_submission_not_owned`, not yet in the body; see [error codes](README.md#http-status-codes)). Checked on create and whenever `static_submission` changes. `Admin` may link any feed.
 - `protocol=gbfs` cannot have a `static_submission`, i.e. GBFS cannot be attached to `gtfs` or `netex`.
 - `endpoints` are required and cannot be empty.
 - Two endpoints of the same `endpoint_type` cannot be added to one submission.

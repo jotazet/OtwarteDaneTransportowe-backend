@@ -107,6 +107,22 @@ def test_provider_cannot_move_realtime_to_another_providers_static(
     assert RealtimeSubmission.objects.get(pk=created.data['id']).static_submission == own_static
 
 
+def test_provider_keeps_an_existing_link_to_another_providers_static(
+    settings, tmp_path, org, other, static, client_as
+):
+    # A link made before the ownership check stays editable while unchanged.
+    settings.MEDIA_ROOT = tmp_path
+    foreign = _cached_endpoint(org, static, other, RealtimeSubmission.PROTOCOL_GTFS_RT)
+
+    response = client_as(other).patch(
+        f'{URL}{foreign.submission_id}/',
+        {'static_submission': static.id, 'note': 'updated'},
+        format='json',
+    )
+
+    assert response.status_code == 200, response.data
+
+
 def test_admin_links_realtime_to_any_static(org, static, make_user, client_as):
     admin = make_user(ROLE_ADMIN)
 
