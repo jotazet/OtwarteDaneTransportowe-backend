@@ -112,8 +112,8 @@ def test_backs_up_the_database_and_the_data_that_cannot_be_recreated(checkout, b
 @pytest.mark.parametrize(
     ('dump', 'message'),
     [
-        ('', 'the database dump is empty'),
-        ('-- not a custom-format dump', 'pg_restore cannot read it'),
+        ('', 'pg_restore cannot read the database dump'),
+        ('-- not a custom-format dump', 'pg_restore cannot read the database dump'),
         ('fail', 'FAILED (exit 1)'),
     ],
 )
@@ -132,6 +132,8 @@ def test_unchanged_files_are_hard_links_to_the_previous_backup(checkout, backups
     assert run(checkout, backups).returncode == 0
     complete(backups)[0].rename(backups / '20260101T000000Z')
     (checkout / 'uploaded_data/1/static/feed.zip').write_text('a new version')
+    # A scheduled download rewrites an unchanged feed: same content, new time.
+    os.utime(checkout / 'planner_data/snapshots/krakow.zip', (1e9, 1e9))
 
     result = run(checkout, backups)
 

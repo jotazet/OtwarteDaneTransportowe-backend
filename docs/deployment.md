@@ -619,7 +619,7 @@ release-specific steps.
 ## 16. Backups and restore
 
 `scripts/deploy/backup.sh` backs up what cannot be recreated, and `odt-backup.timer` runs it
-every day at 23:15 UTC (before FeedsODT's night jobs and the default planner build;
+every day at 00:15 Europe/Warsaw (before FeedsODT's night jobs and the default planner build;
 [ADR 0014](architecture/decisions/0014-daily-backups-with-a-configurable-off-host-copy.md)):
 
 | Backed up | Not backed up (recreatable) |
@@ -630,8 +630,8 @@ every day at 23:15 UTC (before FeedsODT's night jobs and the default planner bui
 
 Each run writes `~/backups/scheduled/<UTC time>/` (`db.dump`, `uploaded_data/`,
 `planner_data/snapshots/`, mode `700`) and keeps the newest 7. Files unchanged since the
-previous backup are hard links to it, so a day costs the dump plus the changed files
-(`du -sh ~/backups/scheduled` counts each file once). A failed or empty dump, a failed copy or
+previous backup (compared by content) are hard links to it, so a day costs the dump plus the
+changed files (`du -sh ~/backups/scheduled` counts each file once). A failed or empty dump, a failed copy or
 a failed off-host upload stops the run with a non-zero exit and `backup: ... FAILED` in the
 journal; an unfinished run leaves nothing that looks like a backup. The files are copied a few
 minutes after the dump, so a submission saved in between may be in one and not the other.
@@ -640,7 +640,8 @@ are separate.
 
 **Not in the backups: `.env`.** GitHub cannot show a secret again, so keep
 `FEED_AUTH_ENCRYPTION_KEY` (without it stored feed credentials cannot be decrypted after a
-restore) and the other secrets in a password vault.
+restore) and the other secrets in a password vault. The release backups hold a copy of `.env`
+(`~/backups/release-*/env`), on this disk only.
 
 ### Settings
 
@@ -702,9 +703,7 @@ dump alone:
 ./scripts/deploy.sh exec -T postgres pg_restore --list < db.dump > /dev/null && echo readable
 ```
 
-The command documented here before 2026-11-12 (`pg_dump -U "$POSTGRES_USER" ... | gzip`)
-expanded the variables in the host shell, where they are unset, and wrote an empty archive:
-do not rely on `.sql.gz` files made with it.
+`.sql.gz` dumps made with the command documented here before 2026-11-12 are empty.
 
 ### Restoring
 

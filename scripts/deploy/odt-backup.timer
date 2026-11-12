@@ -1,10 +1,10 @@
 # Runs odt-backup.service daily, before FeedsODT's night jobs (00:45 Europe/Warsaw) and the
-# default planner build (01:40 UTC). docs/deployment.md, section 16.
+# default planner build (01:40 UTC) in summer and winter. docs/deployment.md, section 16.
 [Unit]
 Description=Daily ODT backup
 
 [Timer]
-OnCalendar=*-*-* 23:15:00 UTC
+OnCalendar=*-*-* 00:15:00 Europe/Warsaw
 # A run missed while the server was off happens at the next boot.
 Persistent=true
 

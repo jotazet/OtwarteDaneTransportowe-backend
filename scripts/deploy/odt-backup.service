@@ -10,7 +10,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=rocky
-# Root-owned settings: BACKUP_DIR, BACKUP_KEEP, BACKUP_REMOTE, BACKUP_REMOTE_TOOL.
+# Root-owned settings (docs/deployment.md, section 16).
 EnvironmentFile=-/etc/odt/backup.env
 # Through /bin/sh: SELinux does not let systemd execute a file in a home directory.
 ExecStart=/bin/sh /home/rocky/OtwarteDaneTransportowe-backend/scripts/deploy/backup.sh

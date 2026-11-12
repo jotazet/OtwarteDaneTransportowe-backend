@@ -6,17 +6,9 @@
 #
 #   sh scripts/deploy/backup.sh
 #
-# Settings come from the environment; odt-backup.service reads them from /etc/odt/backup.env:
-#   BACKUP_DIR          absolute path of the local backups (default ~/backups/scheduled)
-#   BACKUP_KEEP         how many local backups to keep (default 7)
-#   BACKUP_REMOTE       where each new backup is copied off the host: an rsync destination
-#                       (user@host:path, or a mounted path) or an rclone remote:path.
-#                       Unset: the backup stays on this disk, with a warning.
-#   BACKUP_REMOTE_TOOL  rsync (default) or rclone
-#
-# A backup is written under a temporary name and renamed when complete, so a failed run
-# leaves nothing that looks like a backup. Files unchanged since the previous backup are hard
-# links to it, so a day costs the database dump plus the files that changed.
+# The settings below come from the environment (odt-backup.service reads /etc/odt/backup.env)
+# and are described in docs/deployment.md, section 16. A backup is written under a temporary
+# name and renamed when complete, so a failed run leaves nothing that looks like a backup.
 set -eu
 
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/scheduled}"
@@ -61,9 +53,9 @@ mkdir -m 700 "$partial"
 # Variables expanded inside the container, where the .env values are set.
 ./scripts/deploy.sh exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' \
     > "$partial/db.dump"
-if [ ! -s "$partial/db.dump" ] \
-    || ! ./scripts/deploy.sh exec -T postgres pg_restore --list < "$partial/db.dump" > /dev/null; then
-    log "the database dump is empty or pg_restore cannot read it"
+# pg_restore cannot list an empty or cut-short dump.
+if ! ./scripts/deploy.sh exec -T postgres pg_restore --list < "$partial/db.dump" > /dev/null; then
+    log "pg_restore cannot read the database dump"
     exit 1
 fi
 
@@ -73,10 +65,12 @@ for data in uploaded_data planner_data/snapshots; do
         continue
     fi
     mkdir -p "$partial/$data"
+    # Files with the same content as in the previous backup become hard links to it. Compared
+    # by checksum, not time: scheduled downloads rewrite unchanged feeds every day.
     # */dynamic/ holds the realtime proxy cache, rewritten every few seconds and refetched
     # from the source. Exit 24: a file vanished while it was copied (a validation finishing).
-    rsync -a --exclude='/*/dynamic/' ${previous:+"--link-dest=$previous/$data"} \
-        "$data/" "$partial/$data/" || [ $? -eq 24 ]
+    rsync -a --no-times --checksum --exclude='/*/dynamic/' \
+        ${previous:+"--link-dest=$previous/$data"} "$data/" "$partial/$data/" || [ $? -eq 24 ]
 done
 
 mv "$partial" "$final"
@@ -91,9 +85,8 @@ if [ -z "$BACKUP_REMOTE" ]; then
     log "WARNING: BACKUP_REMOTE is not set, so this backup exists on this disk only"
 elif [ "$BACKUP_REMOTE_TOOL" = rclone ]; then
     rclone copy "$final" "$BACKUP_REMOTE/$name"
-    log "copied to $BACKUP_REMOTE/$name"
 else
-    # Unchanged files become hard links to the previous backup there, if it has it.
+    # Files linked locally are linked to the previous backup there too, if it has it.
     rsync -a ${previous:+"--link-dest=../${previous##*/}"} "$final/" "$BACKUP_REMOTE/$name/"
-    log "copied to $BACKUP_REMOTE/$name"
 fi
+[ -z "$BACKUP_REMOTE" ] || log "copied to $BACKUP_REMOTE/$name"
