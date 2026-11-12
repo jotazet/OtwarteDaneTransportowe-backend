@@ -1,9 +1,11 @@
+import importlib
 import io
 from contextlib import contextmanager
 from datetime import timedelta
 
 import pytest
 import requests
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.utils import timezone
@@ -12,6 +14,7 @@ from rest_framework.test import APIClient
 from cases.models import TransportOrganization
 from data_manager import tasks
 from data_manager.models import (
+    AUTO_PAUSE_RETRY_DELAY,
     FETCH_STATUS_ACTIVE,
     FETCH_STATUS_AUTO_PAUSED,
     FETCH_STATUS_DELAYED,
@@ -26,11 +29,13 @@ from data_manager.models import (
 )
 from data_manager.scheduler import (
     FETCH_OK,
+    FETCH_PERMANENT,
     FETCH_TRANSIENT,
     _fetch_realtime_endpoint_rt,
     _fetch_static_entry,
 )
 from data_manager.tests.test_flow import fake_download
+from data_manager.validators import InvalidFeedContent
 
 pytestmark = pytest.mark.django_db
 
@@ -62,6 +67,11 @@ def helper_user():
 def org(settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
     return TransportOrganization.objects.create(region='R', transport_organization='Org')
+
+
+def _is_daily_retry(feed):
+    remaining = feed.next_fetch_after - timezone.now()
+    return AUTO_PAUSE_RETRY_DELAY - timedelta(minutes=1) < remaining <= AUTO_PAUSE_RETRY_DELAY
 
 
 def _published_static_entry(org, provider_user, **entry_kwargs):
@@ -151,7 +161,7 @@ def test_static_fetch_errors_apply_pause_sequence_and_success_resets(
     entry.refresh_from_db()
     assert entry.fetch_status == FETCH_STATUS_AUTO_PAUSED
     assert entry.fetch_failure_count == 4
-    assert entry.next_fetch_after is None
+    assert _is_daily_retry(entry)
     assert FeedFetchError.objects.filter(static_entry=entry).count() == 4
 
     class Response:
@@ -772,3 +782,185 @@ def test_proxy_feeds_pages_list_every_feed_once_with_polish_names(
     assert len(paged) == len(set(paged))
     assert set(paged) == expected
     assert paged == [(row['source'], row['id']) for row in single_page.data['results']]
+
+
+def _raising_download(exc):
+    @contextmanager
+    def _download(*args, **kwargs):
+        raise exc
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    return _download
+
+
+def _http_error(code):
+    response = requests.Response()
+    response.status_code = code
+    return requests.exceptions.HTTPError(str(code), response=response)
+
+
+LONG_LADDER = [timedelta(minutes=5), timedelta(hours=1), timedelta(hours=6), timedelta(days=1)]
+REALTIME_TRANSIENT_LADDER = [
+    timedelta(seconds=30),
+    timedelta(minutes=2),
+    timedelta(minutes=10),
+    timedelta(hours=1),
+    timedelta(days=1),
+]
+
+
+def _assert_ladder(feed, fetch, ladder):
+    """Fail ``feed`` once per step: each step's delay, then auto-pause and a daily retry."""
+    for count, delay in enumerate(ladder, start=1):
+        started = timezone.now()
+        fetch()
+        feed.refresh_from_db()
+        assert feed.fetch_failure_count == count
+        expected = FETCH_STATUS_DELAYED if count < len(ladder) else FETCH_STATUS_AUTO_PAUSED
+        assert feed.fetch_status == expected
+        assert started + delay <= feed.next_fetch_after <= timezone.now() + delay
+
+
+@pytest.mark.parametrize(
+    'exc',
+    [
+        requests.exceptions.Timeout('timeout'),
+        requests.exceptions.ConnectionError('refused'),
+        _http_error(503),
+        _http_error(429),
+    ],
+    ids=['timeout', 'connection', 'http-503', 'http-429'],
+)
+def test_realtime_transient_errors_use_the_short_ladder(monkeypatch, org, provider_user, exc):
+    endpoint = _published_realtime_endpoint(org, provider_user)
+    monkeypatch.setattr('data_manager.scheduler.safe_download', _raising_download(exc))
+
+    def fetch():
+        assert _fetch_realtime_endpoint_rt(endpoint, timezone.now()) == FETCH_TRANSIENT
+
+    _assert_ladder(endpoint, fetch, REALTIME_TRANSIENT_LADDER)
+
+
+@pytest.mark.parametrize(
+    'exc',
+    [_http_error(404), _http_error(401), InvalidFeedContent('realtime.invalid')],
+    ids=['http-404', 'http-401', 'invalid-content'],
+)
+def test_realtime_permanent_errors_keep_the_long_ladder(monkeypatch, org, provider_user, exc):
+    endpoint = _published_realtime_endpoint(org, provider_user)
+    monkeypatch.setattr('data_manager.scheduler.safe_download', _raising_download(exc))
+
+    def fetch():
+        assert _fetch_realtime_endpoint_rt(endpoint, timezone.now()) == FETCH_PERMANENT
+
+    _assert_ladder(endpoint, fetch, LONG_LADDER)
+
+
+def test_realtime_ladder_follows_the_latest_error(monkeypatch, org, provider_user):
+    endpoint = _published_realtime_endpoint(org, provider_user)
+    monkeypatch.setattr(
+        'data_manager.scheduler.safe_download',
+        _raising_download(requests.exceptions.Timeout('timeout')),
+    )
+    _fetch_realtime_endpoint_rt(endpoint, timezone.now())
+    _fetch_realtime_endpoint_rt(endpoint, timezone.now())
+    monkeypatch.setattr('data_manager.scheduler.safe_download', _raising_download(_http_error(404)))
+
+    started = timezone.now()
+    _fetch_realtime_endpoint_rt(endpoint, started)
+
+    endpoint.refresh_from_db()
+    assert endpoint.fetch_failure_count == 3
+    assert endpoint.next_fetch_after >= started + timedelta(hours=6)
+
+
+@pytest.mark.parametrize('code', [503, 429, 404])
+def test_static_errors_keep_the_long_ladder(monkeypatch, org, provider_user, code):
+    entry = _published_static_entry(org, provider_user)
+    monkeypatch.setattr(
+        'data_manager.scheduler.safe_download', _raising_download(_http_error(code))
+    )
+
+    _assert_ladder(entry, lambda: _fetch_static_entry(entry), LONG_LADDER)
+
+
+def _auto_paused(feed, next_fetch_after):
+    feed.fetch_status = FETCH_STATUS_AUTO_PAUSED
+    feed.fetch_failure_count = 4
+    feed.fetch_pause_reason = 'timeout'
+    feed.next_fetch_after = next_fetch_after
+    feed.save(
+        update_fields=[
+            'fetch_status',
+            'fetch_failure_count',
+            'fetch_pause_reason',
+            'next_fetch_after',
+        ]
+    )
+
+
+def test_auto_paused_static_entry_waits_for_its_daily_retry(monkeypatch, org, provider_user):
+    entry = _published_static_entry(org, provider_user)
+    _auto_paused(entry, timezone.now() + timedelta(hours=1))
+    _mock_static_download(monkeypatch)
+
+    # Not even at its download time: the daily retry is the only attempt.
+    assert _dispatch_ticks(monkeypatch, 1) == []
+    assert tasks.fetch_static_entry_task(entry.pk)['status'] == 'deferred'
+
+
+@pytest.mark.parametrize('fails', [False, True], ids=['success', 'failure'])
+def test_auto_paused_static_entry_is_retried_daily(monkeypatch, org, provider_user, fails):
+    entry = _published_static_entry(org, provider_user)
+    _auto_paused(entry, timezone.now() - timedelta(seconds=1))
+    downloads = _mock_static_download(monkeypatch, fail=fails)
+
+    _run_queued(_dispatch_ticks(monkeypatch, 1))
+
+    assert len(downloads) == 1
+    entry.refresh_from_db()
+    if fails:
+        assert entry.fetch_status == FETCH_STATUS_AUTO_PAUSED
+        assert entry.fetch_failure_count == 5
+        assert entry.fetch_pause_reason == 'timeout'
+        assert _is_daily_retry(entry)
+    else:
+        assert entry.fetch_status == FETCH_STATUS_ACTIVE
+        assert entry.fetch_failure_count == 0
+        assert entry.next_fetch_after is None
+        assert entry.fetch_pause_reason == ''
+
+
+def test_manually_paused_feeds_are_never_retried(monkeypatch, org, provider_user, celery_send_task):
+    entry = _published_static_entry(org, provider_user)
+    endpoint = _published_realtime_endpoint(org, provider_user)
+    for feed in (entry, endpoint):
+        feed.pause_fetch('maintenance')
+        # Even a stray past retry time does not bring a manual pause back.
+        type(feed).objects.filter(pk=feed.pk).update(
+            next_fetch_after=timezone.now() - timedelta(days=2)
+        )
+    _mock_static_download(monkeypatch)
+
+    assert _dispatch_ticks(monkeypatch, 1) == []
+    assert tasks.fetch_static_entry_task(entry.pk)['status'] == 'deferred'
+    assert tasks.bootstrap_realtime_tasks()['bootstrapped'] == 0
+    assert celery_send_task.call_count == 0
+
+
+def test_migration_schedules_daily_retry_of_feeds_auto_paused_before(org, provider_user):
+    migration = importlib.import_module('data_manager.migrations.0017_schedule_auto_paused_retry')
+    entry = _published_static_entry(org, provider_user)
+    endpoint = _published_realtime_endpoint(org, provider_user)
+    manual = _published_static_entry(org, provider_user, url='https://example.org/manual.zip')
+    manual.pause_fetch('maintenance')
+    for feed in (entry, endpoint):
+        _auto_paused(feed, None)
+
+    migration.schedule_daily_retry(apps, None)
+
+    for feed in (entry, endpoint):
+        feed.refresh_from_db()
+        assert feed.fetch_is_due()
+    manual.refresh_from_db()
+    assert manual.next_fetch_after is None

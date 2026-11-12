@@ -150,18 +150,21 @@ Static and realtime feeds also return fetch health fields in their serializers (
 
 `fetch_pause_reason`, `last_fetch_error_message` and the server logs show the source URL without userinfo (`user:pass@`), query string and fragment, where providers put credentials (`data_manager.net_security.redact_url`).
 
-After consecutive failed fetches the system automatically postpones the next attempts:
+After consecutive failed fetches the system automatically postpones the next attempts. A realtime endpoint that fails with a **transient** error (timeout, connection error, a body cut off mid-transfer, HTTP 5xx or 429) retries sooner, because realtime data is worthless after an hour; static feeds and **permanent** errors (HTTP 401/403/404 and other 4xx, a blocked URL, content that is not a valid feed) use the long ladder:
 
-| Consecutive error | Behaviour |
-|-------------------|-----------|
-| 1 | `fetch_status=delayed`, next attempt after 5 minutes |
-| 2 | `fetch_status=delayed`, next attempt after 1 hour |
-| 3 | `fetch_status=delayed`, next attempt after 6 hours |
-| 4 | `fetch_status=auto_paused`, no further automatic attempts |
+| Consecutive error | Static feed, or realtime permanent error | Realtime transient error |
+|-------------------|------------------------------------------|--------------------------|
+| 1 | `delayed`, next attempt after 5 minutes | `delayed`, after 30 seconds |
+| 2 | `delayed`, after 1 hour | `delayed`, after 2 minutes |
+| 3 | `delayed`, after 6 hours | `delayed`, after 10 minutes |
+| 4 | `auto_paused`, retried once a day | `delayed`, after 1 hour |
+| 5 and more | `auto_paused`, retried once a day | `auto_paused`, retried once a day |
 
-The first successful fetch resets the error counter to zero and sets `fetch_status=active`.
+The error counter spans both ladders and the latest error picks one: a realtime endpoint that timed out twice and then returns 404 waits 6 hours (step 3 of the long ladder).
 
-A delayed realtime endpoint has no fetch queued: the periodic realtime bootstrap (every 5 minutes) resumes it once `next_fetch_after` has passed, so the actual retry comes up to 5 minutes after the time in the table. Static feeds are retried by the per-minute dispatcher.
+An auto-paused feed is not given up on: `next_fetch_after` is set 24 hours ahead and the feed is tried once more when it passes. A failed daily retry keeps it `auto_paused` until the next day (the counter keeps growing); a static feed is not fetched at its `download_time_1/2` in the meantime. The first successful fetch, a daily retry included, resets the error counter to zero, sets `fetch_status=active` and clears `next_fetch_after` and `fetch_pause_reason`. A `manual_paused` feed is never retried automatically.
+
+A realtime back-off step shorter than the bootstrap period (5 minutes, so the 30-second and 2-minute steps) is queued as the endpoint's next fetch. A longer step and the daily retry have no fetch queued: the periodic realtime bootstrap (every 5 minutes) resumes the endpoint once `next_fetch_after` has passed, so the actual retry comes up to 5 minutes after the time in the table. Static feeds are retried by the per-minute dispatcher.
 
 A manual pause is never undone by a fetch: a download that was already running when `pause-fetch` was called still records `last_fetch_success_at` or `last_fetch_error_at` (and its `FeedFetchError`), but `fetch_status`, the error counter and `fetch_pause_reason` stay as the pause set them, and the realtime loop stops. Only `resume-fetch` lifts it.
 
@@ -210,7 +213,7 @@ Example item from `GET /api/data_manager/proxy-feeds/`:
 }
 ```
 
-The static scheduler and the realtime loop do not fetch feeds that are `manual_paused`, `auto_paused`, or `delayed` before `next_fetch_after`. `resume-fetch` also cancels the temporary retry block.
+The static scheduler and the realtime loop do not fetch feeds that are `manual_paused`, or `delayed` or `auto_paused` before `next_fetch_after`. `resume-fetch` also cancels the temporary retry block.
 
 ## Who sees what
 
