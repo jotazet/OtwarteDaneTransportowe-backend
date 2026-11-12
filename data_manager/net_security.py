@@ -281,20 +281,15 @@ def _pinned_dns(hostname: str, allowed_ips: set[str]):
 # seconds; the chain must not be re-fetched each time.
 _AIA_BUNDLE_CACHE: dict[tuple[str, int], str] = {}
 _AIA_INTERMEDIATE_MAX_BYTES = 100_000
-# requests' ``verify`` takes a path, not PEM data, so the bundles are files.
-# They are named after their content and shared by all worker processes: a
-# recycled worker child that rebuilds a bundle rewrites the same file instead
-# of leaving another one behind, so nothing has to be removed at exit (which
-# billiard children may skip).
+# requests' ``verify`` takes a path, so the bundles are files, named after
+# their content: a recycled worker child rewrites the same file instead of
+# leaving another behind (billiard children may skip atexit cleanup).
 _AIA_BUNDLE_DIR = os.path.join(tempfile.gettempdir(), 'odt-ca-aia')
 
 
 def _write_aia_bundle(pem: str) -> str | None:
-    """Path of the bundle file holding ``pem``, or None when it cannot be trusted.
-
-    A bundle is a trust anchor: the directory must be ours and closed to others,
-    or another local user could plant a root certificate in it.
-    """
+    """Path of the file holding ``pem``; None unless the directory is ours alone
+    (a bundle is a trust anchor, so nobody else may plant a root in it)."""
     try:
         os.makedirs(_AIA_BUNDLE_DIR, mode=0o700, exist_ok=True)
         info = os.lstat(_AIA_BUNDLE_DIR)

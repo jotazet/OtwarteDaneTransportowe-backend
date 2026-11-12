@@ -3,6 +3,7 @@ socket.getaddrinfo and HTTP via requests.get, except the tests at the end, which
 use real HTTP on 127.0.0.1 (the ``local_server`` fixture)."""
 
 import gzip
+import os
 import socket
 import time
 from urllib.parse import urlsplit
@@ -10,6 +11,7 @@ from urllib.parse import urlsplit
 import pytest
 import requests
 
+import data_manager.net_security as ns
 from data_manager.net_security import (
     OutboundURLBlocked,
     ResponseTooLarge,
@@ -846,8 +848,6 @@ def aia_server(monkeypatch, tmp_path):
     import ssl
     from types import SimpleNamespace
 
-    import data_manager.net_security as ns
-
     leaf_pem, intermediate_der = _leaf_with_aia_and_intermediate_der()
     handshakes = []
 
@@ -865,26 +865,22 @@ def aia_server(monkeypatch, tmp_path):
     return handshakes
 
 
-def test_aia_bundle_cache_key_includes_the_port(aia_server):
-    import data_manager.net_security as ns
+def _bundle(port=443):
+    return ns._ca_bundle_with_aia_intermediates('feed.example.org', port, {'93.184.216.34'})
 
-    ips = {'93.184.216.34'}
-    first = ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, ips)
-    assert ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, ips) == first
-    ns._ca_bundle_with_aia_intermediates('feed.example.org', 8443, ips)
+
+def test_aia_bundle_cache_key_includes_the_port(aia_server):
+    assert _bundle() == _bundle()
+    _bundle(8443)
 
     assert aia_server == [('feed.example.org', 443), ('feed.example.org', 8443)]
 
 
 def test_aia_bundles_do_not_accumulate_across_worker_processes(aia_server):
     """A recycled worker child (empty cache) rewrites the same file (issue #47)."""
-    import os
-
-    import data_manager.net_security as ns
-
-    first = ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, {'93.184.216.34'})
+    first = _bundle()
     ns._AIA_BUNDLE_CACHE.clear()
-    again = ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, {'93.184.216.34'})
+    again = _bundle()
 
     assert again == first
     assert os.listdir(ns._AIA_BUNDLE_DIR) == [os.path.basename(first)]
@@ -894,24 +890,16 @@ def test_aia_bundles_do_not_accumulate_across_worker_processes(aia_server):
 
 
 def test_aia_bundle_is_rebuilt_when_its_file_is_gone(aia_server):
-    import os
-
-    import data_manager.net_security as ns
-
-    first = ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, {'93.184.216.34'})
+    first = _bundle()
     os.unlink(first)
 
-    assert ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, {'93.184.216.34'}) == first
+    assert _bundle() == first
     assert os.path.exists(first)
 
 
 def test_aia_bundle_refused_in_a_directory_others_can_write(aia_server):
     """A bundle is a trust anchor: a planted root there would pass verification."""
-    import os
-
-    import data_manager.net_security as ns
-
     os.makedirs(ns._AIA_BUNDLE_DIR)
     os.chmod(ns._AIA_BUNDLE_DIR, 0o777)
 
-    assert ns._ca_bundle_with_aia_intermediates('feed.example.org', 443, {'93.184.216.34'}) is None
+    assert _bundle() is None
