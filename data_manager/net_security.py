@@ -95,13 +95,9 @@ def redact_url(url: str) -> str:
     """
     try:
         parts = urlsplit(url)
-        host = parts.hostname or ""
-        port = parts.port
     except ValueError:
         return "<invalid URL>"
-    if ":" in host:  # IPv6 literal
-        host = f"[{host}]"
-    netloc = f"{host}:{port}" if port else host
+    netloc = parts.netloc.rpartition("@")[2]
     return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 

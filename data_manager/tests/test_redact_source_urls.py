@@ -92,6 +92,4 @@ def test_fetch_failure_stores_and_logs_no_secret(entry, monkeypatch, caplog, mak
     error = FeedFetchError.objects.get(static_entry=entry)
     assert 'example.org' in error.message
     stored = (error.message, entry.fetch_pause_reason, caplog.text)
-    for text in stored:
-        for secret in SECRETS:
-            assert secret not in text
+    assert not any(secret in text for text in stored for secret in SECRETS)
