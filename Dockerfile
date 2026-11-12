@@ -43,7 +43,6 @@ RUN DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_dev python manage.py
 
 # Fail closed: a container started without DJANGO_SETTINGS_MODULE (a new Compose service,
 # a bare `docker run`) gets the production settings, which refuse placeholder secrets.
-# docker-compose.yml sets the development settings through .env.example.
 ENV DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
 
 RUN groupadd --system app \

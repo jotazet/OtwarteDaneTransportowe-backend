@@ -12,8 +12,7 @@ import os
 
 from celery import Celery
 
-# Without DJANGO_SETTINGS_MODULE it fails closed on the production settings; development
-# sets it (docker-compose.yml through .env.example, pytest through pytest.ini).
+# Without DJANGO_SETTINGS_MODULE it fails closed on the production settings.
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'OtwarteDaneTransportowe.settings_prod')
 
 app = Celery('OtwarteDaneTransportowe')

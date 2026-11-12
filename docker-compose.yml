@@ -33,8 +33,7 @@ x-app-service: &app-service
     - no-new-privileges:true
   cap_drop:
     - ALL
-  # .env.example sets the development settings (DJANGO_SETTINGS_MODULE); the image itself
-  # defaults to the production ones. Production's .env and docker-compose.prod.yml replace them.
+  # .env.example sets the development settings; the image defaults to the production ones.
   env_file:
     - path: .env.example
       required: false

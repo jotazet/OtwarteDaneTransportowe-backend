@@ -92,7 +92,6 @@ jobs:
           -e TRUSTED_PROXY_CIDRS=172.16.0.0/12
           odt-backend python manage.py check
       - run: docker run --rm --entrypoint gunicorn odt-backend --version
-      # Without DJANGO_SETTINGS_MODULE the image fails closed instead of running settings_dev.
       - name: Check that the image defaults to the production settings
         run: >-
           docker run --rm odt-backend python -c

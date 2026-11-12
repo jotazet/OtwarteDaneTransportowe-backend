@@ -11,7 +11,7 @@ import os
 
 from django.core.wsgi import get_wsgi_application
 
-# Production entry point: without DJANGO_SETTINGS_MODULE it fails closed on prod settings.
+# Without DJANGO_SETTINGS_MODULE it fails closed on the production settings.
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'OtwarteDaneTransportowe.settings_prod')
 
 application = get_wsgi_application()
