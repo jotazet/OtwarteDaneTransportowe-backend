@@ -52,7 +52,11 @@ class BuildFailed(Exception):
 
 
 class BuildAborted(BuildFailed):
-    """The build's row is no longer RUNNING: the watchdog declared it interrupted."""
+    """The build's row is no longer RUNNING: the watchdog declared it interrupted.
+
+    A BuildFailed, so a step's own cleanup (temporary files, putting the previous
+    graph back) still runs; run_build then leaves the row as the watchdog wrote it.
+    """
 
     def __init__(self):
         super().__init__('planner.build_interrupted')
@@ -125,7 +129,9 @@ def run_build(build_id: int) -> None:
         build.save(update_fields=['status', 'started_at', 'heartbeat_at'])
 
     workdir = data_path('builds', str(build.id))
-    aborted = False
+    # False once the watchdog has failed the row: it then owns serving, and a newer
+    # build may already be using the maintenance window, so OTP is not started here.
+    owns_row = True
     try:
         if build.rollback_of_id:
             _stop_serving(build)
@@ -134,20 +140,18 @@ def run_build(build_id: int) -> None:
         else:
             _build_and_activate(build, workdir)
     except BuildAborted:
-        # The watchdog failed the row and now owns serving: a newer build may already
-        # be using the maintenance window, so do not start OTP here.
-        aborted = True
+        owns_row = False
         logger.error('Graph build %s was declared interrupted; stopped it', build.id)
     except BuildFailed as exc:
-        _finish_failed(build, exc.code, exc.log)
+        owns_row = _finish_failed(build, exc.code, exc.log)
     except otp_runtime.DockerUnavailable as exc:
-        _finish_failed(build, 'planner.docker_unavailable', str(exc))
+        owns_row = _finish_failed(build, 'planner.docker_unavailable', str(exc))
     except Exception:  # noqa: BLE001 - any unexpected failure must still end the build
         logger.exception('Graph build %s crashed', build.id)
-        _finish_failed(build, 'planner.build_failed')
+        owns_row = _finish_failed(build, 'planner.build_failed')
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
-        if build.otp_stopped_at and not aborted:
+        if build.otp_stopped_at and owns_row:
             _start_serving()
     refresh_index()
 
@@ -687,15 +691,21 @@ def _update_running(build: GraphBuild, **fields) -> None:
         raise BuildAborted
 
 
-def _finish_failed(build: GraphBuild, code: str, log: str = '') -> None:
-    """Fail the build unless the watchdog already has (its code stays then)."""
-    GraphBuild.objects.filter(pk=build.pk, status=GraphBuild.STATUS_RUNNING).update(
-        status=GraphBuild.STATUS_FAILED,
-        finished_at=timezone.now(),
-        error_code=code,
-        log_excerpt=log[-LOG_EXCERPT_CHARS:],
-    )
+def _finish_failed(build: GraphBuild, code: str, log: str = '') -> bool:
+    """Fail the build; False if the watchdog already had (its code stays then)."""
+    try:
+        _update_running(
+            build,
+            status=GraphBuild.STATUS_FAILED,
+            finished_at=timezone.now(),
+            error_code=code,
+            log_excerpt=log[-LOG_EXCERPT_CHARS:],
+        )
+    except BuildAborted:
+        logger.error('Graph build %s was declared interrupted before failing: %s', build.id, code)
+        return False
     logger.error('Graph build %s failed: %s', build.id, code)
+    return True
 
 
 def _build_error_code(result: otp_runtime.RunResult, default: str) -> str:

@@ -156,13 +156,12 @@ def _osmium(*args, on_tick=None):
     deadline = time.monotonic() + OSMIUM_TIMEOUT_SECONDS
     try:
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise OsmPreparationError(f'osmium {args[0]} timed out')
             try:
-                returncode = process.wait(timeout=min(OSMIUM_POLL_SECONDS, remaining))
+                returncode = process.wait(timeout=OSMIUM_POLL_SECONDS)
                 break
             except subprocess.TimeoutExpired:
+                if time.monotonic() > deadline:
+                    raise OsmPreparationError(f'osmium {args[0]} timed out') from None
                 if on_tick:
                     on_tick()
     finally:

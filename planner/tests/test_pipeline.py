@@ -283,8 +283,10 @@ def test_build_declared_interrupted_during_osmium_stops_without_activating(
     beats = []
 
     def prepare_osm(source, cells, target, on_tick=None):
+        running = GraphBuild.objects.filter(status=GraphBuild.STATUS_RUNNING)
+        running.update(heartbeat_at=timezone.now() - timedelta(minutes=10))
         on_tick()  # osmium is running: the heartbeat is refreshed
-        beats.append(GraphBuild.objects.get(status=GraphBuild.STATUS_RUNNING).heartbeat_at)
+        beats.append(running.get().heartbeat_at)
         declare_interrupted()
         on_tick()  # the next heartbeat finds the build failed
 
@@ -292,7 +294,7 @@ def test_build_declared_interrupted_during_osmium_stops_without_activating(
 
     build = build_now()
 
-    assert beats
+    assert beats[0] > timezone.now() - timedelta(minutes=1)
     assert (build.status, build.error_code) == ('failed', 'planner.build_interrupted')
     assert 'street' not in fake_otp.kinds() and 'graph' not in fake_otp.kinds()
     # Serving is the watchdog's again: the aborted build does not start OTP.
@@ -327,6 +329,27 @@ def test_build_declared_interrupted_during_activation_never_becomes_active(
     assert fake_otp.events == ['stop', 'start', 'stop']
     feed.refresh_from_db()
     assert feed.last_good_sha256 == last_good
+
+
+def test_build_failing_after_it_was_declared_interrupted_leaves_serving_alone(
+    make_feed, fake_otp, monkeypatch
+):
+    make_feed('krk')
+    real_run_otp = fake_otp.run_otp
+
+    def run_otp(host_dir, args, **kwargs):
+        if args == ['--loadStreet', '--save']:
+            # ensure_serving removed the container before the build's next heartbeat.
+            declare_interrupted()
+            return pipeline.otp_runtime.RunResult(exit_code=137, oom=False, log_tail='')
+        return real_run_otp(host_dir, args, **kwargs)
+
+    monkeypatch.setattr(pipeline.otp_runtime, 'run_otp', run_otp)
+
+    build = build_now()
+
+    assert (build.status, build.error_code) == ('failed', 'planner.build_interrupted')
+    assert fake_otp.events == ['stop']
 
 
 def test_watchdog_does_not_overwrite_a_finished_build(make_feed, fake_otp):

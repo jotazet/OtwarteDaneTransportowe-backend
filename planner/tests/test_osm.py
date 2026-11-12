@@ -7,33 +7,29 @@ import pytest
 
 from planner import osm
 
+NEVER = 10**6
+
 
 class FakeOsmium:
-    """A Popen that finishes after ``waits`` polls (never, if None)."""
+    """A Popen that exits with ``returncode`` after ``waits`` polls of a few ms each."""
 
-    def __init__(self, waits=None, returncode=0):
+    def __init__(self, waits=NEVER, returncode=0):
         self.waits = waits
-        self.final_returncode = returncode
-        self.returncode = None
+        self.exit_code = returncode
         self.killed = False
 
     def wait(self, timeout=None):
-        if self.returncode is not None:
-            return self.returncode
-        if self.waits == 0:
-            self.returncode = self.final_returncode
-            return self.returncode
-        if self.waits is not None:
-            self.waits -= 1
-        time.sleep(min(timeout, 0.01))
+        if self.killed or not self.waits:
+            return self.poll()
+        self.waits -= 1
+        time.sleep(0.005)
         raise subprocess.TimeoutExpired('osmium', timeout)
 
     def poll(self):
-        return self.returncode
+        return -9 if self.killed else (None if self.waits else self.exit_code)
 
     def kill(self):
         self.killed = True
-        self.returncode = -9
 
 
 @pytest.fixture
@@ -69,9 +65,8 @@ def test_heartbeat_is_called_while_osmium_runs(popen, tmp_path):
 
 
 def test_osmium_is_killed_when_it_runs_past_the_timeout(popen, monkeypatch):
-    started = popen(waits=None)
+    started = popen()
     monkeypatch.setattr(osm, 'OSMIUM_TIMEOUT_SECONDS', 0.05)
-    monkeypatch.setattr(osm, 'OSMIUM_POLL_SECONDS', 0.01)
     ticks = []
 
     with pytest.raises(osm.OsmPreparationError, match='timed out'):
@@ -82,7 +77,7 @@ def test_osmium_is_killed_when_it_runs_past_the_timeout(popen, monkeypatch):
 
 
 def test_osmium_is_killed_when_the_heartbeat_stops_the_build(popen):
-    started = popen(waits=None)
+    started = popen()
 
     def stop():
         raise RuntimeError('build aborted')
