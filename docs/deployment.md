@@ -681,7 +681,7 @@ it now defaults to `False` in `settings_prod`.
 
 **A Celery worker or `celery_beat` is `unhealthy`**
 → A worker is healthy while it answers `celery inspect ping` over Redis (checked every
-minute, unhealthy after about 3 minutes without a reply), also during a long task such as a
+2 minutes, unhealthy after 3 checks without a reply), also during a long task such as a
 graph build: look at its logs and at Redis. `celery_beat` is healthy while its scheduler
 finishes a tick at least once a minute (`/tmp/celery-beat-heartbeat`); a beat that waits on
 the database stops ticking. Docker does not restart an unhealthy container: restart it with
@@ -885,12 +885,11 @@ flowchart LR
    yet), dumps the database with the current `.env` and commit into
    `~/backups/release-<UTC time>-<tag>/` (keeps the newest 10), installs the new `.env`,
    runs `up -d --wait` (the `migrate` service first, then every service is recreated) and
-   waits up to 5 minutes for every service to pass its healthcheck: `web` answers, each
-   Celery worker answers a ping and `celery_beat` ticks. A service that exits, keeps
-   restarting or turns unhealthy fails the release. Only then is the image tagged
-   `odt-backend:<tag>` (the newest 3 `vX.Y.Z` tags are kept, for a rollback), and replaced
-   `odt-backend` images and build cache older than 7 days (of every project on the host)
-   are removed. Any failure stops it and the job turns red.
+   waits up to 5 minutes for every service to pass its healthcheck
+   ([section 18](#18-troubleshooting)); one that exits, keeps restarting or turns unhealthy
+   fails the release. Only then is the image tagged `odt-backend:<tag>` (the newest 3 are
+   kept, for a rollback), and replaced `odt-backend` images and build cache older than 7
+   days (of every project on the host) are removed. Any failure stops it and the job turns red.
 
 A release during a **planner graph build** stops before it changes anything (the build takes
 up to 8 GB of RAM and swap, and the release would restart its worker): re-run the job when the
@@ -1067,7 +1066,4 @@ release's run (it uses the workflow of that tag and today's settings).
   docker image tag odt-backend:<last good vX.Y.Z> odt-backend:latest && ./scripts/deploy.sh up -d
   ```
 
-  The checkout and `.env` stay on the new release until the next deployment. Releases
-  before this scheme tagged the image `odt-backend:previous`, which may point at a failed
-  build; remove it with `docker image rm odt-backend:previous` once a release has a
-  `vX.Y.Z` tag.
+  The checkout and `.env` stay on the new release until the next deployment.

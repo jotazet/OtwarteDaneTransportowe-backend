@@ -32,13 +32,11 @@ x-app-service: &app-service
   volumes:
     - .:/app
 
-# A worker's main process answers the ping also while its pool runs a long task (a planner
-# graph build takes hours). One short message over the broker a minute per worker; unhealthy
-# after about 3 minutes without a reply. Nothing restarts an unhealthy container: the state
-# is for `docker compose ps` and the release (scripts/deploy/release.sh, `up --wait`).
+# The worker's main process answers the ping also while its pool runs a long task (a planner
+# graph build takes hours). Each check starts a Python process that loads the Celery app.
 x-worker-healthcheck: &worker-healthcheck
   test: ["CMD-SHELL", "celery -A OtwarteDaneTransportowe inspect ping --timeout 10 -d celery@$$HOSTNAME > /dev/null"]
-  interval: 60s
+  interval: 120s
   timeout: 30s
   retries: 3
   start_period: 60s
@@ -140,8 +138,8 @@ services:
   celery_beat:
     <<: *app-service
     container_name: odt-celery-beat
-    # The schedule is kept in PostgreSQL (PeriodicTask); CELERY_BEAT_SCHEDULER picks the
-    # scheduler, which touches the heartbeat file after every tick (at least every 5 s).
+    # The schedule is kept in PostgreSQL (PeriodicTask). The healthcheck reads the file that
+    # CELERY_BEAT_SCHEDULER touches after every tick (HEARTBEAT_FILE in celery_beat.py).
     command: celery -A OtwarteDaneTransportowe beat --loglevel=info
     healthcheck:
       test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/celery-beat-heartbeat') > 60)"]

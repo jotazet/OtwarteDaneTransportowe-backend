@@ -27,8 +27,8 @@ FAKE_GIT = '#!/bin/sh\necho 0123abc\n'
 
 
 @pytest.fixture
-def checkout(tmp_path):
-    """A checkout with release.sh, fake helpers and fake commands on PATH."""
+def sandbox(tmp_path):
+    """A checkout with release.sh and fake helpers, fake commands on PATH, and their state."""
     root = tmp_path / 'checkout'
     (root / 'scripts' / 'deploy').mkdir(parents=True)
     shutil.copy(RELEASE, root / 'scripts' / 'deploy' / 'release.sh')
@@ -41,35 +41,34 @@ def checkout(tmp_path):
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     (tmp_path / 'home').mkdir()
-    (tmp_path / 'tags').touch()
     (tmp_path / 'new.env').write_text('A=1\n')
     return tmp_path
 
 
-def release(checkout, label='v1.4.0', tags=()):
-    (checkout / 'tags').write_text(''.join(f'{tag}\n' for tag in tags))
+def release(sandbox, label='v1.4.0', tags=()):
+    (sandbox / 'tags').write_text(''.join(f'{tag}\n' for tag in tags))
     env = {
-        'PATH': f'{checkout / "bin"}:/usr/bin:/bin',
-        'HOME': str(checkout / 'home'),
-        'STATE': str(checkout),
+        'PATH': f'{sandbox / "bin"}:/usr/bin:/bin',
+        'HOME': str(sandbox / 'home'),
+        'STATE': str(sandbox),
     }
     result = subprocess.run(
         [
             'sh',
-            str(checkout / 'checkout' / 'scripts' / 'deploy' / 'release.sh'),
+            str(sandbox / 'checkout' / 'scripts' / 'deploy' / 'release.sh'),
             label,
-            str(checkout / 'new.env'),
+            str(sandbox / 'new.env'),
         ],
         env=env,
         capture_output=True,
         text=True,
     )
-    log = checkout / 'calls.log'
+    log = sandbox / 'calls.log'
     return result, log.read_text().splitlines() if log.exists() else []
 
 
-def test_a_release_waits_for_every_service_and_tags_its_image(checkout):
-    result, calls = release(checkout)
+def test_a_release_waits_for_every_service_and_tags_its_image(sandbox):
+    result, calls = release(sandbox)
 
     assert result.returncode == 0, result.stderr
     assert 'compose up -d --wait --wait-timeout 300' in calls
@@ -77,38 +76,37 @@ def test_a_release_waits_for_every_service_and_tags_its_image(checkout):
     assert 'release: v1.4.0 is live' in result.stdout
 
 
-def test_an_unhealthy_service_fails_the_release_without_tagging_its_image(checkout):
-    (checkout / 'wait-fails').touch()
+def test_an_unhealthy_service_fails_the_release_without_tagging_its_image(sandbox):
+    (sandbox / 'wait-fails').touch()
 
-    result, calls = release(checkout, tags=['latest', 'v1.3.0'])
+    result, calls = release(sandbox, tags=['latest', 'v1.3.0'])
 
     assert result.returncode == 1
     assert 'not every service became healthy' in result.stderr
     assert 'compose ps -a' in calls
     assert not any(call.startswith('docker image tag') for call in calls)
     assert not any(call.startswith('docker image rm') for call in calls)
-    assert (checkout / 'tags').read_text() == 'latest\nv1.3.0\n'
+    assert (sandbox / 'tags').read_text() == 'latest\nv1.3.0\n'
 
 
-def test_only_the_newest_release_images_are_kept(checkout):
+def test_only_the_newest_release_images_are_kept(sandbox):
     result, calls = release(
-        checkout,
+        sandbox,
         label='v1.10.0',
         tags=['latest', 'previous', 'pre-main', 'v1.2.0', 'v1.9.0', 'v1.8.1'],
     )
 
     assert result.returncode == 0, result.stderr
     # v1.10.0, v1.9.0 and v1.8.1 stay; tags not of a release are never removed.
-    assert 'docker image rm odt-backend:v1.2.0' in calls
     assert [call for call in calls if call.startswith('docker image rm')] == [
         'docker image rm odt-backend:v1.2.0'
     ]
 
 
-@pytest.mark.parametrize('label', ['', '-v1', 'v1.4.0;id', 'a/b', '.hidden'])
-def test_a_label_that_is_not_an_image_tag_is_refused_before_anything_runs(checkout, label):
-    result, calls = release(checkout, label=label)
+@pytest.mark.parametrize('label', ['', 'main', 'v1.4', 'v1.4.0-rc1', 'v1.4.0;id'])
+def test_a_label_that_is_not_a_release_tag_is_refused_before_anything_runs(sandbox, label):
+    result, calls = release(sandbox, label=label)
 
     assert result.returncode == 1
-    assert 'must be a valid image tag' in result.stderr
+    assert 'expected a release tag vX.Y.Z' in result.stderr
     assert calls == []

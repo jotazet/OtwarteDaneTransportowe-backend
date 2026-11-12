@@ -5,7 +5,7 @@
 # it after checking out the tag (docs/deployment.md, section 20); it also works by hand from
 # the checkout:
 #
-#   sh scripts/deploy/release.sh <label> <new .env>
+#   sh scripts/deploy/release.sh vX.Y.Z <new .env>
 set -eu
 
 tag="$1"
@@ -17,13 +17,11 @@ WAIT_TIMEOUT=300
 cd "$(dirname "$0")/../.."
 log() { echo "release: $*"; }
 
-# The label becomes an image tag (odt-backend:<label>) once the release is live.
-case "$tag" in
-    '' | [.-]* | *[!A-Za-z0-9_.-]*)
-        log "the label must be a valid image tag (letters, digits, _ . -), got '$tag'" >&2
-        exit 1
-        ;;
-esac
+# The version becomes an image tag (odt-backend:vX.Y.Z) once the release is live.
+if ! printf '%s\n' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+    log "expected a release tag vX.Y.Z, got '$tag'" >&2
+    exit 1
+fi
 
 # A planner graph build or feed test (containers labelled odt.planner) holds up to 8 GB of
 # RAM and swap: an image build beside it risks the OOM killer, and the release would
@@ -61,7 +59,7 @@ if ! ./scripts/deploy.sh up -d --wait --wait-timeout "$WAIT_TIMEOUT"; then
     exit 1
 fi
 # Only a release that passed gets an image tag, so a failed one, retried or not, never
-# replaces a good rollback image (section 20). The newest $RELEASES_KEEP vX.Y.Z stay.
+# replaces a good rollback image (section 20). The newest $RELEASES_KEEP stay.
 docker image tag odt-backend:latest "odt-backend:$tag"
 log "$tag is live"
 
