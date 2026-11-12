@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management import CommandError, call_command
 from django.db import connection
@@ -54,7 +55,9 @@ def keys(settings):
 
 @pytest.fixture
 def user():
-    return get_user_model().objects.create_user('provider', 'p@example.com', 'password')
+    user = get_user_model().objects.create_user('provider', 'p@example.com', 'password')
+    user.groups.add(Group.objects.get_or_create(name='DataProvider')[0])
+    return user
 
 
 @pytest.fixture
@@ -123,6 +126,28 @@ def _decrypt_with(key, stored):
 # ---------------------------------------------------------------------------
 # The field
 # ---------------------------------------------------------------------------
+
+
+def test_round_trip_stores_only_ciphertext(org, user):
+    entry = _entry(org, user)
+
+    assert 'top-secret' not in _stored(entry)
+    assert _decrypt_with(KEY_0, _stored(entry)) == 'top-secret'
+    entry.refresh_from_db()
+    assert entry.auth_value == 'top-secret'
+
+
+def test_legacy_plaintext_row_is_read_unchanged(org, user):
+    entry = _entry(org, user)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f'UPDATE {entry._meta.db_table} SET auth_value = %s WHERE id = %s',
+            ['legacy-plain', entry.pk],
+        )
+
+    entry.refresh_from_db()
+
+    assert entry.auth_value == 'legacy-plain'
 
 
 def test_prefixed_input_is_encrypted_like_any_other(org, user):
@@ -270,6 +295,26 @@ def test_realtime_verification_stays_at_stage_2(keys, org, user):
     assert result == {'status': CREDENTIAL_UNDECRYPTABLE, 'id': endpoint.submission_id}
     endpoint.submission.refresh_from_db()
     assert endpoint.submission.current_stage == 2
+
+
+def test_realtime_edit_keeps_an_undecryptable_credential(keys, org, user):
+    from rest_framework.test import APIClient
+
+    endpoint = _endpoint(org, user)
+    stored = _stored(endpoint)
+    keys.FEED_AUTH_ENCRYPTION_KEY = KEY_1
+    client = APIClient()
+    client.force_authenticate(user=user)
+
+    with patch('data_manager.api.serializers.assert_safe_outbound_url'):
+        response = client.patch(
+            f'/api/data_manager/realtime-submissions/{endpoint.submission_id}/',
+            {'endpoints': [{'endpoint_type': 'gbfs', 'url': endpoint.url, 'auth_type': 'api_key'}]},
+            format='json',
+        )
+
+    assert response.status_code == 200, response.data
+    assert _stored(RealtimeEndpointRT.objects.get(submission=endpoint.submission)) == stored
 
 
 # ---------------------------------------------------------------------------

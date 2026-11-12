@@ -35,7 +35,9 @@ the key could never change.
 - A key mistake shows up as coded fetch errors on the affected feeds, not as a broken
   catalogue: rows still load, and every page that does not use the credential works.
 - Every reader of `auth_value` must go through `_build_auth_headers` (the scheduler and the
-  validation tasks do); a new reader must handle `UndecryptableValue` too.
+  validation tasks do); a new reader must handle `UndecryptableValue` too. Code that keeps
+  the stored credential on an edit passes it through unchanged (the admin form, and the
+  realtime endpoint serializer's `_CredentialField`).
 - Backups taken before a rotation need the old key; it stays in the vault until they expire.
 
 ## Alternatives considered

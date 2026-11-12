@@ -56,16 +56,11 @@ def _log_once(level: int, message: str) -> None:
     logger.log(level, message)
 
 
-@functools.lru_cache(maxsize=4)
-def _multi_fernet(key: str, old_keys: tuple[str, ...]) -> MultiFernet:
-    return MultiFernet([Fernet(k) for k in (key, *old_keys)])
-
-
 def _fernet() -> MultiFernet | None:
     key = settings.FEED_AUTH_ENCRYPTION_KEY
     if not key:
         return None
-    return _multi_fernet(key, tuple(settings.FEED_AUTH_ENCRYPTION_OLD_KEYS))
+    return MultiFernet([Fernet(k) for k in (key, *settings.FEED_AUTH_ENCRYPTION_OLD_KEYS)])
 
 
 class EncryptedCharField(models.TextField):

@@ -46,13 +46,17 @@ def validate_feed_auth_encryption_keys(key: str | None, old_keys: list[str]) -> 
             'FEED_AUTH_ENCRYPTION_KEY must be set in production: without it feed '
             'credentials would be stored as plaintext. See docs/deployment.md.'
         )
-    for name, value in [('FEED_AUTH_ENCRYPTION_KEY', key)] + [
-        ('FEED_AUTH_ENCRYPTION_OLD_KEYS', k) for k in old_keys
-    ]:
-        try:
-            Fernet(value)
-        except ValueError:
-            raise ImproperlyConfigured(f'{name} holds a value that is not a Fernet key.') from None
+    try:
+        Fernet(key)
+    except ValueError:
+        raise ImproperlyConfigured('FEED_AUTH_ENCRYPTION_KEY is not a Fernet key.') from None
+    try:
+        for old_key in old_keys:
+            Fernet(old_key)
+    except ValueError:
+        raise ImproperlyConfigured(
+            'FEED_AUTH_ENCRYPTION_OLD_KEYS holds a value that is not a Fernet key.'
+        ) from None
 
 
 # Path to the project root on the HOST machine.

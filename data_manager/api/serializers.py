@@ -11,6 +11,7 @@ from rest_framework import serializers
 from rest_framework.settings import api_settings
 
 from cases.models import TransportOrganization
+from data_manager.fields import UndecryptableValue
 from data_manager.models import (
     FeedFetchError,
     FeedSubmission,
@@ -491,7 +492,22 @@ class RealtimeEndpointRTSerializer(FetchHealthSerializerMixin, serializers.Model
         return data
 
 
+class _CredentialField(serializers.CharField):
+    """Lets a kept credential that cannot be decrypted through, to be stored unchanged."""
+
+    def to_internal_value(self, data):
+        if isinstance(data, UndecryptableValue):
+            return data
+        return super().to_internal_value(data)
+
+
 class RealtimeEndpointRTWriteSerializer(serializers.ModelSerializer):
+    # to_internal_value of the submission serializer copies the stored value in
+    # when the client does not retype it.
+    auth_value = _CredentialField(
+        write_only=True, required=False, allow_blank=True, allow_null=True
+    )
+
     class Meta:
         model = RealtimeEndpointRT
         fields = [
@@ -504,7 +520,6 @@ class RealtimeEndpointRTWriteSerializer(serializers.ModelSerializer):
             'interval',
         ]
         extra_kwargs = {
-            'auth_value': {'write_only': True, 'required': False},
             'auth_type': {'required': False},
         }
 
