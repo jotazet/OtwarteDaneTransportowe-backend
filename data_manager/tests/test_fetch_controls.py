@@ -25,6 +25,7 @@ from data_manager.models import (
     StaticFeedEntry,
 )
 from data_manager.scheduler import FETCH_OK, _fetch_static_entry
+from data_manager.tests.test_flow import fake_download
 
 pytestmark = pytest.mark.django_db
 
@@ -531,14 +532,7 @@ def test_proxy_feeds_list_combines_static_and_realtime(api_client, org, provider
     assert filtered.data['count'] == 2
 
 
-class _OkResponse:
-    status_code = 200
-
-    def raise_for_status(self):
-        return None
-
-
-def _download_pausing(model, pk, body=None, exc=None):
+def _download_pausing(model, pk, body=b'', exc=None):
     """safe_download stand-in: a Helper pauses the feed while it is in flight."""
 
     @contextmanager
@@ -546,7 +540,8 @@ def _download_pausing(model, pk, body=None, exc=None):
         model.objects.get(pk=pk).pause_fetch('maintenance')
         if exc is not None:
             raise exc
-        yield _OkResponse(), io.BytesIO(body)
+        with fake_download(body)() as result:
+            yield result
 
     return _download
 

@@ -58,15 +58,13 @@ class FetchControlMixin:
             self._lock_fetch_state()
             # Recorded even for a manually paused feed: the cache was refreshed.
             self.last_fetch_success_at = now
-            update_fields = ['last_fetch_success_at']
             if self.fetch_status != FETCH_STATUS_MANUAL_PAUSED:
                 self.fetch_status = FETCH_STATUS_ACTIVE
                 self.fetch_failure_count = 0
                 self.next_fetch_after = None
                 self.fetch_paused_at = None
                 self.fetch_pause_reason = ''
-                update_fields += _FETCH_STATE_FIELDS
-            self.save(update_fields=update_fields)
+            self.save(update_fields=[*_FETCH_STATE_FIELDS, 'last_fetch_success_at'])
 
     def mark_fetch_failure(self, reason: str = '', now=None) -> None:
         now = now or timezone.now()
@@ -74,7 +72,6 @@ class FetchControlMixin:
             self._lock_fetch_state()
             # Recorded even for a manually paused feed: the FeedFetchError is logged too.
             self.last_fetch_error_at = now
-            update_fields = ['last_fetch_error_at']
             if self.fetch_status != FETCH_STATUS_MANUAL_PAUSED:
                 self.fetch_failure_count += 1
                 self.fetch_pause_reason = (reason or '')[:500]
@@ -85,8 +82,7 @@ class FetchControlMixin:
                 else:
                     self.fetch_status = FETCH_STATUS_AUTO_PAUSED
                     self.next_fetch_after = None
-                update_fields += _FETCH_STATE_FIELDS
-            self.save(update_fields=update_fields)
+            self.save(update_fields=[*_FETCH_STATE_FIELDS, 'last_fetch_error_at'])
 
     def pause_fetch(self, reason: str = '', now=None) -> None:
         now = now or timezone.now()
