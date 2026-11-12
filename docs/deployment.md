@@ -284,7 +284,7 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 
 | Variable | Meaning |
 | --- | --- |
-| `DJANGO_SETTINGS_MODULE` | **Must** be `...settings_prod` in production. |
+| `DJANGO_SETTINGS_MODULE` | **Must** be `...settings_prod` in production. `docker-compose.prod.yml` sets it for every application service, over `.env.example`'s development value; the host file must set it too, for a service the overlay misses. The image, `wsgi.py`, `asgi.py` and `celery.py` default to `settings_prod`, so a container started without it refuses placeholder secrets instead of running with `DEBUG=True`. |
 | `DJANGO_SECRET_KEY` | The application **refuses to start** in prod if this is a placeholder. |
 | `DJANGO_ALLOWED_HOSTS` | Public API domains (without `https://`). `127.0.0.1` and `localhost` are added automatically in `settings_prod`. |
 | `POSTGRES_PASSWORD` | Database password — strong, unique. |

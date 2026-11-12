@@ -22,11 +22,22 @@ FETCH_STATUS_CHOICES = [
     (FETCH_STATUS_AUTO_PAUSED, 'Automatically paused'),
     (FETCH_STATUS_MANUAL_PAUSED, 'Manually paused'),
 ]
+# Back-off after consecutive failed fetches; one more failure auto-pauses the feed.
 FETCH_RETRY_DELAYS = [
     timedelta(minutes=5),
     timedelta(hours=1),
     timedelta(hours=6),
 ]
+# Realtime endpoints after a transient error (timeout, connection error,
+# truncated body, HTTP 5xx/429): data seconds old is worthless an hour later.
+REALTIME_TRANSIENT_RETRY_DELAYS = [
+    timedelta(seconds=30),
+    timedelta(minutes=2),
+    timedelta(minutes=10),
+    timedelta(hours=1),
+]
+# An auto-paused feed is still tried once a day; a success makes it active again.
+AUTO_PAUSE_RETRY_DELAY = timedelta(days=1)
 
 
 _FETCH_STATE_FIELDS = (
@@ -36,6 +47,14 @@ _FETCH_STATE_FIELDS = (
     'fetch_paused_at',
     'fetch_pause_reason',
 )
+
+
+def fetch_retry_due(now):
+    """Filter for feeds whose back-off or daily auto-pause retry has come due."""
+    return models.Q(
+        fetch_status__in=(FETCH_STATUS_DELAYED, FETCH_STATUS_AUTO_PAUSED),
+        next_fetch_after__lte=now,
+    )
 
 
 class FetchControlMixin:
@@ -67,7 +86,14 @@ class FetchControlMixin:
                 self.fetch_pause_reason = ''
             self.save(update_fields=[*_FETCH_STATE_FIELDS, 'last_fetch_success_at'])
 
-    def mark_fetch_failure(self, reason: str = '', now=None) -> None:
+    def mark_fetch_failure(self, reason: str = '', now=None, delays=FETCH_RETRY_DELAYS) -> None:
+        """Count a failed fetch and schedule the next try on the ``delays`` ladder.
+
+        One count spans all ladders and the latest error picks one: a realtime
+        endpoint that timed out twice and then returns 404 waits 6 h, the third
+        step of FETCH_RETRY_DELAYS. Past the ladder the feed is auto-paused and
+        tried again once a day.
+        """
         now = now or timezone.now()
         with transaction.atomic():
             self._lock_fetch_state()
@@ -77,12 +103,12 @@ class FetchControlMixin:
                 self.fetch_failure_count += 1
                 self.fetch_pause_reason = (reason or '')[:500]
                 self.fetch_paused_at = now
-                if self.fetch_failure_count <= len(FETCH_RETRY_DELAYS):
+                if self.fetch_failure_count <= len(delays):
                     self.fetch_status = FETCH_STATUS_DELAYED
-                    self.next_fetch_after = now + FETCH_RETRY_DELAYS[self.fetch_failure_count - 1]
+                    self.next_fetch_after = now + delays[self.fetch_failure_count - 1]
                 else:
                     self.fetch_status = FETCH_STATUS_AUTO_PAUSED
-                    self.next_fetch_after = None
+                    self.next_fetch_after = now + AUTO_PAUSE_RETRY_DELAY
             self.save(update_fields=[*_FETCH_STATE_FIELDS, 'last_fetch_error_at'])
 
     def pause_fetch(self, reason: str = '', now=None) -> None:
@@ -121,7 +147,7 @@ class FetchControlMixin:
         now = now or timezone.now()
         if self.fetch_status == FETCH_STATUS_ACTIVE:
             return True
-        if self.fetch_status == FETCH_STATUS_DELAYED:
+        if self.fetch_status in (FETCH_STATUS_DELAYED, FETCH_STATUS_AUTO_PAUSED):
             return self.next_fetch_after is not None and self.next_fetch_after <= now
         return False
 
@@ -1136,3 +1162,13 @@ def _compute_completed_realtime_submission_ids() -> list[int]:
         .filter(current_stage_val=4)
         .values_list('id', flat=True)
     )
+
+
+def lock_submission(model, pk):
+    """Lock a FeedSubmission or RealtimeSubmission row and return it with its history.
+
+    API stage transitions (reviewer, owner resubmission) and the validation tasks
+    call this first inside ``transaction.atomic()``, so transitions of one
+    submission run one at a time and ``current_stage`` is read from committed history.
+    """
+    return model.objects.select_for_update().prefetch_related('history').get(pk=pk)

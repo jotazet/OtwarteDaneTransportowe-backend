@@ -16,6 +16,30 @@ Input that starts with `fernet$` is now encrypted like any other value. See [Sta
 
 ---
 
+## 2026-11-12: faster realtime retries, daily retry of auto-paused feeds
+
+Not breaking. A proxied realtime endpoint that fails with a transient error (timeout, connection error, truncated body, HTTP 5xx or 429) is now retried after 30 s, 2 min, 10 min and 1 h before it is auto-paused (`fetch_status=delayed` with `next_fetch_after` set as before). Static feeds and permanent errors keep 5 min, 1 h, 6 h. An `auto_paused` feed now has `next_fetch_after` set 24 hours ahead (it used to be `null`) and is tried again then; a success returns it to `active`, a failure moves `next_fetch_after` another day ahead. Feeds auto-paused before this change are retried once right after the deploy. `manual_paused` feeds keep `next_fetch_after: null` and are never retried automatically. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
+## 2026-11-12: `vehicles/coverage/` answers `planner.busy` while an operator's first count runs
+
+Not breaking for clients that handle `planner.busy`, which every planner endpoint can answer. `GET /api/planner/v1/vehicles/coverage/` recounts an operator's trips under way in one request at a time. A request that cannot recount an operator now (another request is recounting it, or the server is busy recounting others) gets its previous count (at most 10 minutes old), as before; when there is no previous count yet (after new timetables, or 10 minutes without requests for that operator) it now answers `503` with `{"code": "planner.busy", "details": {}}` and `Retry-After`, instead of recounting in parallel. The limit of 20 operators per request is unchanged. See [Planner API](planner.md#get-apiplannerv1vehiclescoverage).
+
+---
+
+## 2026-11-12: `409 feeds.stage_changed` when a submission's stage changes mid-request
+
+Not breaking, but clients should handle the new status. `PUT`/`PATCH /api/data_manager/feed-submissions/{id}/` and `realtime-submissions/{id}/` now lock the submission and return `409` with `{"code": "feeds.stage_changed", "details": {}}` when its stage or rejection changed after the request read it (a validation run or another reviewer wrote history in between). Nothing is saved; reload and retry. A reviewer's publish no longer races a validation rejection, so a just-published feed is never rejected automatically, and history rows always record the real `stage_before`. See [Static feeds](feeds.md#static-feeds-feedsubmission).
+
+---
+
+## 2026-11-12: source URLs in fetch error messages are redacted
+
+Not breaking. URLs inside `fetch_pause_reason`, `last_fetch_error_message` and the cause of an automatic rejection after a failed validation download keep only scheme, host, port and path; userinfo, the query string and the fragment are removed. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
 ## 2026-11-12: unchanged static feeds are not downloaded and validated again
 
 Not breaking. A scheduled fetch of a proxied static feed sends `If-None-Match` / `If-Modified-Since` and compares the SHA-256 of the body with the cached copy. When the upstream file has not changed, `last_fetch_success_at` is updated but `cached_at`, the copy and the validation report are not, and no GTFS validation runs. `cached_at` therefore moves only when a new copy is stored; `last_fetch_success_at` tells when the upstream was last checked. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).

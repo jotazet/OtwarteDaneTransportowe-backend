@@ -93,6 +93,11 @@ jobs:
           -e TRUSTED_PROXY_CIDRS=172.16.0.0/12
           odt-backend python manage.py check
       - run: docker run --rm --entrypoint gunicorn odt-backend --version
+      - name: Check that the image defaults to the production settings
+        run: >-
+          docker run --rm odt-backend python -c
+          "import django.conf as c; c.settings.DEBUG" 2>&1
+          | grep -q 'ImproperlyConfigured'
 
   # A release: a green vX.Y.Z tag on main goes to production.
   deploy:

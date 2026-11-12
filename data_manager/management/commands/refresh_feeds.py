@@ -16,7 +16,8 @@ from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.utils import timezone
 
-from data_manager.models import FETCH_STATUS_ACTIVE, FETCH_STATUS_DELAYED, StaticFeedEntry
+from data_manager.models import FETCH_STATUS_ACTIVE, StaticFeedEntry, fetch_retry_due
+from data_manager.net_security import redact_url
 from data_manager.scheduler import _completed_submission_ids, _fetch_static_entry
 
 
@@ -30,17 +31,16 @@ class Command(BaseCommand):
         scheduled_due = Q(fetch_status=FETCH_STATUS_ACTIVE) & (
             Q(download_time_1=now_time) | Q(download_time_2=now_time)
         )
-        retry_due = Q(fetch_status=FETCH_STATUS_DELAYED, next_fetch_after__lte=now)
 
         entries = (
             StaticFeedEntry.objects.filter(hide_original=True, submission_id__in=completed_ids)
             .exclude(url='')
-            .filter(scheduled_due | retry_due)
+            .filter(scheduled_due | fetch_retry_due(now))
         )
 
         count = 0
         for entry in entries:
-            self.stdout.write(f'  → Pobieranie entry id={entry.pk}  {entry.url}')
+            self.stdout.write(f'  → Fetching entry id={entry.pk}  {redact_url(entry.url)}')
             _fetch_static_entry(entry)
             count += 1
 

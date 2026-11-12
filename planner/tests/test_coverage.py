@@ -1,8 +1,11 @@
 """Position coverage: how many of an operator's trips under way report a vehicle position."""
 
+import threading
+import time
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from django.core.cache import cache
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -134,6 +137,10 @@ def otp(monkeypatch, graph):
     return fake
 
 
+def running_queries(otp):
+    return [call['agency'] for call in otp.calls if call and 'agency' in call]
+
+
 def get(params):
     return APIClient().get('/api/planner/v1/vehicles/coverage/', params, REMOTE_ADDR='198.51.100.7')
 
@@ -157,8 +164,7 @@ def test_trips_under_way_are_reused_for_a_minute(otp):
     get({'agencies': 'krk:302'})
     get({'agencies': 'krk:302'})
 
-    running_queries = [call for call in otp.calls if call and 'agency' in call]
-    assert len(running_queries) == 1
+    assert len(running_queries(otp)) == 1
 
 
 def test_an_organization_stands_for_its_operators(otp):
@@ -193,8 +199,6 @@ def test_an_operator_without_position_data_has_no_coverage_figure(otp):
 
 
 def test_while_one_request_recounts_others_use_the_previous_count(otp, graph):
-    from django.core.cache import cache
-
     get({'agencies': 'krk:302'})
     key = f'planner:running:{graph.id}:krk:302'
     cache.delete(key)  # the minute is over
@@ -203,7 +207,96 @@ def test_while_one_request_recounts_others_use_the_previous_count(otp, graph):
     [row] = get({'agencies': 'krk:302'}).json()['results']
 
     assert row['trips_under_way'] == 2
-    assert len([call for call in otp.calls if call and 'agency' in call]) == 1
+    assert len(running_queries(otp)) == 1
+
+
+@pytest.fixture
+def recounting(graph):
+    """Starts a recount of MPK in another thread that holds until released."""
+    started, release = threading.Event(), threading.Event()
+
+    def slow_query(document, variables, **kwargs):
+        started.set()
+        release.wait(5)
+        return MPK
+
+    worker = threading.Thread(
+        target=vehicles.running_trips, args=('krk:302', graph.id, slow_query, time.monotonic())
+    )
+    worker.start()
+    assert started.wait(5)
+    yield
+    release.set()
+    worker.join(5)
+
+
+def test_concurrent_first_counts_run_one_recount_the_other_is_busy(otp, recounting):
+    # Nothing counted yet (a new graph, or 10 idle minutes): the request that
+    # does not recount has no previous count to answer with.
+    response = get({'agencies': 'krk:302'})
+
+    assert (response.status_code, response.json()) == (
+        503,
+        {'code': 'planner.busy', 'details': {}},
+    )
+    assert response.headers['Retry-After'] == '5'
+    assert running_queries(otp) == []  # only the other request asked OTP
+
+
+def test_a_process_recounts_one_operator_at_a_time(otp, recounting, monkeypatch):
+    monkeypatch.setattr(vehicles, 'RECOUNT_WAIT_SECONDS', 0.01)
+
+    response = get({'agencies': 'kml:1'})
+
+    assert (response.status_code, response.json()['code']) == (503, 'planner.busy')
+    assert running_queries(otp) == []  # kml:1 waited for the slot instead of querying OTP
+
+
+def test_an_operator_waiting_for_the_slot_uses_its_previous_count(
+    otp, graph, recounting, monkeypatch
+):
+    monkeypatch.setattr(vehicles, 'RECOUNT_WAIT_SECONDS', 0.01)
+    key = f'planner:running:{graph.id}:kml:1'
+    cache.set(f'{key}:previous', {'agency': {'id': 'kml:1', 'name': 'KML'}, 'trips': ['a']})
+
+    [row] = get({'agencies': 'kml:1'}).json()['results']
+
+    assert (row['agency']['id'], row['trips_under_way']) == ('kml:1', 1)
+    assert running_queries(otp) == []
+    assert cache.add(f'{key}:lock', 1)  # the losing request released the lock
+
+
+def test_a_request_waits_for_the_slot_once_not_per_operator(otp, graph, monkeypatch):
+    waits = []
+
+    class TakenSlot:
+        def acquire(self, timeout):
+            waits.append(timeout)
+            time.sleep(timeout)
+            return False
+
+    monkeypatch.setattr(vehicles, '_recount_slot', TakenSlot())
+    monkeypatch.setattr(vehicles, 'RECOUNT_WAIT_SECONDS', 0.1)
+    agencies = ['krk:302', 'kml:1', 'krk:other']
+    for agency_id in agencies:
+        cache.set(
+            f'planner:running:{graph.id}:{agency_id}:previous',
+            {'agency': {'id': agency_id, 'name': 'x'}, 'trips': []},
+        )
+
+    assert len(get({'agencies': agencies}).json()['results']) == 3
+    assert len(waits) == 3
+    assert sum(waits) < 0.15  # one budget for the request, not 0.1 s per operator
+
+
+def test_at_most_20_operators_per_request(otp):
+    response = get({'agencies': [f'krk:{n}' for n in range(21)]})
+
+    assert (response.status_code, response.json()['details']['fields']) == (
+        400,
+        {'agencies': ['max_length']},
+    )
+    assert otp.calls == []
 
 
 def test_trips_otp_cannot_resolve_are_left_out(otp):

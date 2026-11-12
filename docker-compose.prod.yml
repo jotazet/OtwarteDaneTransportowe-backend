@@ -30,6 +30,10 @@ x-prod-app: &prod-app
   volumes: !override
     - ./uploaded_data:/app/uploaded_data
     - ./planner_data:/app/planner_data
+  # Wins over the env_files, where .env.example sets the development settings. A service
+  # missing below still gets the production ones from the server's .env (host file).
+  environment:
+    DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
 
 services:
   # No host ports for the data services: the host is shared, so a port on 127.0.0.1 is
@@ -50,33 +54,20 @@ services:
       --threads ${GUNICORN_THREADS:-4}
       --timeout 120
       --no-control-socket
-    environment:
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
-      HOME: /app
 
   celery_worker:
     <<: *prod-app
-    environment:
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
 
   celery_beat:
     <<: *prod-app
-    environment:
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
 
   celery_validator_worker:
     <<: *prod-app
-    environment:
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
 
   celery_planner_worker:
     <<: *prod-app
-    environment:
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
 
   migrate:
     <<: *prod-app
     # The image already holds the collected static files (Dockerfile).
     command: python manage.py migrate
-    environment:
-      DJANGO_SETTINGS_MODULE: OtwarteDaneTransportowe.settings_prod
