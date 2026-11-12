@@ -2,6 +2,17 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: protected accounts in user management
+
+Not breaking for regular accounts.
+
+- User objects (`/api/users/`, `/api/users/{id}/`, `/api/users/me/`) gain read-only **`is_staff`** and **`is_superuser`**.
+- An account with either flag is a protected account: `PUT`, `PATCH`, `DELETE` `/api/users/{id}/` and `POST /api/users/{id}/reset-password/` on it need a caller who is a superuser as well as in the `Admin` group. Anyone else gets `403` with `{"code": "users.protected_account", "details": {}}` and nothing changes. The frontend can hide those actions when the target has either flag and the logged-in user (`/api/users/me/`) has `is_superuser: false`.
+
+See [Users](README.md#users-djangocontribauthmodelsuser).
+
+---
+
 ## 2026-11-12: planner skips provider URLs with `${`
 
 Not breaking. A realtime or GBFS endpoint polled from the provider's URL whose URL contains `${` is left out of the planner's OTP configuration, because OTP would read it as a placeholder for an environment variable. It is reported with the new error code **`planner.rt_url_unsupported`** in `feed_results[].realtime_skipped` of a build and in a rental source's `active_result`. Proxied endpoints are unaffected. See [Graph builds](planner-admin.md#graph-builds).

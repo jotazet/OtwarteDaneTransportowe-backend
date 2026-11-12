@@ -17,19 +17,19 @@ from accounts.services import (
     generate_random_password,
     would_remove_last_admin,
 )
-from OtwarteDaneTransportowe.auth_roles import RequiresAdminGroup
+from OtwarteDaneTransportowe.auth_roles import CanManageUserAccount, RequiresAdminGroup
 
 User = get_user_model()
 
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.prefetch_related('groups').order_by('username')
-    permission_classes = [IsAuthenticated, RequiresAdminGroup]
+    permission_classes = [IsAuthenticated, RequiresAdminGroup, CanManageUserAccount]
 
     def get_permissions(self):
         if self.action in ('me', 'change_email', 'change_password'):
             return [IsAuthenticated()]
-        return [IsAuthenticated(), RequiresAdminGroup()]
+        return super().get_permissions()
 
     def get_serializer_class(self):
         if self.action == 'create':

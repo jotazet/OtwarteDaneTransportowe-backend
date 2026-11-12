@@ -189,13 +189,15 @@ Requires the Django group **`Admin`** (`has_admin_role`) — `is_staff` / `is_su
 | `GET` | `/api/users/` | `Admin` (group) | List of all users |
 | `POST` | `/api/users/` | `Admin` (group) | Create an account; the server generates the password — returned in `generated_password` |
 | `GET` | `/api/users/{id}/` | `Admin` (group) | User details |
-| `PUT` | `/api/users/{id}/` | `Admin` (group) | Same fields and rules as `PATCH`; none is required, and with a JSON body omitted fields keep their values |
-| `PATCH` | `/api/users/{id}/` | `Admin` (group) | Edit `email`, `first_name`, `last_name`, `is_active`, `roles` |
-| `DELETE` | `/api/users/{id}/` | `Admin` (group) | Permanent deletion (you cannot delete yourself or the last `Admin`) |
-| `POST` | `/api/users/{id}/reset-password/` | `Admin` (group) | New random password in `generated_password` |
+| `PUT` | `/api/users/{id}/` | `Admin` (group)¹ | Same fields and rules as `PATCH`; none is required, and with a JSON body omitted fields keep their values |
+| `PATCH` | `/api/users/{id}/` | `Admin` (group)¹ | Edit `email`, `first_name`, `last_name`, `is_active`, `roles` |
+| `DELETE` | `/api/users/{id}/` | `Admin` (group)¹ | Permanent deletion (you cannot delete yourself or the last `Admin`) |
+| `POST` | `/api/users/{id}/reset-password/` | `Admin` (group)¹ | New random password in `generated_password` |
 | `GET` | `/api/users/me/` | logged in | Current user's profile |
 | `POST` | `/api/users/me/change-email/` | logged in | `current_password`, `new_email` |
 | `POST` | `/api/users/me/change-password/` | logged in | `current_password`, `new_password` |
+
+¹ A **protected account** (`is_superuser` or `is_staff` true; both are read-only fields of every user object) can be edited, deleted or have its password reset only by a caller who is a superuser as well as in the `Admin` group. Anyone else gets `403` with `{"code": "users.protected_account", "details": {}}`. Reading such an account (`GET`) is not restricted. The flags themselves are set only through Django (`createsuperuser`, the admin site), never through this API.
 
 Allowed `roles` values: `Admin`, `Blogger`, `Editor`, `DataProvider`, `Helper` (`PUT`/`PATCH` fully replace the list of groups).
 
@@ -209,6 +211,8 @@ For `POST /api/users/` the body does **not** contain a password — example `201
   "first_name": "Jan",
   "last_name": "Kowalski",
   "is_active": true,
+  "is_staff": false,
+  "is_superuser": false,
   "roles": ["DataProvider"],
   "generated_password": "xK9mP2vL8nQwR4sT1uY0zA"
 }
