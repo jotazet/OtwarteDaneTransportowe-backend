@@ -1,8 +1,8 @@
 name: CI
 
-# Pull requests and main run the checks. A release tag vX.Y.Z runs them too and, when
-# they pass, goes to production through the deploy job (ADR 0013, docs/deployment.md
-# section 20).
+# Pull requests and main run the checks. Main and tags also push the production image to
+# ghcr.io. A release tag vX.Y.Z runs them too and, when they pass, goes to production
+# through the deploy job (ADR 0013 and 0016, docs/deployment.md section 20).
 on:
   pull_request:
   push:
@@ -99,9 +99,39 @@ jobs:
           "import django.conf as c; c.settings.DEBUG" 2>&1
           | grep -q 'ImproperlyConfigured'
 
+  # The production image of main and of every tag, in GitHub's registry: the server pulls
+  # the tag's image instead of building it (ADR 0016). Not for pull requests.
+  image:
+    needs: [backend, production]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and push ghcr.io/jotazet/odt-backend
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          image=ghcr.io/jotazet/odt-backend
+          if [ "$REF_TYPE" = tag ]; then version="$REF_NAME"; else version=main; fi
+          printf '%s' "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          docker build --pull --build-arg INSTALL_DEV=false \
+            --tag "$image:$version" --tag "$image:sha-$SHA" .
+          docker push --all-tags "$image"
+          docker logout ghcr.io
+
   # A release: a green vX.Y.Z tag on main goes to production.
   deploy:
-    needs: [backend, production]
+    needs: [backend, production, image]
     if: startsWith(github.ref, 'refs/tags/v')
     # The runner on the production server, as the user odt-runner: no Docker, and through
     # sudo only odt-deploy as the application's user (docs/deployment.md section 20). No

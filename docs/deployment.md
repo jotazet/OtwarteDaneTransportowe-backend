@@ -123,14 +123,18 @@ their logs when they finish.
 
 ## 3. Getting the code
 
-```bash
-git clone https://github.com/jotazet/OtwarteDaneTransportowe-backend.git ~/OtwarteDaneTransportowe-backend
-cd ~/OtwarteDaneTransportowe-backend
-```
+Production needs no clone: each release downloads its Compose files and deploy scripts
+into the **deployment directory** `~/odt-backend` of the admin user (`rocky` on the current
+VPS) and runs the image CI built for it
+([section 20](#20-releases-automatic-deployment-from-github)). That directory also holds
+`.env`, `uploaded_data/` and `planner_data/`; the commands in this guide run from there.
 
-Clone into the home of the admin user (`rocky` on the current VPS): `odt-deploy`
-([section 20](#20-releases-automatic-deployment-from-github)) only deploys to
-`~/OtwarteDaneTransportowe-backend`.
+To build and run by hand instead (another host, development):
+
+```bash
+git clone https://github.com/jotazet/OtwarteDaneTransportowe-backend.git
+cd OtwarteDaneTransportowe-backend
+```
 
 ---
 
@@ -251,8 +255,8 @@ FEED_AUTH_ENCRYPTION_KEY=<Fernet-key>
 # ───────────────────────── File permissions ─────────────────────────
 UID=1000
 GID=1000
-HOST_PROJECT_PATH=/home/rocky/OtwarteDaneTransportowe-backend
-HOST_MEDIA_ROOT=/home/rocky/OtwarteDaneTransportowe-backend/uploaded_data
+HOST_PROJECT_PATH=/home/rocky/odt-backend
+HOST_MEDIA_ROOT=/home/rocky/odt-backend/uploaded_data
 
 # ───────────────────────── Performance / Celery / gunicorn ─────────────────────────
 GUNICORN_WORKERS=3
@@ -690,18 +694,21 @@ Expected: no `security.W*` warnings. Then check through the browser/proxy:
 
 Normally an update is a release: create a GitHub Release with a new `vX.Y.Z` tag on `main`
 and GitHub Actions deploys it ([section 20](#20-releases-automatic-deployment-from-github)).
-By hand, from a clean checkout, with the same steps (dump, image, migrations, health check):
+By hand, from the deployment directory, with the same steps (dump, image, migrations,
+health check) and the deploy scripts already there:
 
 ```bash
-git fetch --tags && git checkout --detach vX.Y.Z
 cp -p .env ~/odt.env && sh scripts/deploy/release.sh vX.Y.Z ~/odt.env && rm ~/odt.env   # keeps the current .env
 ```
 
 That `.env` must hold `REDIS_PASSWORD`: only the GitHub deployment refuses to run without
 it, and Compose starts Redis without a password when it is empty.
 
-The application services run the code built into the image, not the checkout, so code
-changes always need a build (`release.sh` does it; `./scripts/deploy.sh up -d --build` works too).
+The application services run the code built into the image, so a code change reaches
+production only as a new image: CI pushes `ghcr.io/jotazet/odt-backend:<tag>` for every tag
+(and `:main` for the newest `main`), and `ODT_VERSION` in `.env` says which one runs. A
+compose file or deploy script that changed in a later release reaches the server only with
+that release.
 
 To roll back to an older version, first reverse the migrations it does not know about
 (`./scripts/deploy.sh exec web python manage.py migrate <app> <last migration of the old version>`),
@@ -770,8 +777,8 @@ here cannot delete them.
 
 ### Installing the timer (once)
 
-On the server, in the checkout. The script itself runs from the checkout, so it changes with
-each release; reinstall the two unit files when they change.
+On the server, in the deployment directory. The script itself runs from there, so it changes
+with each release; reinstall the two unit files when they change.
 
 ```bash
 sudo mkdir -p /etc/odt
@@ -786,7 +793,7 @@ sudo systemctl enable --now odt-backup.timer
 systemctl list-timers odt-backup.timer
 ```
 
-The units name the user `rocky` and the checkout `/home/rocky/OtwarteDaneTransportowe-backend`;
+The units name the user `rocky` and the deployment directory `/home/rocky/odt-backend`;
 change both in `odt-backup.service` on another host. No alert is sent when a run fails: check
 `systemctl --failed` and `journalctl -u odt-backup.service`.
 
@@ -808,7 +815,7 @@ dump alone:
 From the off-host copy, first fetch the newest backup that has its `complete` file into
 `~/backups/scheduled/` (`rsync -a
 odt-backup:<directory>/<time>/ ~/backups/scheduled/<time>/`, or `rclone copy
-<remote>:<bucket>/odt/<time> ~/backups/scheduled/<time>`). Then, in the checkout:
+<remote>:<bucket>/odt/<time> ~/backups/scheduled/<time>`). Then, in the deployment directory:
 
 ```bash
 b=~/backups/scheduled/<time>
@@ -1054,7 +1061,7 @@ Builds deliberately fill RAM and spill into swap, so the VPS has a last-resort g
 ```bash
 # 1. Secrets and settings in .env (see .env.example, "Journey planner")
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # -> PLANNER_INTERNAL_TOKEN
-# COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/home/rocky/OtwarteDaneTransportowe-backend/planner_data
+# COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/home/rocky/odt-backend/planner_data
 
 # 2. Start the services
 ./scripts/deploy.sh up -d --build
@@ -1099,33 +1106,37 @@ A release tag `vX.Y.Z` on `main` deploys itself
 
 ```mermaid
 flowchart LR
-  rel["GitHub Release vX.Y.Z"] --> ci["CI on the tag: tests, image, scripts"]
-  ci --> job["deploy job on the server's runner (environment production)"]
+  rel["GitHub Release vX.Y.Z"] --> ci["CI on the tag: tests, checks"]
+  ci --> img["image job: ghcr.io/jotazet/odt-backend:vX.Y.Z"]
+  img --> job["deploy job on the server's runner (environment production)"]
   job -->|"sudo: tag + .env"| od["odt-deploy"]
   host["/etc/odt/backend-host.env (root)"] --> od
-  od --> rs["scripts/deploy/release.sh of that tag"]
+  od -->|"Compose files and scripts of the tag"| rs["~/odt-backend: release.sh"]
+  img -.->|docker pull| rs
 ```
 
-1. **CI** (`.github/workflows/ci.yml`) runs every check on the tag on GitHub's runners. The
-   `deploy` job runs only when they pass, on the self-hosted runner on the server (label
-   `odt-production`, user `odt-runner`), and writes `.env` from the environment's variables
-   and secrets (`scripts/deploy/envfile.py`).
-2. It runs `/usr/local/sbin/odt-deploy` through sudo as the owner of the checkout, the only
-   command `odt-runner` may run that way. `odt-deploy` refuses a tag that is not `vX.Y.Z`
-   and a checkout with local changes, fetches the tag, refuses it unless it is on `main`,
-   merges the `.env` from the job with the server's host file (below), checks the tag out
-   and runs that tag's `release.sh`.
+1. **CI** (`.github/workflows/ci.yml`) runs every check on the tag on GitHub's runners, then
+   the `image` job builds the production image and pushes it to GitHub's registry as
+   `ghcr.io/jotazet/odt-backend:vX.Y.Z` ([ADR 0016](architecture/decisions/0016-release-images-from-ghcr-without-a-server-checkout.md);
+   `main` gets `:main`). The `deploy` job runs only when all of them pass, on the self-hosted
+   runner on the server (label `odt-production`, user `odt-runner`), and writes `.env` from
+   the environment's variables and secrets (`scripts/deploy/envfile.py`).
+2. It runs `/usr/local/sbin/odt-deploy` through sudo as the owner of the deployment directory
+   `~/odt-backend`, the only command `odt-runner` may run that way. `odt-deploy` refuses a
+   tag that is not `vX.Y.Z`, asks GitHub's API for the tag's commit and refuses it unless it
+   is on `main`, merges the `.env` from the job with the server's host file (below),
+   downloads that commit's Compose files, `.env.example` and `scripts/deploy*` into the
+   deployment directory and runs its `release.sh`. There is no Git checkout on the server.
 3. **`release.sh`**: stops while a planner graph build or feed test is running (a container
    labelled `odt.planner`), refuses a `.env` that changes `FEED_AUTH_ENCRYPTION_KEY` or
-   `POSTGRES_PASSWORD`, builds `odt-backend:latest` with `--pull` (nothing running changes
-   yet), dumps the database with the current `.env` and commit into
+   `POSTGRES_PASSWORD`, adds `ODT_VERSION=vX.Y.Z` to it and pulls that image (nothing running
+   changes yet), dumps the database with the current `.env` into
    `~/backups/release-<UTC time>-<tag>/` (keeps the newest 10), installs the new `.env`,
    runs `up -d --wait` (the `migrate` service first, then every service is recreated) and
    waits up to 15 minutes, migrations included, for every service to pass its healthcheck
    ([section 18](#18-troubleshooting)); one that exits, keeps restarting or turns unhealthy
-   fails the release. Only then is the image tagged `odt-backend:<tag>` (the newest 3 are
-   kept, for a rollback), and replaced `odt-backend` images and build cache older than 7
-   days (of every project on the host) are removed. Any failure stops it and the job turns red.
+   fails the release. Then the images of all but the newest 3 releases are removed from the
+   host (the registry keeps every one). Any failure stops it and the job turns red.
 
 A release during a **planner graph build** stops before it changes anything (the build takes
 up to 8 GB of RAM and swap, and the release would restart its worker): re-run the job when the
@@ -1158,7 +1169,7 @@ deployment in *Actions*; the job's log shows `odt-deploy: <old> -> <new>` and
   [section 5](#5-the-env-file--full-configuration) (`DJANGO_ALLOWED_HOSTS`,
   `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `CORS_URLS_REGEX`, `TRUSTED_PROXY_CIDRS`,
   `POSTGRES_DB`, `POSTGRES_USER`, size limits, throttles, ...). Optionally
-  `DEPLOY_APP_USER`, the owner of the checkout that `odt-deploy` runs as (default `rocky`).
+  `DEPLOY_APP_USER`, the owner of the deployment directory that `odt-deploy` runs as (default `rocky`).
   Every other setting goes in the [host file](#the-host-file).
 - **Environment secrets:** `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`,
   `FEED_AUTH_ENCRYPTION_KEY`, `REDIS_PASSWORD`, `PLANNER_INTERNAL_TOKEN` (with the
@@ -1210,10 +1221,23 @@ For example:
 DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
 UID=1000
 GID=1000
-HOST_PROJECT_PATH=/home/rocky/OtwarteDaneTransportowe-backend
-HOST_MEDIA_ROOT=/home/rocky/OtwarteDaneTransportowe-backend/uploaded_data
+HOST_PROJECT_PATH=/home/rocky/odt-backend
+HOST_MEDIA_ROOT=/home/rocky/odt-backend/uploaded_data
+HOST_PLANNER_DATA_DIR=/home/rocky/odt-backend/planner_data
 COMPOSE_PROFILES=planner
 ```
+
+The Compose project name is fixed in `docker-compose.prod.yml`
+(`otwartedanetransportowe-backend`), so the database volume and the networks keep their
+names whatever the directory is called.
+
+### The image registry
+
+The `image` job pushes with the workflow's own token, so nothing is stored for it. The
+package `odt-backend` (*the owner's profile → Packages*) must be **public**: the server pulls
+without logging in (the image holds only the public repository's code, no setting or
+secret). GitHub creates it private on the first push: *Package settings → Change visibility →
+Public* once. Check from any machine: `docker pull ghcr.io/jotazet/odt-backend:main`.
 
 #### Moving host settings out of GitHub (once)
 
@@ -1236,10 +1260,15 @@ deploy with the development settings of `.env.example`.
    sudo chmod 644 /etc/odt/backend-host.env && cat /etc/odt/backend-host.env
    ```
 
+   Then point the `HOST_*` paths into the deployment directory (`sudoedit`; see
+   [the move below](#moving-from-the-checkout-to-the-deployment-directory-once)).
+
 2. Reinstall `odt-deploy` from `main` once this change is merged there:
 
    ```bash
-   git fetch origin main && git show origin/main:scripts/deploy/odt-deploy > /tmp/odt-deploy
+   curl -fsSL -o /tmp/odt-deploy \
+     https://raw.githubusercontent.com/jotazet/OtwarteDaneTransportowe-backend/main/scripts/deploy/odt-deploy
+   less /tmp/odt-deploy    # read what you install as root
    sudo install -o root -g root -m 755 /tmp/odt-deploy /usr/local/sbin/odt-deploy && rm /tmp/odt-deploy
    ```
 
@@ -1252,9 +1281,10 @@ deploy with the development settings of `.env.example`.
 
 ### One-time server setup
 
-As the admin user (`rocky` on the current VPS), with the checkout in
-`~/OtwarteDaneTransportowe-backend` (`odt-deploy` expects it in the home of the user it runs
-as; sudo sets `HOME` to it with `always_set_home`, the Rocky default):
+As the admin user (`rocky` on the current VPS); the first release creates the deployment
+directory `~/odt-backend` in the home of the user `odt-deploy` runs as (sudo sets `HOME` to it
+with `always_set_home`, the Rocky default). The install commands take the files from a copy
+of the repository on any machine (`scp` them to the server first):
 
 ```bash
 # The runners' user: no password, no login shell, not in the docker group.
@@ -1319,7 +1349,7 @@ On a machine with the [GitHub CLI](https://cli.github.com/), signed in to the re
 an empty directory that is not synced anywhere:
 
 ```bash
-scp rocky@<host>:OtwarteDaneTransportowe-backend/.env odt.env
+scp rocky@<host>:odt-backend/.env odt.env
 secrets='^(DJANGO_SECRET_KEY|POSTGRES_PASSWORD|FEED_AUTH_ENCRYPTION_KEY|REDIS_PASSWORD|PLANNER_INTERNAL_TOKEN)='
 grep -E "$secrets" odt.env > secrets.env
 grep -vE "$secrets" odt.env | grep -vE '^\s*(#|$)' > variables.env
@@ -1336,18 +1366,29 @@ Keep the host settings out of `variables.env` and put them in the
 case): check any value with a `$`, quotes or a `#` by hand in the web UI. Comments at the
 end of a line are not part of the value in the server's `.env` either.
 
-### The first release
+### Moving from the checkout to the deployment directory (once)
 
-The first release also switches production from the bind-mounted checkout to the image,
-so every application container is recreated (as in any deployment). Until then the running
-containers still mount the checkout: if this first release stops before `up -d` (a refused
-`.env`, a failed build or dump), they already see the new tag's code, so go back with
-`git checkout --detach <previous commit>` (printed as `odt-deploy: <old> -> <new>`) and
-restart them, or fix the cause and re-run the job. Afterwards:
+Until v2.1.0 production ran from a Git checkout in `~/OtwarteDaneTransportowe-backend`, with
+the code bind-mounted into the containers. The move keeps the database volume and the
+networks (the project name is fixed) and the data directories (moved on the same disk, so
+instantly). As `rocky`, after the host file and `odt-deploy` are installed and the image
+package is public:
 
-- remove the per-service images of the old layout
-  (`docker image ls 'otwartedanetransportowe-backend-*'`, then `docker image rm ...`);
-- `staticfiles/` in the checkout is no longer used.
+```bash
+old=~/OtwarteDaneTransportowe-backend new=~/odt-backend
+mkdir -m 700 "$new"
+cp -p "$old/.env" "$new/.env"          # release.sh compares the pinned secrets with it
+mv "$old/uploaded_data" "$old/planner_data" "$new/"
+# The running containers keep their mounts; the old paths still work for the containers
+# they start (validator, planner) until the release recreates them.
+ln -s "$new/uploaded_data" "$old/uploaded_data" && ln -s "$new/planner_data" "$old/planner_data"
+```
+
+In the host file, `HOST_PROJECT_PATH`, `HOST_MEDIA_ROOT` and `HOST_PLANNER_DATA_DIR` point
+into `~/odt-backend`. Then release. If the release stops before `up -d`, nothing running
+changed: fix the cause and re-run the job. Once it is live, remove the old checkout (it held
+the per-service images' code and `staticfiles/`, no longer used) and the per-service images
+of the old layout (`docker image ls 'otwartedanetransportowe-backend-*'`).
 
 Compose 2.24.4 or newer is required (`volumes: !override` in `docker-compose.prod.yml`).
 
@@ -1411,13 +1452,12 @@ application services (`./scripts/deploy.sh up -d`).
 
   Data written between the release and the restore is lost; reversing the migrations
   instead (section 15) keeps it, when the migrations are reversible.
-- **Emergency, code only:** run the image of an earlier release without a build. Only a
-  release that passed its health checks has an image tag, so a failed release, retried or
-  not, never replaces one:
+- **Emergency, code only:** run the image of an earlier release. The host keeps the images of
+  the last 3 releases; the registry keeps every one:
 
   ```bash
-  docker image ls odt-backend          # vX.Y.Z of the last 3 releases that went live
-  docker image tag odt-backend:<last good vX.Y.Z> odt-backend:latest && ./scripts/deploy.sh up -d
+  docker image ls ghcr.io/jotazet/odt-backend      # vX.Y.Z of the last 3 releases
+  sed -i 's/^ODT_VERSION=.*/ODT_VERSION=<last good vX.Y.Z>/' .env && ./scripts/deploy.sh up -d --wait
   ```
 
-  The checkout and `.env` stay on the new release until the next deployment.
+  The Compose files and scripts stay those of the new release until the next deployment.

@@ -1,9 +1,10 @@
 #!/bin/sh
-# Deploys the checked-out release, in the order that keeps the data safe: the .env check,
-# the image (which changes nothing running), a database dump, the new .env, migrations and
-# new containers, then every service healthy. Any failure stops it there. odt-deploy runs
-# it after checking out the tag (docs/deployment.md, section 20); it also works by hand from
-# the checkout, with a complete .env (odt-deploy adds the host file's settings to the job's):
+# Deploys a release from the deployment directory, in the order that keeps the data safe:
+# the .env check, the release's image (which changes nothing running), a database dump,
+# the new .env, migrations and new containers, then every service healthy. Any failure
+# stops it there. odt-deploy runs it after copying the release's Compose files and scripts
+# into the deployment directory (docs/deployment.md, section 20); it also works by hand from
+# there, with a complete .env (odt-deploy adds the host file's settings to the job's):
 #
 #   sh scripts/deploy/release.sh vX.Y.Z <new .env>
 set -eu
@@ -19,15 +20,15 @@ WAIT_TIMEOUT=900
 cd "$(dirname "$0")/../.."
 log() { echo "release: $*"; }
 
-# The version becomes an image tag (odt-backend:vX.Y.Z) once the release is live.
+# The version is the tag of the image CI pushed for it (ghcr.io/...:vX.Y.Z).
 if ! printf '%s\n' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
     log "expected a release tag vX.Y.Z, got '$tag'" >&2
     exit 1
 fi
 
 # A planner graph build or feed test (containers labelled odt.planner) holds up to 8 GB of
-# RAM and swap: an image build beside it risks the OOM killer, and the release would
-# restart the worker that runs it. Nothing has changed yet, so release again later.
+# RAM and swap, and the release would restart the worker that runs it. Nothing has changed
+# yet, so release again later.
 if [ -n "$(docker ps -q --filter label=odt.planner)" ]; then
     log "a planner graph build is running; release again when it has finished" >&2
     exit 1
@@ -35,17 +36,19 @@ fi
 
 python3 -I scripts/deploy/envfile.py check .env "$env_new"
 
-# --pull: the newest python:3.12-slim of the same tag, so base image fixes reach production.
-./scripts/deploy.sh build --pull web
+# Compose takes the image tag from ODT_VERSION (docker-compose.prod.yml).
+printf 'ODT_VERSION=%s\n' "$tag" >> "$env_new"
+./scripts/deploy.sh --env-file "$env_new" pull --quiet web
+# Lists the images of web's dependencies too; the application image is the one of the tag.
+image="$(./scripts/deploy.sh --env-file "$env_new" config --images web | grep -m 1 ":$tag\$")"
 
-# The dump, and the .env and commit it belongs to, before anything changes.
+# The dump, and the .env and version it belongs to, before anything changes.
 backup="$HOME/backups/release-$(date -u +%Y%m%dT%H%M%SZ)-$tag"
 mkdir -p "$HOME/backups"
 mkdir -m 700 "$backup"
 ./scripts/deploy.sh exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' \
     > "$backup/db.dump"
 [ ! -f .env ] || cp -p .env "$backup/env"
-git rev-parse HEAD > "$backup/commit"
 log "backup in $backup ($(du -h "$backup/db.dump" | cut -f1))"
 # Older release backups beyond the newest $BACKUPS_KEEP.
 find "$HOME/backups" -maxdepth 1 -name 'release-*' -type d | sort | head -n "-$BACKUPS_KEEP" \
@@ -60,16 +63,10 @@ if ! ./scripts/deploy.sh up -d --wait --wait-timeout "$WAIT_TIMEOUT"; then
     ./scripts/deploy.sh ps -a >&2
     exit 1
 fi
-# Only a release that passed gets an image tag, so a failed one, retried or not, never
-# replaces a good rollback image (section 20). The newest $RELEASES_KEEP stay.
-docker image tag odt-backend:latest "odt-backend:$tag"
 log "$tag is live"
 
-docker image ls odt-backend --format '{{.Tag}}' | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' \
-    | sort -V | head -n "-$RELEASES_KEEP" | sed 's/^/odt-backend:/' \
+# The images of the newest $RELEASES_KEEP releases stay for a rollback (section 20).
+repository="${image%:*}"
+docker image ls "$repository" --format '{{.Tag}}' | grep -Ex 'v[0-9]+\.[0-9]+\.[0-9]+' \
+    | sort -V | head -n "-$RELEASES_KEEP" | sed "s|^|$repository:|" \
     | xargs -r docker image rm > /dev/null || log "could not remove old release images"
-# Only this project's replaced images: the host runs other projects too.
-docker image prune -f --filter label=org.opencontainers.image.title=odt-backend > /dev/null
-# Build cache older than a week, of every project on the host (it grew to 17 GB): only a
-# cache, so another project at most builds slower. The release is live either way.
-docker builder prune -f --filter until=168h > /dev/null || log "could not prune the build cache"

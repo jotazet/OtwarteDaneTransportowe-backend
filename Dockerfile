@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
-# Lets scripts/deploy/release.sh prune only this project's replaced images.
-LABEL org.opencontainers.image.title=odt-backend
+# The source label links the image in GitHub's registry (ghcr.io) to this repository.
+LABEL org.opencontainers.image.title=odt-backend \
+      org.opencontainers.image.source=https://github.com/jotazet/OtwarteDaneTransportowe-backend
 
 # The virtualenv lives outside /app: compose bind-mounts the project over /app,
 # which would hide a /app/.venv.
