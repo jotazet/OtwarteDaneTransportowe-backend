@@ -132,13 +132,8 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
             max_bytes=settings.MAX_FEED_FILE_SIZE_BYTES,
             total_timeout=settings.FEED_FETCH_TOTAL_TIMEOUT_SECONDS,
         ) as (response, body):
-            # A 304 may update the validators; keep the stored ones otherwise.
-            fields = {
-                'cached_etag': response.headers.get('ETag') or entry.cached_etag,
-                'cached_last_modified': (
-                    response.headers.get('Last-Modified') or entry.cached_last_modified
-                ),
-            }
+            etag = response.headers.get('ETag', '')
+            last_modified = response.headers.get('Last-Modified', '')
             unchanged = bool(conditional) and response.status_code == 304
             if not unchanged:
                 response.raise_for_status()
@@ -154,7 +149,13 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
                 unchanged = compare and sha256 == entry.cached_sha256
 
             now = timezone.now()
-            if not unchanged:
+            if unchanged:
+                # Validators the response leaves out still describe the kept copy.
+                fields = {
+                    'cached_etag': etag or entry.cached_etag,
+                    'cached_last_modified': last_modified or entry.cached_last_modified,
+                }
+            else:
                 parsed = urlparse(entry.url)
                 filename = os.path.basename(parsed.path) or 'feed.zip'
 
@@ -162,9 +163,14 @@ def _fetch_static_entry(entry: StaticFeedEntry) -> str:
                 # so reclaim a differently-named previous cache file explicitly.
                 old_cached_name = entry.cached_file.name if entry.cached_file else None
                 entry.cached_file.save(filename, File(body), save=False)
-                fields.update(
-                    cached_file=entry.cached_file.name, cached_at=now, cached_sha256=sha256
-                )
+                # A new copy keeps only its own validators.
+                fields = {
+                    'cached_file': entry.cached_file.name,
+                    'cached_at': now,
+                    'cached_sha256': sha256,
+                    'cached_etag': etag,
+                    'cached_last_modified': last_modified,
+                }
 
         # Only while the entry still proxies the URL just downloaded: a source
         # change during the download drops the cache, and this copy of the

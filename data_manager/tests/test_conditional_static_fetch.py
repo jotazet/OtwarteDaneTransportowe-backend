@@ -157,6 +157,16 @@ def test_changed_body_replaces_cache_and_validates(entry, upstream, validate):
     validate.assert_called_once_with(entry.pk)
 
 
+def test_new_copy_without_validators_drops_the_old_ones(entry, upstream, validate):
+    """Otherwise a rollback upstream to the old file would answer 304."""
+    upstream.body = b'PK\x03\x04new-feed'
+
+    assert _fetch_static_entry(entry) == FETCH_OK
+
+    entry.refresh_from_db()
+    assert (entry.cached_etag, entry.cached_last_modified) == ('', '')
+
+
 def test_source_refresh_downloads_and_validates_an_unchanged_file(
     entry, upstream, validate, django_capture_on_commit_callbacks
 ):
