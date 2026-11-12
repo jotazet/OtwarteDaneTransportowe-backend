@@ -1,5 +1,7 @@
 """Blog reactions: trusted-proxy IP resolution, daily limits and soft-remove."""
 
+from unittest.mock import patch
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory
@@ -123,6 +125,29 @@ def test_create_update_and_soft_remove_reaction(api_client, post):
     # null is not an empty value any more: '' is the only one.
     response = api_client.post(url, {'reaction': None}, format='json')
     assert response.status_code == 400
+
+
+def test_concurrent_first_reactions_do_not_500(api_client, post):
+    # Simulate the double click: the other request inserts its row after our
+    # lookup found nothing, so our INSERT hits unique_reaction_per_post_ip.
+    url = f'/api/blog/reactions/{post.id}/'
+    real_get = Reaction.objects.get
+    calls = []
+
+    def racing_get(*args, **kwargs):
+        if not calls:
+            calls.append(1)
+            Reaction.objects.create(post=post, ip_address='127.0.0.1', reaction='like')
+            raise Reaction.DoesNotExist
+        return real_get(*args, **kwargs)
+
+    with patch.object(Reaction.objects, 'get', side_effect=racing_get):
+        response = api_client.post(url, {'reaction': 'wow'}, REMOTE_ADDR='127.0.0.1')
+
+    assert response.status_code == 200
+    assert response.json()['reaction'] == 'wow'
+    assert Reaction.objects.filter(post=post).count() == 1
+    assert Reaction.objects.get(post=post).reaction == 'wow'
 
 
 def test_daily_limit_of_ten_active_reactions(api_client, settings):

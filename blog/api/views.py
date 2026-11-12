@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.db import IntegrityError, transaction
 from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -170,13 +171,22 @@ class ReactionViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_429_TOO_MANY_REQUESTS,
                 )
 
-            reaction = Reaction.objects.create(
-                post=post,
-                ip_address=client_ip,
-                reaction=new_reaction,
-            )
-            output = self.get_serializer(reaction)
-            return Response(output.data, status=status.HTTP_201_CREATED)
+            try:
+                # Savepoint: a failed INSERT must not poison an outer transaction
+                # (ATOMIC_REQUESTS, tests) before we look the row up again.
+                with transaction.atomic():
+                    reaction = Reaction.objects.create(
+                        post=post,
+                        ip_address=client_ip,
+                        reaction=new_reaction,
+                    )
+            except IntegrityError:
+                # A concurrent request (double click) created the row between our
+                # lookup and the insert: treat this request as the update.
+                existing = Reaction.objects.get(post=post, ip_address=client_ip)
+            else:
+                output = self.get_serializer(reaction)
+                return Response(output.data, status=status.HTTP_201_CREATED)
 
         # Existing row found for this (post, IP)
         if is_empty:

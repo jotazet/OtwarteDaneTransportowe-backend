@@ -65,6 +65,16 @@ def _patch_get(monkeypatch, fake_get):
         '169.254.1.1',  # link-local
         '224.0.0.1',  # multicast
         '0.0.0.0',  # unspecified
+        '100.64.0.1',  # shared address space (CGNAT)
+        '100.127.255.254',  # shared address space (CGNAT)
+        '64:ff9b::7f00:1',  # NAT64, embeds 127.0.0.1
+        '64:ff9b::808:808',  # NAT64, whole prefix is blocked
+        '64:ff9b:1::1',  # local-use NAT64
+        '::ffff:127.0.0.1',  # IPv4-mapped loopback
+        '::ffff:100.64.0.1',  # IPv4-mapped shared address space
+        '::1',  # IPv6 loopback
+        'fd00::1',  # IPv6 unique local
+        'ff02::1',  # IPv6 multicast
     ],
 )
 def test_non_public_ips_are_blocked(monkeypatch, blocked_ip):
@@ -73,12 +83,23 @@ def test_non_public_ips_are_blocked(monkeypatch, blocked_ip):
         assert_safe_outbound_url('https://feeds.example.org/gtfs.zip')
 
 
-def test_public_ip_is_allowed(monkeypatch):
-    _patch_dns(monkeypatch, '93.184.216.34')
+@pytest.mark.parametrize(
+    'public_ip',
+    [
+        '93.184.216.34',
+        '8.8.8.8',
+        '100.63.255.255',  # just below shared address space
+        '100.128.0.1',  # just above shared address space
+        '2606:4700:4700::1111',
+        '::ffff:8.8.8.8',  # IPv4-mapped public address
+    ],
+)
+def test_public_ip_is_allowed(monkeypatch, public_ip):
+    _patch_dns(monkeypatch, public_ip)
     hostname, port, ips = resolve_public_ips('https://feeds.example.org/gtfs.zip')
     assert hostname == 'feeds.example.org'
     assert port == 443
-    assert ips == {'93.184.216.34'}
+    assert ips == {public_ip}
 
 
 def test_any_private_ip_in_mixed_resolution_blocks(monkeypatch):
