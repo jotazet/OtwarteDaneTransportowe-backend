@@ -1002,13 +1002,16 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                             'name': 'Cannot change name after stage 1.',
                         }
                     )
-            if 'transport_organization' in attrs:
+            if (
+                'transport_organization' in attrs
+                and attrs['transport_organization'].pk != self.instance.transport_organization_id
+            ):
                 raise serializers.ValidationError(
                     {
                         'transport_organization': ('Cannot change organization after stage 1.'),
                     }
                 )
-            if 'data_type' in attrs:
+            if 'data_type' in attrs and attrs['data_type'] != self.instance.data_type:
                 raise serializers.ValidationError(
                     {
                         'data_type': ('Cannot change data type after stage 1.'),
@@ -1220,7 +1223,7 @@ class FeedSubmissionWriteSerializer(serializers.ModelSerializer):
                     # cached_file/cached_at concurrently via queryset.update();
                     # a full save() would write back this instance's stale copy.
                     entry.save(update_fields=sorted(update_fields))
-                    # defer_source_refresh: the rejected-resubmission flow in the
+                    # defer_source_refresh: the stage-1 resubmission flow in the
                     # view schedules the refresh itself (unconditionally, so a
                     # resubmission with an unchanged url still re-validates).
                     if entry.url and url_changed and not self.context.get('defer_source_refresh'):

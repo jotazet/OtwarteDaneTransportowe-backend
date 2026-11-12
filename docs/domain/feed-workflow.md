@@ -37,6 +37,8 @@ Helper/Admin PATCH { "rejection_cause": "..." }
   -> GTFS validation re-runs after the file changes / the cache is fetched
 ```
 
+A submission that a reviewer moved back to stage 1 without a cause (`PATCH {"stage": 1}`, see [Reviewer override](#reviewer-override)) follows the same path: the owner may edit it fully, and a change of the source moves it to stage 2 and restarts verification.
+
 ## Realtime feed
 
 ```text
