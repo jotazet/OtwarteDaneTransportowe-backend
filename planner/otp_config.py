@@ -63,12 +63,20 @@ def router_config(updaters: list[dict]) -> dict:
     return {'server': {'apiProcessingTimeout': '15s'}, 'updaters': updaters}
 
 
+class LinkSkipped(Exception):
+    """OTP cannot be given this endpoint; ``error_code`` says why."""
+
+    def __init__(self, error_code: str):
+        super().__init__(error_code)
+        self.error_code = error_code
+
+
 def otp_link(submission_id: int, endpoint) -> tuple[str, dict]:
     """(url, headers) by which OTP reads a catalogue endpoint, as the public catalogue links it.
 
     Proxied endpoints come from this app's cached copy over the internal network
     with the token header; the others from the provider, checked like any
-    outbound URL first (raises OutboundURLBlocked), credentials moved to headers.
+    outbound URL first, credentials moved to headers. Raises LinkSkipped.
     """
     if endpoint.hide_original:
         # OTP substitutes ${...} from its environment, so the token itself never
@@ -77,7 +85,15 @@ def otp_link(submission_id: int, endpoint) -> tuple[str, dict]:
             f'{settings.PLANNER_ODT_INTERNAL_URL}/feed/rt/{submission_id}/{endpoint.endpoint_type}/',
             {INTERNAL_TOKEN_HEADER: '${PLANNER_INTERNAL_TOKEN}'},
         )
-    assert_safe_outbound_url(endpoint.url)
+    # OTP expands every '${' in the config file text before parsing the JSON
+    # (environment variables, ${includeFile:...}), so a provider URL must not
+    # contain one; JSON encoding leaves '${' as is.
+    if '${' in endpoint.url:
+        raise LinkSkipped('planner.rt_url_unsupported')
+    try:
+        assert_safe_outbound_url(endpoint.url)
+    except OutboundURLBlocked:
+        raise LinkSkipped('planner.rt_url_blocked') from None
     return split_userinfo(endpoint.url)
 
 
@@ -87,7 +103,7 @@ def realtime_updaters(planner_feeds) -> tuple[list[dict], list[dict]]:
     OTP reads the same links the public catalogue shows: proxied endpoints from
     this app's cached copy (over the internal network, with the token header),
     the others from the provider's URL. Those URLs are checked like any other
-    outbound URL first; a blocked one is skipped. A feed with ``realtime_from``
+    outbound URL first; a blocked or unusable one is skipped. A feed with ``realtime_from``
     gets the GTFS-RT published for that feed instead of its own. Returns
     ``(updaters, skipped)`` where ``skipped`` lists ``{feed_id, endpoint_type, error_code}``.
     """
@@ -111,12 +127,12 @@ def realtime_updaters(planner_feeds) -> tuple[list[dict], list[dict]]:
         ):
             try:
                 url, headers = otp_link(rts.id, endpoint)
-            except OutboundURLBlocked:
+            except LinkSkipped as exc:
                 skipped.append(
                     {
                         'feed_id': feed_id,
                         'endpoint_type': endpoint.endpoint_type,
-                        'error_code': 'planner.rt_url_blocked',
+                        'error_code': exc.error_code,
                     }
                 )
                 continue
@@ -184,8 +200,8 @@ def rental_updaters(sources) -> tuple[list[dict], list[dict]]:
             continue
         try:
             url, headers = otp_link(source.submission_id, endpoint)
-        except OutboundURLBlocked:
-            result['error_code'] = 'planner.rt_url_blocked'
+        except LinkSkipped as exc:
+            result['error_code'] = exc.error_code
             continue
         updater = {
             'type': 'vehicle-rental',

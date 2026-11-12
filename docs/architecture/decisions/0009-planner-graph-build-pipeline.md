@@ -24,6 +24,7 @@ The planner graph (OTP) is built from the published GTFS feeds an admin selects,
   - Proxied endpoints are read from ODT's cached copy over the internal network. The requests carry a shared token (`PLANNER_INTERNAL_TOKEN`) that exempts them from public throttling.
   - Non-proxied endpoints are polled from the provider's URL directly. **This is a deliberate exception to "outbound HTTP to user-supplied URLs only through `net_security`"**, mitigated as follows:
     - every such URL passes `assert_safe_outbound_url` when the configuration is generated, and blocked ones are skipped (`planner.rt_url_blocked`);
+    - URLs containing `${` are skipped (`planner.rt_url_unsupported`): OTP expands `${NAME}` (environment variables) and `${includeFile:NAME}` in the raw config text before parsing it, and fails to load the file when a variable is not set (verified in OTP 2.10.0's `ConfigFileLoader` and `EnvironmentVariableReplacer`);
     - OTP's network does not reach Postgres, Redis or the Docker proxy;
     - sources with credentials are always proxied, so OTP never holds secrets.
   - Remaining risks: DNS rebinding after the check, and no response size cap beyond OTP's memory limit.
