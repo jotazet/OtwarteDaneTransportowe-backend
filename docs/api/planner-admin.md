@@ -151,7 +151,7 @@ POST /api/planner/admin/builds/{id}/activate/
 ```
 
 - `POST /builds/` builds now. It returns `202` with the queued build, or `409 {"code": "planner.build_in_progress"}` when a build is already queued or running (`planner.osm_download_in_progress` during an OSM download).
-- `POST /builds/{id}/activate/` serves that earlier build's graph again (a rollback). It returns `202`, or `409` with `planner.build_in_progress` or `planner.build_not_activatable` (the build did not succeed, is already served, was built with another OTP image, or its graph was removed). Only the served graph and the newest other one are kept.
+- `POST /builds/{id}/activate/` serves that earlier build's graph again (a rollback). It returns `202`, or `409` with `planner.build_in_progress` or `planner.build_not_activatable` (the build did not succeed, is already served, was built with another OTP image, or its graph was removed). Only the served graph and the one that served before it are kept (after a rollback, that is the graph rolled back to, so a later build keeps it).
 - Lists are newest first; the detail adds `feed_results` and `log_excerpt`.
 
 ```json
@@ -183,7 +183,7 @@ POST /api/planner/admin/builds/{id}/activate/
 | --- | --- |
 | `status` | `queued`, `running`, `succeeded`, `failed` |
 | `trigger` | `schedule`, `manual`, `rollback` |
-| `otp_stopped_at` | Start of the maintenance window: the serving OTP is stopped from then until the build ends. |
+| `otp_stopped_at` | Start of the maintenance window: the serving OTP is stopped from then until the build ends. A failed build ends (and the window with it) once OTP is healthy on the previous graph again, at most 20 minutes later. |
 | `indexed_at` | When stop and line search was refreshed from this build's graph; `null` until then (retried every 5 minutes while the build is active). |
 | `feed_results[].outcome` | `fresh`, `stale`, `excluded` (see [journey planner](../domain/journey-planner.md#build-outcomes-per-feed)) |
 | `feed_results[].error_code` | `planner.feed_not_published`, `planner.feed_source_unavailable`, `planner.feed_invalid`, `planner.feed_no_service_in_period` |
@@ -297,7 +297,7 @@ Requests to `/api/planner/v1/` of the last 30 days, newest first, paginated. The
 ```
 
 - No query parameters are stored, so trip origins and destinations never reach the log.
-- Refused requests (`401`, `403`, `429`, `503`) are logged at most once a minute per client and status.
+- Refused requests are logged at most once a minute per client and status: `401`, `403`, `429`, and `503` while the API is switched off (`planner.disabled`) or in the build window (`details.reason: "maintenance"`). Other `503`s (`reason: "engine"`, `planner.busy`) are all logged.
 - Rows are deleted after `PLANNER_REQUEST_LOG_RETENTION_DAYS` (30) days, once each day has been summarised (see below). The log contains IP addresses, which are personal data; it is for the `Admin` group only.
 
 ## Statistics (dashboard)
@@ -315,7 +315,7 @@ GET /api/planner/admin/stats/daily/?date_from=&date_to=&endpoint=&api_key=
 
 The first five read the raw request log, so they cover the last 30 days (`PLANNER_REQUEST_LOG_RETENTION_DAYS`) and can be narrowed to one IP or key. They share the filters `since` and `until` (ISO 8601, default: the last 24 hours), `endpoint` (the URL name, e.g. `planner-v1-plan`), `api_key` (ID) and `ip`. A dashboard drills down by adding them: the whole API, then one endpoint, then one address. Longer history comes from `stats/daily/`.
 
-Counts are split into status classes: `ok` (below 400), `client_errors` (400–499 except 429), `rate_limited` (429) and `server_errors` (500 and above, which includes `503` while the planner is switched off or rebuilding). Rejections (401, 403, 429, 503) are logged at most once a minute per client, so their counts are lower bounds. Latencies are in milliseconds; `p95_latency_ms` is the 95th percentile.
+Counts are split into status classes: `ok` (below 400), `client_errors` (400–499 except 429), `rate_limited` (429) and `server_errors` (500 and above, which includes `503` while the planner is switched off or rebuilding). Refusals (401, 403, 429, and 503 while switched off or rebuilding) are logged at most once a minute per client, so their counts are lower bounds; `503`s from OTP failing or being busy are counted in full. Latencies are in milliseconds; `p95_latency_ms` is the 95th percentile.
 
 **`stats/summary/`**: totals for the dashboard tiles.
 

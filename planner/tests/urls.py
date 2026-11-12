@@ -20,6 +20,14 @@ class OtpProbe(PlannerPublicView):
         return Response({'ok': True})
 
 
+class EngineProbe(PlannerPublicView):
+    uses_otp = True
+    limit_group = 'realtime'
+
+    def get(self, request):
+        return Response(self.otp_query('{ feeds { feedId } }', {}, timeout=1))
+
+
 class _Params(serializers.Serializer):
     n = serializers.IntegerField(min_value=1)
 
@@ -34,5 +42,6 @@ urlpatterns = [
     path('', include('OtwarteDaneTransportowe.urls')),
     path('api/planner/v1/test-lookup/', LookupProbe.as_view(), name='test-lookup'),
     path('api/planner/v1/test-otp/', OtpProbe.as_view(), name='test-otp'),
+    path('api/planner/v1/test-engine/', EngineProbe.as_view(), name='test-engine'),
     path('api/planner/v1/test-validate/', ValidatingProbe.as_view(), name='test-validate'),
 ]

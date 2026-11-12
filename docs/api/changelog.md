@@ -2,6 +2,16 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: planner maintenance after a failed build, kept rollback graph, OTP outages in the stats
+
+Not breaking.
+
+- **Public planner API:** after a failed graph build, OTP-backed endpoints keep answering `503 planner.unavailable` with `details.reason: "maintenance"` and `Retry-After` until OTP is healthy on the previous graph again (at most 20 minutes), instead of `reason: "engine"` without `Retry-After` while it loads. See [Planner API](planner.md).
+- **Admin builds:** a failed build's `finished_at`, and `maintenance` in the status, now include that restart. After a rollback, the next build keeps the graph rolled back to for a further rollback (it used to keep the one rolled away from). See [Planner admin](planner-admin.md).
+- **Request log and statistics:** `503`s caused by OTP failing (`reason: "engine"`) or being busy (`planner.busy`) are now logged for every request, so `server_errors` counts OTP outages in full. `503`s while the API is switched off or in the build window are still logged once a minute per client, like `401`, `403` and `429`.
+
+---
+
 ## 2026-11-12: coded errors for a source credential ODT cannot decrypt
 
 Not breaking. When ODT cannot decrypt a stored `auth_value` (a key configuration problem on ODT's side), the download is not attempted and the failure is reported as a code:

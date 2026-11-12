@@ -11,7 +11,7 @@ from django.core.management import call_command
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from planner import access
+from planner import access, otp_runtime
 from planner.models import ApiKey, GraphBuild, IpBan, PlannerRequestLog, PlannerSettings
 
 pytestmark = pytest.mark.django_db
@@ -357,3 +357,26 @@ def test_requests_while_switched_off_are_logged_once_a_minute():
         get(LOOKUP)
 
     assert PlannerRequestLog.objects.filter(status_code=503).count() == 1
+
+
+def test_requests_during_maintenance_are_logged_once_a_minute(enabled):
+    GraphBuild.objects.create(
+        trigger='schedule', otp_image='x', status='running', otp_stopped_at=timezone.now()
+    )
+
+    for _ in range(3):
+        get(OTP)
+
+    assert PlannerRequestLog.objects.filter(status_code=503).count() == 1
+
+
+def test_every_request_otp_fails_is_logged(enabled, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise otp_runtime.OtpUnavailable('connection refused')
+
+    monkeypatch.setattr(otp_runtime, 'query', unavailable)
+
+    responses = [get('/api/planner/v1/test-engine/') for _ in range(3)]
+
+    assert {r.json()['details']['reason'] for r in responses} == {'engine'}
+    assert PlannerRequestLog.objects.filter(status_code=503).count() == 3

@@ -595,3 +595,80 @@ def test_excluded_feed_keeps_its_area_in_the_street_graph(make_feed, fake_otp):
 
     assert results(build)['waw']['outcome'] == 'excluded'
     assert 'street' not in fake_otp.kinds()
+
+
+def test_build_after_a_rollback_keeps_the_graph_rolled_back_to(make_feed, fake_otp):
+    feed = make_feed('krk')
+    first = build_now()
+    set_feed_content(feed, gtfs_variant('v2'))
+    second = build_now()
+    first.refresh_from_db()
+    rollback = services.request_rollback(first)
+    pipeline.run_build(rollback.id)
+    set_feed_content(feed, gtfs_variant('v3'))
+
+    third = build_now()
+
+    assert third.is_active
+    assert os.path.exists(pipeline.graph_dir(third))
+    assert os.path.exists(pipeline.graph_dir(first))  # served before the switch
+    assert not os.path.exists(pipeline.graph_dir(second))
+
+
+def test_failed_build_keeps_maintenance_until_otp_is_healthy_again(
+    make_feed, fake_otp, monkeypatch
+):
+    feed = make_feed('krk')
+    first = build_now()
+    set_feed_content(feed, gtfs_variant('v2'))
+    fake_otp.graph_result = (1, 'boom')
+    monkeypatch.setattr(pipeline, 'SERVER_START_TIMEOUT_SECONDS', 3600)
+    seen = []
+
+    def is_healthy():
+        seen.append((fake_otp.running, services.maintenance_active()))
+        return len(seen) > 2  # OTP loads the previous graph for a while
+
+    monkeypatch.setattr(pipeline.otp_runtime, 'is_healthy', is_healthy)
+
+    build = build_now()
+
+    assert build.error_code == 'planner.graph_build_failed'
+    assert seen == [(True, True)] * 3
+    assert not services.maintenance_active()
+    assert serving_target() == f'graphs/{first.id}'
+
+
+def test_health_wait_stops_once_the_container_has_exited(make_feed, fake_otp, monkeypatch):
+    build = GraphBuild.objects.create(
+        trigger=GraphBuild.TRIGGER_MANUAL,
+        otp_image='x',
+        status=GraphBuild.STATUS_RUNNING,
+        heartbeat_at=timezone.now(),
+    )
+    monkeypatch.setattr(pipeline, 'SERVER_START_TIMEOUT_SECONDS', 3600)
+    sleeps = []
+    monkeypatch.setattr(pipeline, '_sleep', sleeps.append)
+    fake_otp.healthy = False
+    fake_otp.running = False
+
+    assert pipeline._wait_until_healthy(build) is False
+    assert sleeps == []
+
+
+def test_snapshot_left_behind_by_a_crash_is_replaced_at_the_next_build(
+    make_feed, fake_otp, planner_data
+):
+    feed = make_feed('krk')
+    build_now()
+    feed.refresh_from_db()
+    snapshot = Path(pipeline.snapshot_path(feed))
+    good = snapshot.read_bytes()
+    # A crash after the commit: the database has the new hash, the file is the old one.
+    snapshot.write_bytes(gtfs_variant('old'))
+    Path(f'{snapshot}.tmp').write_bytes(good)
+
+    build_now()
+
+    assert snapshot.read_bytes() == good
+    assert not Path(f'{snapshot}.tmp').exists()
