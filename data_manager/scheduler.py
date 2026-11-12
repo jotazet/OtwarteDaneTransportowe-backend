@@ -284,7 +284,8 @@ def _fetch_realtime_endpoint_rt(
         _delete_stale_cache_file(endpoint.cached_file, old_cached_name)
         endpoint.record_entity_types(entity_types)
         endpoint.mark_fetch_success(now)
-        logger.info('Refreshed realtime endpoint_rt=%d  url=%s', endpoint.pk, endpoint.url)
+        # DEBUG: this runs on every poll, every few seconds. No URL: it may carry a token.
+        logger.debug('Refreshed realtime endpoint_rt=%d', endpoint.pk)
         return FETCH_OK
     except (OutboundURLBlocked, InvalidFeedContent) as exc:
         _log_endpoint_rt_error(endpoint, FeedFetchError.ERROR_INVALID_CONTENT, exc)

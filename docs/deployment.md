@@ -68,6 +68,42 @@ flowchart LR
   host --> gtfs[gtfs-validator]
 ```
 
+### Memory limits and logs
+
+The host is shared and tight on memory: the serving OTP holds ~7 GB of the VPS's 11 GB, and graph
+builds push available RAM down to 0.4 GB ([section 19](#19-journey-planner-opentripplanner)).
+The application services, Postgres, Redis and OTP therefore have a `mem_limit`. It is a ceiling, not a reservation:
+a runaway process is killed inside its own container (and restarted) instead of draining the
+host, where the memory guard would kill OTP first. Docker also lets a limited container
+use as much swap as its `mem_limit`.
+
+| Service | Limit | Variable | What it has to fit |
+| --- | --- | --- | --- |
+| `web` | 1 GB | `WEB_MEM_LIMIT` | gunicorn master + `GUNICORN_WORKERS` (3) Django processes |
+| `celery_worker` | 1 GB | `CELERY_DEFAULT_MEM_LIMIT` | main process + `CELERY_DEFAULT_CONCURRENCY` (2) children, each recycled above `CELERY_WORKER_MAX_MEMORY_PER_CHILD` (~300 MB) after its task; a realtime body of up to 32 MB is parsed in full |
+| `celery_validator_worker` | 1 GB | `CELERY_FEEDS_MEM_LIMIT` | main process + one child that loads the validator's JSON report (the validator itself runs in its own container, `GTFS_VALIDATOR_MEM_LIMIT`) |
+| `celery_planner_worker` | 6 GB | `CELERY_PLANNER_MEM_LIMIT` | `osmium` filtering and cropping the OSM extract for a new street graph, in this container: for all of Poland (2.1 GB PBF) the crop was killed at 4 GB and fit in 5 GB without swap (measured 2026-11-12). It runs while the serving OTP is stopped. Graph builds run in their own containers (`PLANNER_OTP_*_LIMIT`) |
+| `celery_beat` | 256 MB | — | one Django process |
+| `postgres` | 1 GB | `POSTGRES_MEM_LIMIT` | default `shared_buffers` (128 MB) and ~20 connections; the page cache inside the limit is reclaimed before anything is killed |
+| `redis` | 512 MB | — | broker queues, task results (kept for a day) and the cache |
+| `otp` | 7 GB | `PLANNER_OTP_SERVE_MEM_LIMIT` | [section 19](#19-journey-planner-opentripplanner) |
+
+Idle in development (2026-11-12): `web` with gunicorn ~220 MB after a few requests,
+`celery_worker` ~165 MB, `celery_validator_worker` ~110 MB, `celery_beat` ~90 MB, `postgres`
+~35 MB, `redis` ~15 MB. The limits leave room for peaks on top of that but are not yet
+measured under production load. Compare them with the
+real usage (`./scripts/deploy.sh stats --no-stream`) and raise one in the
+[host file](#the-host-file) if a service gets close. A container killed by its limit shows
+`OOMKilled=true` in `docker inspect --format '{{.State.OOMKilled}}' <container>`.
+
+Every service logs through Docker's `json-file` driver with rotation: at most 5 files of
+10 MB per container, the rotated ones gzipped, so `docker compose logs` keeps the last ~50 MB
+of log lines of each in well under that on disk. The busiest is `celery_worker`: Celery logs
+two INFO lines per realtime poll. Containers that the workers start themselves (the
+validator, graph builds) use the Docker daemon's default log settings, which do not rotate
+unless `/etc/docker/daemon.json` sets `log-opts`; they run for minutes and are removed with
+their logs when they finish.
+
 ---
 
 ## 2. Prerequisites
@@ -186,6 +222,12 @@ FEED_AUTH_ENCRYPTION_KEY=<wklej-klucz-Fernet>
 # CELERY_WORKER_MAX_TASKS_PER_CHILD=50
 # CELERY_WORKER_MAX_MEMORY_PER_CHILD=300000   # KiB
 # CELERY_WORKER_PREFETCH_MULTIPLIER=1
+# Container memory ceilings (section 1, "Memory limits and logs"):
+# WEB_MEM_LIMIT=1g
+# CELERY_DEFAULT_MEM_LIMIT=1g
+# CELERY_FEEDS_MEM_LIMIT=1g
+# CELERY_PLANNER_MEM_LIMIT=6g
+# POSTGRES_MEM_LIMIT=1g
 
 # Download limits. Static feeds are streamed to a temporary file,
 # so MAX_FEED_FILE_SIZE_BYTES limits disk, not RAM. Realtime payloads are
@@ -253,6 +295,7 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `UID` / `GID` | User the application containers run as, and the user of the GTFS validator container, so it can write its report into `uploaded_data/`. Default `1000`. |
 | `HOST_PROJECT_PATH` / `HOST_MEDIA_ROOT` | Host paths of the project and of `uploaded_data/`. The validator is started by the host's Docker daemon, so its bind mounts need host paths. Compose passes `${PWD}` and `${PWD}/uploaded_data` when unset; outside compose `HOST_MEDIA_ROOT` defaults to `HOST_PROJECT_PATH/uploaded_data`. |
 | `GTFS_VALIDATOR_MEM_LIMIT`, `GTFS_VALIDATOR_PIDS_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS` | Resource limits of the validator container. Defaults `2g`, `512` and two cores (`2000000000`; `1000000000` = one core, `0` = no cap). Two of the production VPS's six vCPUs leave the rest to OpenTripPlanner, the web and the other workers; a validation then takes longer but still has to fit the 10-minute budget below. Docker refuses a cap above the host's CPU count, so set `1000000000` (or `0`) on a single-CPU machine. |
+| `WEB_MEM_LIMIT`, `CELERY_DEFAULT_MEM_LIMIT`, `CELERY_FEEDS_MEM_LIMIT`, `CELERY_PLANNER_MEM_LIMIT`, `POSTGRES_MEM_LIMIT` | `mem_limit` of `web`, `celery_worker`, `celery_validator_worker`, `celery_planner_worker` and `postgres`. Default `1g` each, `6g` for the planner worker (it crops the OSM extract); raise the web and worker ones together with `GUNICORN_WORKERS` and the Celery concurrencies, the planner one with a larger OSM extract. See [section 1](#memory-limits-and-logs). |
 | `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis databases of the Celery broker and result backend. `docker-compose.yml` sets them (databases `0` and `1`), which overrides `.env`; the defaults (`redis://localhost:6379/0`, `/1`) are for running outside Docker. |
 | `POSTGRES_HOST` / `POSTGRES_PORT` | Database address. `docker-compose.yml` sets `postgres` and `5432`; the defaults `127.0.0.1` and `5420` (the port published on the host in development) are for running on the host. |
 | `DJANGO_MEDIA_ROOT` | Directory of uploaded and cached feed files and blog images inside the containers. Default `uploaded_data/` in the project directory; if you change it, `HOST_MEDIA_ROOT` must still point to the same directory on the host. |
@@ -827,6 +870,11 @@ finishes a tick at least once a minute (`/tmp/celery-beat-heartbeat`); a beat th
 the database stops ticking. Docker does not restart an unhealthy container: restart it with
 `./scripts/deploy.sh restart <service>` once the cause is fixed.
 
+**A container restarts on its own; `docker inspect` shows `OOMKilled=true`**
+→ It reached its `mem_limit` ([section 1](#memory-limits-and-logs)). Look for what grew in
+its logs (a large feed, a long query), then raise its `*_MEM_LIMIT` in the host file or
+lower its concurrency.
+
 **`Control server error: Permission denied: '/.gunicorn'`**
 → Fixed in the image (`HOME=/app`, `--no-control-socket`). Rebuild the image:
 `./scripts/deploy.sh up -d --build`.
@@ -1100,7 +1148,7 @@ the host, and wins over the job's `.env`: `DJANGO_SETTINGS_MODULE`, `UID` and `G
 (required), `HOST_*`, `*_IMAGE`, `COMPOSE_*`, the ports and every other value Compose
 interpolates into `docker-compose*.yml` (`*_HOST_PORT`, `WEB_HOST_BIND`, `GUNICORN_*`,
 `CELERY_*_CONCURRENCY`, `PLANNER_OTP_SERVE_*`), container resource limits
-(`GTFS_VALIDATOR_*_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS`, `PLANNER_OTP_*_HEAP`,
+(`*_MEM_LIMIT`, `GTFS_VALIDATOR_*_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS`, `PLANNER_OTP_*_HEAP`,
 `PLANNER_OTP_*_LIMIT`), paths and internal addresses (`DJANGO_MEDIA_ROOT`,
 `PLANNER_DATA_DIR`, `PLANNER_OSM_FILE`, `PLANNER_OTP_CONTAINER`, `PLANNER_OTP_URL`,
 `PLANNER_ODT_INTERNAL_URL`, `REDIS_CACHE_URL`). It may also pin an application setting. It
