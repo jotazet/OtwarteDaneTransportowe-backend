@@ -211,9 +211,8 @@ def refresh_static_feeds_task() -> dict:
         .values_list('id', flat=True)
     )
 
-    # The window re-dispatches an entry on every tick until its fetch succeeds,
-    # so a slow or queued fetch piles up copies. Each copy carries the window
-    # start and skips itself once a fetch has succeeded inside that window.
+    # The window re-queues an entry every tick until a fetch succeeds; the
+    # cutoff turns the copies piled up behind a slow fetch into no-ops.
     for entry_id in entry_ids:
         fetch_static_entry_task.delay(entry_id, skip_if_fetched_since=window_start.isoformat())
 
