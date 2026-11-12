@@ -66,11 +66,6 @@ def snapshot(query) -> list[dict]:
         _lock.release()
 
 
-def forget_snapshot() -> None:
-    with _lock:
-        _snapshot.update(until=0.0, taken=None, vehicles=[])
-
-
 def vehicles(data: dict) -> list[dict]:
     oldest = timezone.now() - MAX_POSITION_AGE
     rows = []

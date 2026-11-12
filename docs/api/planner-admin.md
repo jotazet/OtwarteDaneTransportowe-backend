@@ -68,7 +68,7 @@ DELETE /api/planner/admin/feeds/{id}/
 
 Field error codes: `planner.feed_not_gtfs`, `planner.feed_not_published` (on `submission`); `planner.feed_other_organization` (on `submission` and `realtime_from`); `planner.invalid_feed_id`, `planner.feed_id_immutable`, `unique` (on `feed_id`).
 
-Changes take effect at the next build.
+Changes take effect at the next build. `DELETE` (or deleting the submission) also removes the feed's last good version from disk, so a later feed cannot fall back to it; the graph being served is not affected until the next build.
 
 ## Bike and scooter sharing (rental sources)
 

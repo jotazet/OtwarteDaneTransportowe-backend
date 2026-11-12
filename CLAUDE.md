@@ -38,9 +38,9 @@ Backend of **Otwarte Dane Transportowe (ODT)**, a Polish portal for open public 
 
 ## Architecture at a glance
 
-- **Django + DRF + PostgreSQL** ([ADR 0002](docs/architecture/decisions/0002-django-drf-and-postgresql.md)). Apps: `accounts` (users), `blog`, `cases` (organizations, data providers, case statuses), `data_manager` (feed submissions, proxying, validation). The project package `OtwarteDaneTransportowe/` holds settings, URLs, Celery, roles, JWT views and shared helpers.
+- **Django + DRF + PostgreSQL** ([ADR 0002](docs/architecture/decisions/0002-django-drf-and-postgresql.md)). Apps: `accounts` (users), `blog`, `cases` (organizations, data providers, case statuses), `data_manager` (feed submissions, proxying, validation), `planner` (journey planner on a private OpenTripPlanner, [ADRs 0008–0010](docs/architecture/decisions/0008-journey-planner-on-private-opentripplanner.md)). The project package `OtwarteDaneTransportowe/` holds settings, URLs, Celery, roles, JWT views and shared helpers.
 - **JWT auth and five roles as Django groups**, all checks in `OtwarteDaneTransportowe/auth_roles.py` ([ADR 0003](docs/architecture/decisions/0003-jwt-and-group-based-roles.md)).
-- **Celery + Redis** for fetching and validation, queues `default` and `feeds` ([ADR 0004](docs/architecture/decisions/0004-celery-and-redis-for-background-work.md)).
+- **Celery + Redis** for fetching, validation and planner graph builds, queues `default`, `realtime`, `feeds` and `planner`, each with its own worker ([ADR 0004](docs/architecture/decisions/0004-celery-and-redis-for-background-work.md)).
 - **Validation:** the MobilityData GTFS validator in a container through `docker-socket-proxy`; realtime bodies parsed in process ([ADR 0005](docs/architecture/decisions/0005-feed-validation.md)).
 - **Workflow:** submissions move through stages 1–4, derived from their history ([feed workflow](docs/domain/feed-workflow.md)).
 
@@ -64,9 +64,11 @@ accounts/                 users and role assignment (api/, services.py)
 blog/                     posts and reactions
 cases/                    transport organizations, data providers, case statuses
 data_manager/             feed submissions, proxying, validation, Celery tasks
+planner/                  journey planner: OpenTripPlanner graph builds, serving, public API
 OtwarteDaneTransportowe/  settings, urls, celery, auth_roles, jwt_views, pagination
 <app>/tests/              pytest tests per app
 scripts/                  deploy.sh, release deployment (deploy/) and container helpers
+scripts/tests/            pytest tests for compose, deploy scripts and hooks
 docs/api/                 API reference and changelog (shared contract with the frontend)
 docs/domain/              glossary, feed workflow, Polish and EU context
 docs/architecture/        overview and ADRs

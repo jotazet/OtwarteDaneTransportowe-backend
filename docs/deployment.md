@@ -88,7 +88,7 @@ use as much swap as its `mem_limit`.
 | `celery_planner_worker` | 6 GB | `CELERY_PLANNER_MEM_LIMIT` | `osmium` filtering and cropping the OSM extract for a new street graph, in this container: for all of Poland (2.1 GB PBF) the crop was killed at 4 GB and fit in 5 GB without swap (measured 2026-11-12). It runs while the serving OTP is stopped. Graph builds run in their own containers (`PLANNER_OTP_*_LIMIT`) |
 | `celery_beat` | 256 MB | — | one Django process |
 | `postgres` | 1 GB | `POSTGRES_MEM_LIMIT` | default `shared_buffers` (128 MB) and ~20 connections; the page cache inside the limit is reclaimed before anything is killed |
-| `redis` | 512 MB | — | broker queues, task results (kept for a day) and the cache |
+| `redis` | 512 MB | — | broker queues and the cache |
 | `otp` | 7 GB | `PLANNER_OTP_SERVE_MEM_LIMIT` | [section 19](#19-journey-planner-opentripplanner) |
 
 Idle in development (2026-11-12): `web` with gunicorn ~220 MB after a few requests,
@@ -124,9 +124,13 @@ their logs when they finish.
 ## 3. Getting the code
 
 ```bash
-git clone <adres-repozytorium> /opt/odt
-cd /opt/odt
+git clone https://github.com/jotazet/OtwarteDaneTransportowe-backend.git ~/OtwarteDaneTransportowe-backend
+cd ~/OtwarteDaneTransportowe-backend
 ```
+
+Clone into the home of the admin user (`rocky` on the current VPS): `odt-deploy`
+([section 20](#20-releases-automatic-deployment-from-github)) only deploys to
+`~/OtwarteDaneTransportowe-backend`.
 
 ---
 
@@ -179,7 +183,7 @@ A full production `.env` example (replace the values with your own):
 ```dotenv
 # ───────────────────────── Django ─────────────────────────
 DJANGO_SETTINGS_MODULE=OtwarteDaneTransportowe.settings_prod
-DJANGO_SECRET_KEY=<wklej-wygenerowany-secret-key>
+DJANGO_SECRET_KEY=<generated-secret-key>
 DJANGO_ALLOWED_HOSTS=api.example.org
 # 127.0.0.1 and localhost are added automatically in settings_prod (healthcheck).
 # TLS is terminated by the reverse proxy — the redirect in Django is disabled by default:
@@ -190,13 +194,13 @@ DJANGO_ALLOWED_HOSTS=api.example.org
 # ───────────────────────── PostgreSQL ─────────────────────────
 POSTGRES_DB=otwarte_dane_transportowe
 POSTGRES_USER=odt
-POSTGRES_PASSWORD=<wklej-silne-haslo-bazy>
+POSTGRES_PASSWORD=<strong-database-password>
 # POSTGRES_HOST_PORT / REDIS_HOST_PORT are for development: the production overlay
 # publishes no port for postgres or redis.
 
 # ───────────────────────── Redis (broker + cache) ─────────────────────────
-# Compose builds the broker, result and cache URLs from it (see the table below).
-REDIS_PASSWORD=<wklej-haslo-redis>
+# Compose builds the broker and cache URLs from it (see the table below).
+REDIS_PASSWORD=<redis-password>
 
 # ───────────────────────── CORS / CSRF ─────────────────────────
 # Frontend origins (scheme + host, no path), comma-separated:
@@ -209,7 +213,7 @@ CORS_URLS_REGEX=^/(api|feed)/.*$
 CSRF_TRUSTED_ORIGINS=https://api.example.org
 
 # ───────────────────────── Feed credential encryption ─────────────────────────
-FEED_AUTH_ENCRYPTION_KEY=<wklej-klucz-Fernet>
+FEED_AUTH_ENCRYPTION_KEY=<Fernet-key>
 # Only during a key rotation (section 20): the previous key(s), comma-separated, decrypt only.
 # FEED_AUTH_ENCRYPTION_OLD_KEYS=
 
@@ -247,8 +251,8 @@ FEED_AUTH_ENCRYPTION_KEY=<wklej-klucz-Fernet>
 # ───────────────────────── File permissions ─────────────────────────
 UID=1000
 GID=1000
-HOST_PROJECT_PATH=/opt/odt
-HOST_MEDIA_ROOT=/opt/odt/uploaded_data
+HOST_PROJECT_PATH=/home/rocky/OtwarteDaneTransportowe-backend
+HOST_MEDIA_ROOT=/home/rocky/OtwarteDaneTransportowe-backend/uploaded_data
 
 # ───────────────────────── Performance / Celery / gunicorn ─────────────────────────
 GUNICORN_WORKERS=3
@@ -280,10 +284,6 @@ CELERY_FEEDS_CONCURRENCY=1
 TRUSTED_PROXY_CIDRS=172.16.0.0/12
 # Only when the app is served directly to clients, without a reverse proxy:
 # ALLOW_UNTRUSTED_PROXY_IPS=True
-
-# ───────────────────────── Public URL (currently unused) ─────────────────────────
-# Defined in settings, but no code reads it at the moment.
-# PUBLIC_BASE_URL=https://api.example.org
 ```
 
 ### Key variables — description
@@ -302,7 +302,6 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `REDIS_PASSWORD` | Password of the Redis server; `docker-compose.yml` builds the broker and cache URLs from it (`redis://:${REDIS_PASSWORD}@redis:6379/<db>`). Required in production: the Docker bridge network is reachable from the host, so an unpublished Redis without a password is still open to local processes. Letters, digits, `-` and `_` only, because it goes into the URLs unencoded (`envfile.py` refuses anything else). Empty in development (no authentication). |
 | `TRUSTED_PROXY_CIDRS` | **Required behind a reverse proxy.** `X-Forwarded-For` is trusted only from these networks, and the client IP is its rightmost address that is not inside them (entries to the left are whatever the client sent). List **every** proxy hop, including a CDN in front of nginx, or its address becomes the client IP of everyone behind it; keep the networks as narrow as possible, because any address inside them is treated as a proxy. DRF throttling (`THROTTLE_*`) counts requests per this client IP too. Without it every visitor is seen with the proxy's address: blog reactions collapse into ONE shared reaction per post (each visitor overwrites the previous one) and one shared daily limit, and all visitors share one login, feed download and planner limit. The proxy must also forward `X-Forwarded-For`. `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty, unless `ALLOW_UNTRUSTED_PROXY_IPS=True`. In other `DEBUG=False` configurations a missing value is reported by `manage.py check` as `blog.W001`. |
 | `ALLOW_UNTRUSTED_PROXY_IPS` | Default `False`. Set to `True` only when the app is served directly to clients without a reverse proxy: it disables the startup check for an empty `TRUSTED_PROXY_CIDRS`, and the client IP is then taken from the socket address (`REMOTE_ADDR`). |
-| `PUBLIC_BASE_URL` | Currently unused (defined in settings, not read by any code). |
 | `UID` / `GID` | User the application containers run as, and the user of the GTFS validator container, so it can write its report into `uploaded_data/`. Default `1000`. |
 | `HOST_PROJECT_PATH` / `HOST_MEDIA_ROOT` | Host paths of the project and of `uploaded_data/`. The validator is started by the host's Docker daemon, so its bind mounts need host paths. Compose passes `${PWD}` and `${PWD}/uploaded_data` when unset; outside compose `HOST_MEDIA_ROOT` defaults to `HOST_PROJECT_PATH/uploaded_data`. |
 | `GTFS_VALIDATOR_MEM_LIMIT`, `GTFS_VALIDATOR_PIDS_LIMIT`, `GTFS_VALIDATOR_NANO_CPUS` | Resource limits of the validator container. Defaults `2g`, `512` and two cores (`2000000000`; `1000000000` = one core, `0` = no cap). Two of the production VPS's six vCPUs leave the rest to OpenTripPlanner, the web and the other workers; a validation then takes longer but still has to fit the 10-minute budget below. Docker refuses a cap above the host's CPU count, so set `1000000000` (or `0`) on a single-CPU machine. |
@@ -1055,7 +1054,7 @@ Builds deliberately fill RAM and spill into swap, so the VPS has a last-resort g
 ```bash
 # 1. Secrets and settings in .env (see .env.example, "Journey planner")
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # -> PLANNER_INTERNAL_TOKEN
-# COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/opt/odt/planner_data
+# COMPOSE_PROFILES=planner and, on the host, HOST_PLANNER_DATA_DIR=/home/rocky/OtwarteDaneTransportowe-backend/planner_data
 
 # 2. Start the services
 ./scripts/deploy.sh up -d --build
@@ -1158,7 +1157,7 @@ deployment in *Actions*; the job's log shows `odt-deploy: <old> -> <new>` and
   `scripts/deploy/envfile.py`, under the names from `.env.example` and
   [section 5](#5-the-env-file--full-configuration) (`DJANGO_ALLOWED_HOSTS`,
   `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `CORS_URLS_REGEX`, `TRUSTED_PROXY_CIDRS`,
-  `POSTGRES_DB`, `POSTGRES_USER`, `PUBLIC_BASE_URL`, size limits, throttles, ...). Optionally
+  `POSTGRES_DB`, `POSTGRES_USER`, size limits, throttles, ...). Optionally
   `DEPLOY_APP_USER`, the owner of the checkout that `odt-deploy` runs as (default `rocky`).
   Every other setting goes in the [host file](#the-host-file).
 - **Environment secrets:** `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`,

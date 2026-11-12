@@ -3,7 +3,7 @@ from datetime import timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import CharField, F, OuterRef, Prefetch, Q, Subquery, Value
+from django.db.models import CharField, F, Prefetch, Q, Value
 from django.db.models.functions import Coalesce, Concat
 from django.http import FileResponse, Http404
 from django.utils import timezone
@@ -491,14 +491,11 @@ class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [AllowAny]
 
     def get_queryset(self):
+        # Published means the latest history row is stage 4; a rejection always
+        # records stage_after=1, so no rejected submission is in this list.
         approved_ids = completed_submission_ids()
-        latest_history = FeedSubmissionHistory.objects.filter(submission=OuterRef('pk')).order_by(
-            '-created_at', '-id'
-        )
         feeds_qs = (
             FeedSubmission.objects.filter(pk__in=approved_ids)
-            .annotate(latest_event=Subquery(latest_history.values('event_type')[:1]))
-            .exclude(latest_event=FeedSubmissionHistory.EVENT_REJECTED)
             .select_related('transport_organization', 'submitted_by', 'static_entry')
             # published_at resolves from the prefetch cache (see model properties).
             .prefetch_related('history')
