@@ -277,6 +277,8 @@ static_entry.license=CC BY 4.0
 
 **Reviewer override:** Helper/Admin may set **any** stage from any state, skipping stages or moving a submission back; the rule and its history entries are in the [feed workflow](../domain/feed-workflow.md#reviewer-override). Sending the current stage changes nothing. A non-empty `rejection_cause` takes precedence over `stage`. The same applies to realtime submissions.
 
+**Concurrent stage change:** a `PUT`/`PATCH` of a static or realtime submission whose stage (or rejection) changed while the request was being processed, e.g. by automatic validation or another reviewer, returns `409 Conflict` with `{"code": "feeds.stage_changed", "details": {}}` and saves nothing. Reload the submission and send the request again if it still applies.
+
 **Rejection by Helper/Admin:**
 
 ```json

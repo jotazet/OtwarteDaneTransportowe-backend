@@ -63,6 +63,8 @@ DataProvider
 
 The flows above are the normal path. Helper/Admin can override it: `PATCH {"stage": N}` sets any stage 1–4 from any state, so a reviewer can skip a stage (e.g. publish from stage 2) or move a submission back (e.g. 4 → 2, which unpublishes it). Every override is a history entry with the reviewer as `actor` (`completed` for stage 4, otherwise `stage_advanced`, also when moving back), so the audit trail shows who bypassed the workflow and when. See the reviewer override in the [Feeds API](../api/feeds.md#static-feeds-feedsubmission).
 
+A stage transition through the API (a reviewer, an owner's resubmission) or a validation task locks the submission row and reads the stage from committed history before writing its history entry (`lock_submission()` in `data_manager/models.py`), so transitions of one submission happen one at a time. A request whose stage changed after it was read returns `409` `feeds.stage_changed` instead of acting on the old stage.
+
 ## Fetch errors and pauses of proxied feeds
 
 The pause, retry and background cache mechanism applies **only to proxied feeds** (`hide_original=true`). A feed without proxying (`hide_original=false`) or an uploaded file is **not** periodically fetched or served from the server cache — the original URL (or the uploaded file) is what is publicly visible. For such feeds:

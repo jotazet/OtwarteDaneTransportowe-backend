@@ -1136,3 +1136,13 @@ def _compute_completed_realtime_submission_ids() -> list[int]:
         .filter(current_stage_val=4)
         .values_list('id', flat=True)
     )
+
+
+def lock_submission(model, pk):
+    """Lock a FeedSubmission or RealtimeSubmission row and return it with its history.
+
+    API stage transitions (reviewer, owner resubmission) and the validation tasks
+    call this first inside ``transaction.atomic()``, so transitions of one
+    submission run one at a time and ``current_stage`` is read from committed history.
+    """
+    return model.objects.select_for_update().prefetch_related('history').get(pk=pk)

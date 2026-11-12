@@ -11,7 +11,7 @@ from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
 
 # DRF's ValidationError renders as HTTP 400; Django's would bubble up as 500.
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.generics import get_object_or_404
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -50,6 +50,7 @@ from data_manager.models import (
     StaticFeedEntry,
     completed_realtime_submission_ids,
     completed_submission_ids,
+    lock_submission,
 )
 from OtwarteDaneTransportowe.auth_roles import (
     IsFeedParticipant,
@@ -298,6 +299,26 @@ def _require_proxy_managed(source):
     )
 
 
+class StageChanged(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = {'code': 'feeds.stage_changed', 'details': {}}
+
+
+def _lock_unchanged_stage(submission):
+    """Lock the submission; 409 when its stage changed since ``get_object()`` read it.
+
+    The role checks, the editing restrictions and the transition were decided from
+    that read (the prefetched history), and a validation task or another reviewer
+    may have written history since. Call first inside ``transaction.atomic()``.
+    """
+    fresh = lock_submission(type(submission), submission.pk)
+    if (fresh.current_stage, fresh.is_rejected) != (
+        submission.current_stage,
+        submission.is_rejected,
+    ):
+        raise StageChanged()
+
+
 def _apply_stage_transition(request, submission, *, history_model, on_publish=None):
     """Shared admin/helper stage transition for static and realtime submissions.
 
@@ -305,6 +326,8 @@ def _apply_stage_transition(request, submission, *, history_model, on_publish=No
     moves the submission (4 records EVENT_COMPLETED and fires ``on_publish``).
     Note: EVENT_STAGE_ADVANCED is also recorded for demotions — the direction
     lives in stage_before/stage_after; there is no separate 'reverted' event.
+    Reads the stage from ``submission``'s prefetched history: call it only after
+    ``_lock_unchanged_stage`` proved that equals the locked, committed stage.
     """
     rejection_cause = (request.data.get('rejection_cause') or '').strip()
     desired_stage = _validate_stage_value(request.data.get('stage'))
@@ -697,6 +720,7 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         with transaction.atomic():
+            _lock_unchanged_stage(instance)
             submission = serializer.save()
 
             if is_owner_resubmission and _request_changes_static_source(request):
@@ -944,6 +968,7 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
         data = {k: v for k, v in serializer.validated_data.items()}
         endpoints_data = data.pop('endpoints', None)
         with transaction.atomic():
+            _lock_unchanged_stage(instance)
             for attr, val in data.items():
                 setattr(instance, attr, val)
             if data:
@@ -1005,18 +1030,18 @@ class RealtimeSubmissionViewSet(viewsets.ModelViewSet):
                         transaction.on_commit(
                             lambda: schedule_realtime_endpoint_fetches(instance.id)
                         )
-        if can_confirm_feeds(request.user):
-            _apply_stage_transition(
-                request,
-                instance,
-                history_model=RealtimeSubmissionHistory,
-                # Publish side-effect (drift vs static made explicit): seed the
-                # realtime fetch loops after commit; static feeds rely on the
-                # Beat schedule.
-                on_publish=lambda rts: transaction.on_commit(
-                    lambda: schedule_realtime_endpoint_fetches(rts.id)
-                ),
-            )
+            if can_confirm_feeds(request.user):
+                _apply_stage_transition(
+                    request,
+                    instance,
+                    history_model=RealtimeSubmissionHistory,
+                    # Publish side-effect (drift vs static made explicit): seed the
+                    # realtime fetch loops after commit; static feeds rely on the
+                    # Beat schedule.
+                    on_publish=lambda rts: transaction.on_commit(
+                        lambda: schedule_realtime_endpoint_fetches(rts.id)
+                    ),
+                )
         # Re-read: the prefetched history predates the rows written above.
         # get_object() already authorized access, so the unfiltered queryset is fine.
         instance = self.queryset.get(pk=instance.pk)
