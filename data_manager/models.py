@@ -9,7 +9,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from data_manager.fields import EncryptedCharField
-from data_manager.validators import validate_feed_file_size
+from data_manager.validators import validate_feed_file_size, validate_realtime_interval
 
 FETCH_STATUS_ACTIVE = 'active'
 FETCH_STATUS_DELAYED = 'delayed'
@@ -947,7 +947,11 @@ class RealtimeEndpointRT(FetchControlMixin, models.Model):
     url = models.URLField()
     hide_original = models.BooleanField(default=False)
     is_original = models.BooleanField(default=False)
-    interval = models.PositiveIntegerField(help_text='Refresh interval in seconds.', default=60)
+    interval = models.PositiveIntegerField(
+        help_text='Refresh interval in seconds.',
+        default=60,
+        validators=[validate_realtime_interval],
+    )
     auth_type = models.CharField(max_length=20, choices=AUTH_TYPE_CHOICES, blank=True)
     auth_value = EncryptedCharField(blank=True, null=True)
     cached_file = models.FileField(

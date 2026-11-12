@@ -46,7 +46,7 @@ DataProvider
      (see "Realtime rejection reasons" in the Feeds API); a published submission
      (stage 4, e.g. after an Admin edits its endpoints) stays published and the
      failure is only logged
-  -> from stage 2 the owner may PATCH only the note, license and interval on endpoints (not the name, URL, auth, is_original, hide_original)
+  -> from stage 2 the owner may PATCH only the note, license and interval on endpoints (not the name, URL, auth, is_original, hide_original); an interval is never below 5 s
   -> Helper/Admin PATCH { "stage": 4 }
   -> the realtime feed appears publicly in the feed catalogue and /feed/rt/{id}/
 ```

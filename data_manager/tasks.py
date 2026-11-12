@@ -37,6 +37,8 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
+from data_manager.validators import REALTIME_MIN_INTERVAL_SECONDS
+
 logger = get_task_logger(__name__)
 
 # Lekki lock per endpoint, aby unikac nakladania fetchy dla tego samego RT.
@@ -422,7 +424,7 @@ def fetch_realtime_endpoint_task(endpoint_id: int) -> dict:
             ]
         )
         if endpoint.fetch_status == FETCH_STATUS_ACTIVE:
-            countdown = endpoint.interval
+            countdown = max(endpoint.interval, REALTIME_MIN_INTERVAL_SECONDS)
         elif endpoint.fetch_status == FETCH_STATUS_DELAYED and endpoint.next_fetch_after:
             countdown = _seconds_until(endpoint.next_fetch_after)
         else:

@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: realtime refresh interval of at least 5 seconds
+
+Not breaking for clients that send sensible intervals. A realtime endpoint's `interval` in `POST`/`PUT`/`PATCH /api/data_manager/realtime-submissions/` must now be at least **5** seconds; `0` to `4` return `400` with field code `realtime.interval_too_short` on `endpoints[i].interval` (it used to be accepted, and `0` made ODT fetch the provider in a tight loop). Endpoints stored with an interval below 5 were raised to 5 by a migration, so the published `interval` in the catalogue is never below 5 either. See [Realtime validation rules](feeds.md).
+
+---
+
 ## 2026-10-17: entity types of a realtime endpoint
 
 Not breaking. Endpoints in the public catalogue (`GET /api/data_manager/feeds/{organization_id}/`, `realtime_feed.endpoints[]`) gain **`entity_types`**: the GTFS-RT entity types ODT has seen in the endpoint's bodies (`trip_update`, `vehicle_position`, `service_alert`), or `[]`. A GTFS-RT feed may mix them, and in October 2026 seven published submissions had vehicle positions (one also alerts) inside an endpoint submitted as `trip_update`; the catalogue can now show that. The journey planner polls these types too, from the next build. See [Public feed catalogue](feeds.md#public-feed-catalogue).
