@@ -2,6 +2,17 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-12: owner edits of static submissions at stage 1 and full `PUT`
+
+Not breaking. `PUT`/`PATCH /api/data_manager/feed-submissions/{id}/`:
+
+- a submission a reviewer moved back to stage 1 without a `rejection_cause` now moves to stage 2 and is verified again when its owner changes the source, as after a rejection; before, it stayed at stage 1 (NeTEx/other) or depended on the file name or URL changing (GTFS);
+- after stage 1, an owner's body may contain `transport_organization` and `data_type` with their current values, so a full `PUT` succeeds; a different value still returns `400` with the same error as before.
+
+See [Static feeds](feeds.md#static-feeds-feedsubmission) and the [feed workflow](../domain/feed-workflow.md).
+
+---
+
 ## 2026-11-12: coded errors for a source credential ODT cannot decrypt
 
 Not breaking. When ODT cannot decrypt a stored `auth_value` (a key configuration problem on ODT's side), the download is not attempted and the failure is reported as a code:

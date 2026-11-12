@@ -709,9 +709,10 @@ class FeedSubmissionViewSet(viewsets.ModelViewSet):
         # saved before a malformed 'stage' 400s.
         _validate_stage_value(request.data.get('stage'))
 
-        was_rejected = instance.is_rejected
         restricted_static_edit = not can_edit_static_feed_source(request.user, instance)
-        is_owner_resubmission = was_rejected and not can_confirm_feeds(request.user)
+        # Stage 1 covers both a rejection and a reviewer demotion without a cause:
+        # either way a source change by the owner restarts verification.
+        is_owner_resubmission = instance.current_stage == 1 and not can_confirm_feeds(request.user)
         context = self.get_serializer_context()
         context['restricted_static_edit'] = restricted_static_edit
         # For resubmissions the view schedules the source refresh itself (below),
