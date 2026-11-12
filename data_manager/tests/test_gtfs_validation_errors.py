@@ -11,8 +11,9 @@ keep the stage, set ``validation_status=error`` with a code from
 import io
 import json
 import os
+import time
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import docker
 import pytest
@@ -23,6 +24,7 @@ from django.core.files.base import ContentFile
 from django.core.management import call_command
 
 from cases.models import TransportOrganization
+from data_manager import tasks
 from data_manager import validation_errors as ve
 from data_manager.models import FeedSubmission, FeedSubmissionHistory, StaticFeedEntry
 from data_manager.tasks import validate_gtfs_feed_task
@@ -75,17 +77,25 @@ def _entry(org, user, stage=2, **kwargs):
     return StaticFeedEntry.objects.create(submission=submission, **kwargs)
 
 
-def _docker(run):
-    """docker.from_env() stand-in whose containers.run() calls ``run(volumes)``."""
+def _docker(run=lambda volumes: None, *, exit_code=0, wait=None, listed=()):
+    """docker.from_env() stand-in whose containers.run() calls ``run(volumes)``.
 
-    class _Containers:
-        def run(self, *, volumes, **kwargs):
-            return run(volumes)
+    The started container exits with ``exit_code``, or its wait() is ``wait``.
+    ``from_env.return_value`` is the client, to check what the task asked of it.
+    """
+    client = MagicMock()
+    container = MagicMock()
+    container.wait.side_effect = wait or (lambda timeout: {'StatusCode': exit_code})
+    container.logs.return_value = b'Killed'
 
-    class _Client:
-        containers = _Containers()
+    def containers_run(*, volumes, **kwargs):
+        run(volumes)
+        return container
 
-    return lambda: _Client()
+    client.containers.run.side_effect = containers_run
+    client.containers.run.return_value = container  # what containers_run returns
+    client.containers.list.return_value = list(listed)
+    return MagicMock(return_value=client)
 
 
 def _write_report(content: str):
@@ -118,11 +128,6 @@ def _rejections(entry):
     return entry.submission.history.filter(event_type=FeedSubmissionHistory.EVENT_REJECTED)
 
 
-_CONTAINER_OOM = docker.errors.ContainerError(
-    'c', 137, ['-i', '/input/feed.zip'], 'gtfs-validator', b'Killed'
-)
-
-
 @pytest.mark.parametrize('stage', [2, 3])
 @pytest.mark.parametrize(
     ('from_env', 'code'),
@@ -132,11 +137,7 @@ _CONTAINER_OOM = docker.errors.ContainerError(
             ve.VALIDATOR_UNAVAILABLE,
             id='docker-proxy-down',
         ),
-        pytest.param(
-            _docker(_raise(_CONTAINER_OOM)),
-            ve.VALIDATOR_FAILED,
-            id='container-oom',
-        ),
+        pytest.param(_docker(exit_code=137), ve.VALIDATOR_FAILED, id='container-oom'),
         pytest.param(
             _docker(_raise(requests.exceptions.ConnectionError('proxy went away'))),
             ve.VALIDATOR_UNAVAILABLE,
@@ -147,7 +148,7 @@ _CONTAINER_OOM = docker.errors.ContainerError(
             ve.TIMEOUT,
             id='soft-time-limit',
         ),
-        pytest.param(_docker(lambda volumes: b''), ve.VALIDATOR_FAILED, id='no-report'),
+        pytest.param(_docker(), ve.VALIDATOR_FAILED, id='no-report'),
         pytest.param(_docker(_write_report('{not json')), ve.VALIDATOR_FAILED, id='broken-report'),
     ],
 )
@@ -310,3 +311,139 @@ def test_retry_command_recovers_an_infrastructure_error(org, user, source):
     assert entry.validation_status == StaticFeedEntry.VALIDATION_ERROR
 
     assert _retried() == [entry.id]
+
+
+# ---------------------------------------------------------------------------
+# Validator container lifecycle (issue #43)
+# ---------------------------------------------------------------------------
+
+
+def _removed(from_env) -> list:
+    return from_env.return_value.api.remove_container.call_args_list
+
+
+def test_validator_runs_detached_labelled_and_is_removed(org, user):
+    entry = _entry(org, user)
+    from_env = _docker(_write_report(_report(0)))
+
+    with patch('docker.from_env', from_env):
+        validate_gtfs_feed_task(entry.id)
+
+    entry.refresh_from_db()
+    assert entry.validation_status == StaticFeedEntry.VALIDATION_VALID
+    assert entry.submission.current_stage == 3
+    client = from_env.return_value
+    run = client.containers.run.call_args.kwargs
+    assert run['detach'] is True
+    assert run['name'].startswith(f'odt-gtfs-validator-{entry.id}-')
+    expires = int(run['labels'][tasks.GTFS_VALIDATOR_EXPIRES_LABEL])
+    assert abs(expires - time.time() - tasks.GTFS_VALIDATION_TIME_LIMIT) <= 5
+    assert run['nano_cpus'] == 2_000_000_000
+    wait_timeout = client.containers.run.return_value.wait.call_args.kwargs['timeout']
+    limit = tasks.GTFS_VALIDATION_SOFT_TIME_LIMIT - tasks.GTFS_VALIDATOR_STOP_MARGIN_SECONDS
+    assert limit - 5 < wait_timeout <= limit
+    assert _removed(from_env) == [call(run['name'], force=True)]
+
+
+def test_non_zero_exit_is_a_validator_failure_and_the_container_is_removed(org, user):
+    entry = _entry(org, user)
+    from_env = _docker(exit_code=1)
+
+    with patch('docker.from_env', from_env):
+        validate_gtfs_feed_task(entry.id)
+
+    entry.refresh_from_db()
+    assert entry.validation_message == ve.VALIDATOR_FAILED
+    assert entry.submission.current_stage == 2
+    assert len(_removed(from_env)) == 1
+
+
+def _wait_times_out(timeout):
+    time.sleep(timeout)
+    raise requests.exceptions.ConnectionError('Read timed out.')
+
+
+def test_validator_running_too_long_is_removed_and_recorded_as_timeout(org, user, monkeypatch):
+    # Leaves the container a 0.1 s wait.
+    monkeypatch.setattr(
+        tasks, 'GTFS_VALIDATION_SOFT_TIME_LIMIT', tasks.GTFS_VALIDATOR_STOP_MARGIN_SECONDS + 0.1
+    )
+    entry = _entry(org, user, stage=3)
+    from_env = _docker(wait=_wait_times_out)
+
+    with patch('docker.from_env', from_env):
+        validate_gtfs_feed_task(entry.id)
+
+    entry.refresh_from_db()
+    assert entry.validation_status == StaticFeedEntry.VALIDATION_ERROR
+    assert entry.validation_message == ve.TIMEOUT
+    assert entry.submission.current_stage == 3
+    assert not _rejections(entry).exists()
+    assert _removed(from_env) == [call(ANY, force=True)]
+
+
+def test_docker_lost_during_the_wait_is_not_a_timeout(org, user):
+    entry = _entry(org, user)
+    from_env = _docker(wait=_raise(requests.exceptions.ConnectionError('refused')))
+
+    with patch('docker.from_env', from_env):
+        validate_gtfs_feed_task(entry.id)
+
+    entry.refresh_from_db()
+    assert entry.validation_message == ve.VALIDATOR_UNAVAILABLE
+    assert len(_removed(from_env)) == 1
+
+
+def test_soft_time_limit_during_the_wait_removes_the_container(org, user):
+    entry = _entry(org, user)
+    from_env = _docker(wait=_raise(SoftTimeLimitExceeded()))
+
+    with patch('docker.from_env', from_env):
+        validate_gtfs_feed_task(entry.id)
+
+    entry.refresh_from_db()
+    assert entry.validation_message == ve.TIMEOUT
+    assert entry.submission.current_stage == 2
+    assert not _rejections(entry).exists()
+    assert len(_removed(from_env)) == 1
+    output = from_env.return_value.containers.run.call_args.kwargs['volumes']
+    assert not any(
+        os.path.exists(host) for host, spec in output.items() if spec['bind'] == '/output'
+    )
+
+
+def test_no_container_starts_when_the_download_used_up_the_budget(org, user, monkeypatch):
+    monkeypatch.setattr(
+        tasks, 'GTFS_VALIDATION_SOFT_TIME_LIMIT', tasks.GTFS_VALIDATOR_STOP_MARGIN_SECONDS
+    )
+    entry = _entry(org, user)
+
+    with patch('docker.from_env') as from_env:
+        validate_gtfs_feed_task(entry.id)
+
+    from_env.assert_not_called()
+    entry.refresh_from_db()
+    assert entry.validation_message == ve.TIMEOUT
+    assert entry.submission.current_stage == 2
+
+
+def test_expired_validator_containers_are_removed_before_a_run(org, user):
+    def leftover(expires):
+        container = MagicMock()
+        container.labels = {tasks.GTFS_VALIDATOR_EXPIRES_LABEL: str(int(expires))}
+        return container
+
+    orphan, running = leftover(time.time() - 1), leftover(time.time() + 600)
+    entry = _entry(org, user)
+    from_env = _docker(_write_report(_report(0)), listed=[orphan, running])
+
+    with patch('docker.from_env', from_env):
+        validate_gtfs_feed_task(entry.id)
+
+    from_env.return_value.containers.list.assert_called_once_with(
+        all=True, filters={'label': tasks.GTFS_VALIDATOR_EXPIRES_LABEL}
+    )
+    orphan.remove.assert_called_once_with(force=True)
+    running.remove.assert_not_called()
+    entry.refresh_from_db()
+    assert entry.validation_status == StaticFeedEntry.VALIDATION_VALID
