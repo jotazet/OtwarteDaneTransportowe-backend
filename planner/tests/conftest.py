@@ -189,7 +189,7 @@ def fake_otp(monkeypatch):
     monkeypatch.setattr(pipeline, '_sleep', lambda seconds: None)
     monkeypatch.setattr(pipeline, 'SERVER_START_TIMEOUT_SECONDS', 0)
 
-    def prepare_osm(source, cells, target):
+    def prepare_osm(source, cells, target, on_tick=None):
         Path(target).write_text('x')
 
     monkeypatch.setattr(osm, 'prepare_osm', prepare_osm)

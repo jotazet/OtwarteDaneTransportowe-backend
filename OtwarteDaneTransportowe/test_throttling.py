@@ -2,11 +2,13 @@
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.test import Client
 from django.utils.module_loading import import_string
 from rest_framework.test import APIClient
 
 from blog.models import Post
 from OtwarteDaneTransportowe import settings_base
+from OtwarteDaneTransportowe.auth_roles import ROLE_DATA_PROVIDER
 
 pytestmark = pytest.mark.django_db
 
@@ -88,3 +90,91 @@ def test_reaction_changes_are_limited_per_client_ip(rates):
     assert 429 not in statuses[:2]
     assert statuses[2] == 429
     assert react('198.51.100.2', 'like').status_code != 429
+
+
+def _admin_login(client, **headers):
+    return client.post('/admin/login/', {'username': 'nobody', 'password': 'wrong'}, **headers)
+
+
+def test_admin_login_is_limited_per_client_ip(rates):
+    rates['login'] = '2/min'
+    client = Client()
+
+    statuses = [
+        _admin_login(client, **_via_proxy('198.51.100.1', f'6.6.6.{n}')).status_code
+        for n in range(3)
+    ]
+
+    # A failed admin login renders the form again with 200.
+    assert statuses == [200, 200, 429]
+    # Another client behind the same proxy keeps its own limit.
+    assert _admin_login(client, **_via_proxy('198.51.100.2', '6.6.6.0')).status_code == 200
+
+
+def test_admin_login_form_is_not_limited(rates):
+    rates['login'] = '1/min'
+    client = Client()
+    headers = _via_proxy('198.51.100.1', '6.6.6.6')
+
+    statuses = [client.get('/admin/login/', **headers).status_code for _ in range(2)]
+
+    assert statuses == [200, 200]
+
+
+def test_admin_login_posts_failing_csrf_are_not_counted(rates):
+    rates['login'] = '1/min'
+    headers = _via_proxy('198.51.100.1', '6.6.6.6')
+
+    statuses = [
+        _admin_login(Client(enforce_csrf_checks=True), **headers).status_code for _ in range(2)
+    ]
+
+    assert statuses == [403, 403]
+    assert _admin_login(Client(), **headers).status_code == 200
+
+
+def test_admin_and_token_logins_share_one_budget(rates):
+    rates['login'] = '2/min'
+    headers = _via_proxy('198.51.100.1', '6.6.6.6')
+
+    assert _admin_login(Client(), **headers).status_code == 200
+    assert _login(APIClient(), **headers).status_code == 401
+    throttled = _admin_login(Client(), **headers)
+    assert throttled.status_code == 429
+    assert int(throttled['Retry-After']) > 0
+    assert _login(APIClient(), **headers).status_code == 429
+
+
+def test_admin_login_with_valid_credentials_still_signs_in(rates):
+    get_user_model().objects.create_user('staff', 'staff@example.com', 'secret', is_staff=True)
+    client = Client()
+
+    # The admin form sends next=/admin/ as a hidden field.
+    response = client.post(
+        '/admin/login/',
+        {'username': 'staff', 'password': 'secret', 'next': '/admin/'},
+        **_via_proxy('198.51.100.1', '6.6.6.6'),
+    )
+
+    assert response.status_code == 302
+    assert response.url == '/admin/'
+    assert client.get('/admin/').status_code == 200
+
+
+@pytest.mark.parametrize(
+    ('path', 'body'),
+    [
+        ('/api/users/me/change-password/', {'current_password': 'wrong', 'new_password': 'x'}),
+        ('/api/users/me/change-email/', {'current_password': 'wrong', 'new_email': 'a@b.cz'}),
+    ],
+)
+def test_current_password_checks_are_limited_per_user(rates, make_user, client_as, path, body):
+    rates['account_change'] = '2/min'
+    client = client_as(make_user(ROLE_DATA_PROVIDER))
+
+    statuses = [client.post(path, body, format='json').status_code for _ in range(3)]
+
+    assert statuses == [400, 400, 429]
+    # Another user from the same client IP keeps their own limit.
+    other = client_as(make_user(ROLE_DATA_PROVIDER))
+    assert other.post(path, body, format='json').status_code == 400

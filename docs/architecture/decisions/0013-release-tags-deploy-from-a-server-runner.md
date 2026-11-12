@@ -37,6 +37,11 @@ OpenTripPlanner.
 - **The production configuration lives in the GitHub environment `production`**: settings
   as variables, the four secrets by name. The job writes `.env` from them
   (`scripts/deploy/envfile.py`); the environment hands them only to `v*` tags.
+- **A release sets only application settings and secrets.** `odt-deploy` refuses a `.env`
+  with any key outside the list in `envfile.py` (taken from `main`, so an older tag is
+  restricted too) and adds the server's root-owned `/etc/odt/backend-host.env`, which wins:
+  user ids, host paths, images, Compose settings and interpolated values, resource limits,
+  internal addresses and `DJANGO_SETTINGS_MODULE` are set there, not in GitHub.
   `FEED_AUTH_ENCRYPTION_KEY` and `POSTGRES_PASSWORD` cannot change through GitHub alone:
   the server refuses a `.env` that changes them.
 - There is no approval step: creating the release is the deliberate act.
@@ -48,11 +53,16 @@ OpenTripPlanner.
   connects out to GitHub.
 - The runner is persistent. Code that reaches it (an approved pull request with a changed
   workflow) runs as `odt-runner` and could stay there to read later deployments' secrets;
-  it cannot use Docker or deploy anything but a tag on `main`. Approving a fork's workflow
-  means reading its workflow changes first.
+  it cannot use Docker directly, but it can run `odt-deploy` with any tag on `main`
+  (an older one too) and a `.env` of its own, so it chooses the application settings and
+  secrets of a deployment; it cannot change the host file, so not which images run, as
+  which user or with which host mounts. The frontend's runner runs as the same user, so
+  such code reaches both repositories' deployments; a user per repository would separate
+  them. Approving a fork's workflow means reading its workflow changes first.
 - The server's `.env` is generated. A hand edit is overwritten by the next release; settings
   change in GitHub, without review or history in the repository, and redeploying an old tag
-  uses today's settings.
+  uses today's settings. Host settings change on the server as root, and a new application
+  setting that releases should set needs adding to the list in `envfile.py`.
 - The image is built on the production host (a minute or two, little memory). A release
   restarts the planner worker, so it refuses to start while a graph build runs; it prunes
   the host's build cache older than a week.

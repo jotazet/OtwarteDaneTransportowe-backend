@@ -78,7 +78,7 @@ def _completed_realtime_submission_ids() -> list[int]:
 def _delete_stale_cache_file(field_file, old_name: str | None) -> None:
     """Remove the previous cache file when a fetch stored it under a new name.
 
-    Same-name refreshes are rewritten in place by OverwriteStorage and must
+    Same-name refreshes are replaced atomically by OverwriteStorage and must
     not be deleted here.
     """
     if old_name and old_name != field_file.name and field_file.storage.exists(old_name):
