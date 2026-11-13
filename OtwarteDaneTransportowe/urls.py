@@ -35,6 +35,7 @@ from OtwarteDaneTransportowe.auth_roles import AdminGroupOrDebug
 from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairView, ThrottledTokenRefreshView
 from OtwarteDaneTransportowe.session_auth import (
     SESSION_PATH,
+    SessionChangePasswordView,
     SessionLoginView,
     SessionLogoutView,
     SessionRefreshView,
@@ -93,6 +94,11 @@ urlpatterns = [
     path(SESSION_PATH[1:], SessionLoginView.as_view(), name='session-login'),
     path(f'{SESSION_PATH[1:]}refresh/', SessionRefreshView.as_view(), name='session-refresh'),
     path(f'{SESSION_PATH[1:]}logout/', SessionLogoutView.as_view(), name='session-logout'),
+    path(
+        f'{SESSION_PATH[1:]}change-password/',
+        SessionChangePasswordView.as_view(),
+        name='session-change-password',
+    ),
 ]
 
 # The API schema and interactive docs are public in development but restricted to

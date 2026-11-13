@@ -6,11 +6,11 @@ from rest_framework.response import Response
 
 from accounts.api.serializers import (
     ChangeEmailSerializer,
-    ChangePasswordSerializer,
     PasswordResetResponseSerializer,
     UserCreateSerializer,
     UserSerializer,
     UserUpdateSerializer,
+    change_own_password,
 )
 from accounts.services import (
     generate_random_password,
@@ -19,7 +19,6 @@ from accounts.services import (
 )
 from OtwarteDaneTransportowe.api_errors import CodedError
 from OtwarteDaneTransportowe.auth_roles import CanManageUserAccount, RequiresAdminGroup
-from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairSerializer
 
 User = get_user_model()
 
@@ -112,9 +111,4 @@ class UserViewSet(viewsets.ModelViewSet):
         throttle_scope='account_change',
     )
     def change_password(self, request):
-        serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
-        serializer.is_valid(raise_exception=True)
-        user = serializer.save()
-        # All sessions were ended; this one continues with a fresh pair.
-        refresh = RolesInTokenObtainPairSerializer.get_token(user)
-        return Response({'refresh': str(refresh), 'access': str(refresh.access_token)})
+        return Response(change_own_password(request))

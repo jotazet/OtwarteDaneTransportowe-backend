@@ -112,7 +112,7 @@ def test_refresh_with_bad_cookie_is_a_code_and_keeps_the_cookie(user, value):
         {'HTTP_ORIGIN': ORIGIN, 'HTTP_X_ODT_CSRF': 'yes'},
     ],
 )
-@pytest.mark.parametrize('path', ['', 'refresh/', 'logout/'])
+@pytest.mark.parametrize('path', ['', 'refresh/', 'logout/', 'change-password/'])
 def test_csrf_check_refuses_requests_without_header_or_allowed_origin(user, headers, path):
     client = APIClient()
     token = str(RefreshToken.for_user(user))
@@ -257,3 +257,111 @@ def test_refresh_has_its_own_budget_that_forged_requests_do_not_use(monkeypatch,
 
     assert forged == [403, 403, 403]
     assert refreshes == [200, 200, 429]
+
+
+NEW_PASSWORD = 'NewSecurePass9!'
+
+
+def _change_password(client, access, current='alice-pass-123', **headers):
+    if access:
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+    return client.post(
+        f'{SESSION_PATH}change-password/',
+        {'current_password': current, 'new_password': NEW_PASSWORD},
+        format='json',
+        **headers,
+    )
+
+
+def test_change_password_sets_a_new_cookie_and_ends_all_other_sessions(user):
+    client = APIClient()
+    login = _login(client, **BROWSER)
+    old = login.cookies[REFRESH_COOKIE].value
+    other_device = _login(APIClient(), **BROWSER).cookies[REFRESH_COOKIE].value
+
+    response = _change_password(client, login.data['access'], **BROWSER)
+
+    assert response.status_code == 200
+    assert set(response.data) == {'access'}
+    assert AccessToken(response.data['access'])['user_id'] == str(user.pk)
+    cookie = response.cookies[REFRESH_COOKIE]
+    assert cookie['httponly'] is True
+    assert cookie['path'] == SESSION_PATH
+    assert cookie['max-age'] == 24 * 3600
+    assert RefreshToken(cookie.value)['user_id'] == str(user.pk)
+    assert _is_blacklisted(old)
+    assert _is_blacklisted(other_device)
+    user.refresh_from_db()
+    assert user.check_password(NEW_PASSWORD)
+    # The client now holds the new cookie, so the session continues.
+    client.credentials()
+    assert client.post(f'{SESSION_PATH}refresh/', **BROWSER).status_code == 200
+
+
+def test_change_password_with_wrong_current_password_keeps_the_session(user):
+    client = APIClient()
+    login = _login(client, **BROWSER)
+
+    response = _change_password(client, login.data['access'], current='wrong', **BROWSER)
+
+    # The same answer as /api/users/me/change-password/.
+    assert response.status_code == 400
+    assert response.data == {'current_password': ['users.wrong_password']}
+    assert REFRESH_COOKIE not in response.cookies
+    RefreshToken(login.cookies[REFRESH_COOKIE].value)  # still valid
+    user.refresh_from_db()
+    assert user.check_password('alice-pass-123')
+
+
+def test_change_password_checks_csrf_before_the_access_token(user):
+    access = _login(APIClient(), **BROWSER).data['access']
+
+    response = _change_password(APIClient(), access, HTTP_ORIGIN=ORIGIN)
+
+    assert response.status_code == 403
+    assert response.data == {'code': 'auth.csrf_failed', 'details': {}}
+    user.refresh_from_db()
+    assert user.check_password('alice-pass-123')
+
+
+@pytest.mark.parametrize('credentials', ['none', 'invalid_bearer', 'admin_session'])
+def test_change_password_requires_the_access_token(user, credentials):
+    client = APIClient(enforce_csrf_checks=True)
+    access = None
+    if credentials == 'invalid_bearer':
+        access = 'garbage'
+    elif credentials == 'admin_session':
+        client.force_login(user)  # a Django session cookie is not accepted here
+
+    response = _change_password(client, access, **BROWSER)
+
+    assert response.status_code == 401
+    assert REFRESH_COOKIE not in response.cookies
+    user.refresh_from_db()
+    assert user.check_password('alice-pass-123')
+
+
+def test_change_password_shares_the_account_change_budget(monkeypatch, user):
+    from rest_framework.throttling import SimpleRateThrottle
+    from rest_framework.views import APIView
+
+    from OtwarteDaneTransportowe.throttling import ScopedRateThrottle
+
+    monkeypatch.setattr(APIView, 'throttle_classes', [ScopedRateThrottle])
+    rates = {'login': '10/min', 'account_change': '2/min'}
+    monkeypatch.setattr(SimpleRateThrottle, 'THROTTLE_RATES', rates)
+    client = APIClient()
+    access = _login(client, **BROWSER).data['access']
+
+    forged = _change_password(client, access, current='wrong').status_code
+    body_based = client.post(
+        '/api/users/me/change-password/',
+        {'current_password': 'wrong', 'new_password': NEW_PASSWORD},
+        format='json',
+    ).status_code
+    session = [
+        _change_password(client, access, current='wrong', **BROWSER).status_code for _ in range(2)
+    ]
+
+    assert forged == 403
+    assert [body_based, *session] == [400, 400, 429]

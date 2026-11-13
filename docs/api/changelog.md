@@ -2,6 +2,14 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-13: password change for cookie sessions
+
+Additive. **`POST /api/auth/session/change-password/`** takes `{current_password, new_password}` with `Authorization: Bearer <access>`, the `X-ODT-CSRF: 1` header and an allowlisted `Origin`, like the other session endpoints. It changes the password as `POST /api/users/me/change-password/` does (all refresh tokens of the user are blacklisted, the same `400` codes, the `account_change` throttle), sets a new `odt_refresh` cookie and returns `{"access": "..."}`. Errors: `403` `auth.csrf_failed`, `401` without a valid access token, `400` `users.wrong_password` / `users.password_*`, `429`. No new error codes. `/api/users/me/change-password/` is unchanged for other clients. See [Cookie sessions for the website](README.md#cookie-sessions-for-the-website) and [ADR 0017](../architecture/decisions/0017-refresh-token-in-an-httponly-cookie-for-the-website.md).
+
+**Frontend:** change the password through this endpoint and keep the returned access token, instead of logging in again with the new password.
+
+---
+
 ## 2026-11-13: planner anonymous limits in `status/`, `status_class` filter on `requests/`
 
 Additive. `GET /api/planner/v1/status/` returns `anonymous_limits` (`plan`, `realtime`, `lookup`): the requests per minute per client without an API key, as set by Admins, so clients no longer hardcode them. `GET /api/planner/admin/requests/` accepts `status_class` (`1xx` to `5xx`) to list every code of an HTTP class, e.g. all `4xx` or `5xx` errors. See [planner](planner.md#get-apiplannerv1status) and [planner admin](planner-admin.md).

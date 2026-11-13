@@ -10,6 +10,7 @@ from accounts.services import (
     user_role_names,
 )
 from OtwarteDaneTransportowe.auth_roles import ALLOWED_ROLE_NAMES
+from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairSerializer
 
 User = get_user_model()
 
@@ -136,3 +137,15 @@ class ChangePasswordSerializer(serializers.Serializer):
         user = self.context['request'].user
         set_password_and_end_sessions(user, self.validated_data['new_password'])
         return user
+
+
+def change_own_password(request) -> dict[str, str]:
+    """Change the requester's password and return a new token pair for this session.
+
+    All other sessions of the user end. Shared by ``/api/users/me/change-password/``
+    (the pair in the body) and ``/api/auth/session/change-password/`` (ADR 0017).
+    """
+    serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    refresh = RolesInTokenObtainPairSerializer.get_token(serializer.save())
+    return {'refresh': str(refresh), 'access': str(refresh.access_token)}

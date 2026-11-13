@@ -188,8 +188,9 @@ Browser sessions in which the refresh token never reaches JavaScript ([ADR 0017]
 | `POST` | `/api/auth/session/` | `{"username": "...", "password": "..."}` (JSON) | `200` `{"access": "eyJ..."}`, sets the cookie |
 | `POST` | `/api/auth/session/refresh/` | none | `200` `{"access": "eyJ..."}`, sets a new cookie |
 | `POST` | `/api/auth/session/logout/` | none | `200` `{}`, clears the cookie |
+| `POST` | `/api/auth/session/change-password/` | `{"current_password": "...", "new_password": "..."}` (JSON) | `200` `{"access": "eyJ..."}`, sets a new cookie |
 
-**Permissions:** public; no `Authorization` header is needed or read.
+**Permissions:** login, refresh and logout are public; no `Authorization` header is needed or read. `change-password/` requires `Authorization: Bearer <access>` (JWT only; a Django admin session cookie does not count).
 
 **Every request must:**
 
@@ -212,7 +213,7 @@ Set-Cookie: odt_refresh=eyJ...; expires=...; HttpOnly; Max-Age=86400; Path=/api/
 | `HttpOnly` | always |
 | `Secure` | always in production; a local http setup may turn it off with `AUTH_REFRESH_COOKIE_SECURE=false` |
 | `SameSite` | `Strict` (the website and the API are the same site, `odt.org.pl`) |
-| `Path` | `/api/auth/session/`: the browser sends it to these three endpoints only |
+| `Path` | `/api/auth/session/`: the browser sends it to these endpoints only |
 | `Domain` | none: a host-only cookie of the API's host |
 | `Max-Age` | the refresh token lifetime, `JWT_REFRESH_DAYS` × 86400 s (86400 by default), counted again from every refresh |
 
@@ -232,7 +233,13 @@ The cookie is cleared with the same name, `Path` and flags and `Max-Age=0`.
 
 **`POST /api/auth/session/logout/`** blacklists the cookie's refresh token, if it is still valid, and clears the cookie. It answers `200` `{}` also without a cookie or with an invalid one, so the client always treats it as done. As with `/api/auth/logout/`, the access token stays valid until it expires; the client drops it.
 
-**CORS:** responses of these endpoints, and their preflights, carry `Access-Control-Allow-Origin: <the origin>` and `Access-Control-Allow-Credentials: true` for allowlisted origins only; `X-ODT-CSRF` and `Content-Type` are allowed request headers. No other endpoint allows credentials, so the client sends `credentials: "include"` only to these three.
+**`POST /api/auth/session/change-password/`** changes the password of the user in the access token exactly as [`POST /api/users/me/change-password/`](#users-djangocontribauthmodelsuser) does, and continues the session through the cookie: it blacklists **all** refresh tokens of the user (the cookie's one, other tabs' and other devices'), sets a new cookie and returns `{"access": "..."}`. The client never sends the new password again. The CSRF check runs first, then the access token, then the rate limit. Errors:
+
+- `400` `{"current_password": ["users.wrong_password"]}`, or `users.password_*` codes on `new_password`: the same answers as `/api/users/me/change-password/` ([error codes](#error-codes)). Nothing changes and no cookie is set;
+- `401` as on other authenticated endpoints: no `Authorization` header, or an invalid or expired access token (refresh, then retry);
+- `429`: the `account_change` throttle (`THROTTLE_ACCOUNT_CHANGE`, 5/min per user), shared with `me/change-password/` and `me/change-email/`.
+
+**CORS:** responses of these endpoints, and their preflights, carry `Access-Control-Allow-Origin: <the origin>` and `Access-Control-Allow-Credentials: true` for allowlisted origins only; `X-ODT-CSRF`, `Content-Type` and `Authorization` are allowed request headers. No other endpoint allows credentials, so the client sends `credentials: "include"` only to these four.
 
 **Client flow:**
 
@@ -240,11 +247,11 @@ The cookie is cleared with the same name, `Path` and flags and `Max-Age=0`.
 2. Page load, a new tab, or an access token that expired or got a `401`: `POST /api/auth/session/refresh/`. `auth.refresh_cookie_missing` or `auth.refresh_cookie_invalid` means the visitor is logged out.
 3. Refreshes from several tabs race: each rotates the cookie, and a request that still carried the previous token gets `auth.refresh_cookie_invalid`. Run refreshes one at a time across tabs (e.g. `navigator.locks.request("odt-refresh", …)`), and retry once after `auth.refresh_cookie_invalid` before treating the visitor as logged out.
 4. Logout: `POST /api/auth/session/logout/`, then drop `access` whatever the answer.
-5. After `POST /api/users/me/change-password/` the cookie's token is blacklisted with all others of the user. Ignore the `refresh` in that response and log in again with `POST /api/auth/session/` and the new password.
+5. Password change: `POST /api/auth/session/change-password/` with the access token; keep the returned `access`. Other tabs share the new cookie, so their next refresh works; other devices are logged out. (`POST /api/users/me/change-password/` would blacklist the cookie's token too and return a `refresh` that the website cannot put into the HttpOnly cookie.)
 
 ### Ending all sessions of a user
 
-A password change (`POST /api/users/me/change-password/`) and an admin password reset (`POST /api/users/{id}/reset-password/`) blacklist **all** refresh tokens of that user, so every session must log in again once its access token expires. A self-service change returns a fresh pair for the session that made it (see the [endpoint map](#users-djangocontribauthmodelsuser)). Expired tokens are deleted daily by the beat task `accounts.flush_expired_tokens` (03:15 UTC).
+A password change (`POST /api/users/me/change-password/`) and an admin password reset (`POST /api/users/{id}/reset-password/`) blacklist **all** refresh tokens of that user, so every session must log in again once its access token expires. A self-service change returns a fresh pair for the session that made it (see the [endpoint map](#users-djangocontribauthmodelsuser)); [`POST /api/auth/session/change-password/`](#cookie-sessions-for-the-website) does the same for a cookie session. Expired tokens are deleted daily by the beat task `accounts.flush_expired_tokens` (03:15 UTC).
 
 ### `/api-auth/`
 
