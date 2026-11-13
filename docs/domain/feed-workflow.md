@@ -150,7 +150,7 @@ Static and realtime feeds also return fetch health fields in their serializers (
 - `last_fetch_error_message`
 - `fetch_error_count_7d`
 
-`fetch_pause_reason`, `last_fetch_error_message` and the server logs show the source URL without userinfo (`user:pass@`), query string and fragment, where providers put credentials (`data_manager.net_security.redact_url`).
+`url_attempted`, `fetch_pause_reason`, `last_fetch_error_message` and the server logs show the source URL without userinfo (`user:pass@`), query string and fragment, where providers put credentials (`data_manager.net_security.redact_url`).
 
 After consecutive failed fetches the system automatically postpones the next attempts. A realtime endpoint that fails with a **transient** error (timeout, connection error, a body cut off mid-transfer, HTTP 5xx or 429) retries sooner, because realtime data is worthless after an hour; static feeds and **permanent** errors (HTTP 401/403/404 and other 4xx, a blocked URL, content that is not a valid feed) use the long ladder:
 

@@ -2,6 +2,10 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-13: `url_attempted` of fetch errors is redacted
+
+Not breaking. `url_attempted` in `GET /api/data_manager/fetch-errors/`, `/feed-submissions/{id}/fetch-errors/` and `/realtime-submissions/{id}/fetch-errors/` keeps only scheme, host, port and path, like the URLs inside `message`; userinfo, the query string and the fragment are removed. Errors recorded before this change are left as they were. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
 ## 2026-11-13: cookie sessions for the website; `Content-Disposition` readable
 
 Not breaking: the existing endpoints are unchanged.
