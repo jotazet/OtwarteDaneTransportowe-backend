@@ -1,10 +1,11 @@
 """Browser sessions with the refresh token in an HttpOnly cookie (ADR 0017).
 
-The website logs in, refreshes and logs out through ``/api/auth/session/``. The
-refresh token travels only in the ``odt_refresh`` cookie, out of reach of the
-page's scripts; responses carry the access token alone. The body-based token
-endpoints (``/api/auth/token/``, ``/api/auth/logout/``) are unchanged for other
-API clients.
+The website logs in, refreshes, changes the password and logs out through
+``/api/auth/session/``. The refresh token travels only in the ``odt_refresh``
+cookie, out of reach of the page's scripts; responses carry the access token
+alone. The body-based token endpoints (``/api/auth/token/``,
+``/api/auth/logout/``, ``/api/users/me/change-password/``) are unchanged for
+other API clients.
 """
 
 from __future__ import annotations
@@ -21,15 +22,17 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import status
 from rest_framework.exceptions import AuthenticationFailed
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from accounts.api.serializers import change_own_password
 from OtwarteDaneTransportowe.api_errors import CodedError
 from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairSerializer
 
@@ -126,6 +129,24 @@ class SessionRefreshView(_CookieSessionView):
             # just have replaced it with a valid one.
             raise CodedError('auth.refresh_cookie_invalid', status.HTTP_401_UNAUTHORIZED) from None
         return _session_response(serializer.validated_data)
+
+
+class SessionChangePasswordView(_CookieSessionView):
+    """``POST {current_password, new_password}`` with the Bearer access token.
+
+    Ends all sessions of the user, as ``/api/users/me/change-password/`` does,
+    and continues this one: ``{access}`` and a new refresh cookie, so the website
+    never has to send the new password again to log in.
+    """
+
+    # The access token only: SessionAuthentication would bring back DRF's
+    # session CSRF check whenever a Django admin session cookie is sent along.
+    authentication_classes = (JWTAuthentication,)
+    permission_classes = (IsAuthenticated,)
+    throttle_scope = 'account_change'
+
+    def post(self, request):
+        return _session_response(change_own_password(request))
 
 
 class SessionLogoutView(_CookieSessionView):
