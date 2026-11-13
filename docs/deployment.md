@@ -1020,12 +1020,13 @@ Without the profile, nothing of the planner runs and the rest of ODT is unchange
 | Step | Memory | Time (swap in RAM) |
 | --- | --- | --- |
 | Serving, 36 feeds, OSM cropped to stops (`-Xmx6g`) | ~7 GB container (5 GB heap ran out under load) | starts in ~45 s |
-| Graph build (`--loadStreet`) | ~15 GB (8 GB RAM + 7 GB swap) | ~13 min |
+| Graph build (`--loadStreet`) | ~15 GB (8 GB RAM + 7 GB swap) with `-Xmx14g`; ~11 GB with `-Xmx10g` (see below) | ~13 min |
 | Street graph (only when OSM, OTP image or feed area change) | ~13 GB (8 GB RAM + 5 GB swap) | ~8 min |
 | Single-feed test (largest: Warsaw) | ~6 GB | ≤ 30 s |
 
 - **Builds and the planner never use memory at the same time.** A build stops the serving OTP first (maintenance window; the OTP-backed endpoints answer `503`), so the server needs RAM for the app stack plus ~7 GB, and swap for the rest of a build.
 - **Production VPS.** It has 11 GB RAM, so it needs **at least 10 GB of swap**. Builds measured there are below.
+- **The build heap is its footprint.** G1 grows the heap up to `-Xmx` before collecting harder, so a build uses its whole cap whatever it actually needs. Measured 2026-11-13 on a 16-vCPU workstation, OTP 2.10.0, the 36 production feeds (last good snapshots: 56,211 stops, 907,440 transfers) on the production street graph: with `-Xmx10g` the build finished in 6 min 50 s, with three full GCs that left at most 6.6 GB live. `PLANNER_OTP_BUILD_HEAP` therefore defaults to `10g` (was `14g`). A street graph build has not been measured at `10g`; it needed ~13 GB at `14g`, so check its log after the next OSM or feed-area change.
 - **Disk.** Two graphs (~2 GB each), the street graph (~1.3 GB), the OSM extract (~2 GB for Poland) and snapshots of every feed's last good version (~0.5 GB).
 
 ### Production VPS (measured 2026-10-14)
@@ -1041,6 +1042,12 @@ Without the profile, nothing of the planner runs and the rest of ODT is unchange
 - **The host stayed usable during builds:** the API answered in 0.1–0.2 s, the frontend in up to 1 s and SSH in under 1 s, while swap moved up to 380 MB/s.
 - **Night window.** FeedsODT starts its routing engines (up to 3.4 GB) at 00:45–07:30 Europe/Warsaw, and the default build time (01:40 UTC) falls inside it. Both builds above ran with the engines up; the kernel swapped out their idle memory.
 
+### Builds killed by the memory guard (2026-10-30 to 2026-11-11)
+
+Six of eight scheduled builds failed with `planner.graph_build_failed` (builds 10, 12–15, 17); the previous graph kept serving. In every case earlyoom sent SIGTERM to the build's JVM (`journalctl -t earlyoom`: `sending SIGTERM to process … "java" … --loadStreet --save`) during transfer generation or stop connectivity analysis, about 40–90 minutes into the build. The OTP log then ends with `OTP SHUTTING DOWN`, which OTP also prints on a normal exit, so read the journal, not the OTP log.
+
+With `-Xmx14g` the build container reached ~14.5 GB (~6 GB in RAM, the rest in swap). Before the build, the host already had ~4.5 GB in swap (FeedsODT's night engines and other stacks on the host), so free swap fell below earlyoom's 20% while available RAM was under 5%. Builds 11 and 16 in the same period succeeded; how close they came is not recorded. Lowering the heap to `10g` cuts the footprint by ~4 GB.
+
 ### Host memory guard
 
 Builds deliberately fill RAM and spill into swap, so the VPS has a last-resort guard against a memory runaway freezing the whole machine (set up 2026-10-14, outside Docker):
@@ -1051,7 +1058,7 @@ Builds deliberately fill RAM and spill into swap, so the VPS has a last-resort g
   EARLYOOM_ARGS="-r 3600 -m 5,3 -s 20,10 --prefer ^java$ --avoid ^(sshd|sshd-session|systemd|systemd-.*|dbus-broker|dockerd|containerd|containerd-shim|postgres|caddy|firewalld|dnf|earlyoom)$"
   ```
 
-  It acts only when **both** available RAM is at most 5% **and** free swap at most 20% (SIGKILL at 3% and 10%), preferring JVMs (OTP, the FeedsODT engines: all restartable). Planned builds stay above it: available RAM dropped below 5% during the builds above, but swap stayed more than half free, and each build container is capped by its own limits.
+  It acts only when **both** available RAM is at most 5% **and** free swap at most 20% (SIGKILL at 3% and 10%), preferring JVMs (OTP, the FeedsODT engines: all restartable). Planned builds must stay above it: available RAM drops below 5% during every build, so free swap is what decides, and a build heap too large for the host gets the build killed (see above).
 - **SSH stays reachable:** `systemctl set-property` with `MemoryMin=128M` on `system.slice`, `64M` on `sshd.service` and `256M` on `user.slice` (the kernel does not reclaim that memory; `system.slice` needs it too because cgroups are mounted with `memory_recursiveprot`). `sshd` itself runs with `oom_score_adj=-1000`.
 - **Kernel reserve,** `/etc/sysctl.d/90-odt-memory.conf`: `vm.min_free_kbytes = 131072` and `vm.watermark_scale_factor = 100` (defaults here 67584 and 10), so reclaim starts earlier and allocations stall less under pressure.
 - **Not used:** systemd-oomd needs pressure stall information, which Rocky Linux's kernel ships switched off (`psi=1` on the kernel command line and a reboot would enable it).
