@@ -115,7 +115,8 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
+    # django-cors-headers, plus credentials on /api/auth/session/ (ADR 0017).
+    'OtwarteDaneTransportowe.session_auth.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -218,6 +219,8 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'login': os.getenv('THROTTLE_LOGIN', '10/min'),
+        # The website's cookie refresh (ADR 0017): every page load and tab calls it.
+        'session_refresh': os.getenv('THROTTLE_SESSION_REFRESH', '60/min'),
         # me/change-password and me/change-email check the current password;
         # counted per user (they require login).
         'account_change': os.getenv('THROTTLE_ACCOUNT_CHANGE', '5/min'),
@@ -294,6 +297,9 @@ SIMPLE_JWT = {
     'BLACKLIST_AFTER_ROTATION': True,
     'UPDATE_LAST_LOGIN': True,
 }
+# The website keeps the refresh token in an HttpOnly cookie (ADR 0017). Secure is
+# on unless turned off for a local http setup; settings_prod always forces it on.
+AUTH_REFRESH_COOKIE_SECURE = _env_bool('AUTH_REFRESH_COOKIE_SECURE', True)
 
 # Celery
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
@@ -403,9 +409,14 @@ TRUSTED_PROXY_CIDRS = _env_list('TRUSTED_PROXY_CIDRS', default=[])
 CORS_ALLOWED_ORIGINS = _env_list('CORS_ALLOWED_ORIGINS', default=[])
 CORS_URLS_REGEX = os.getenv('CORS_URLS_REGEX', r'^/(api|feed)/.*$')
 # The public planner API is open to any origin (planner/apps.py); its clients
-# send an optional API key and read Retry-After when rate limited.
-CORS_ALLOW_HEADERS = (*default_headers, 'x-api-key')
-CORS_EXPOSE_HEADERS = ['Retry-After']
+# send an optional API key and read Retry-After when rate limited. The website
+# sends X-ODT-CSRF to the session endpoints (ADR 0017) and reads the file name
+# of submission downloads from Content-Disposition.
+CORS_ALLOW_HEADERS = (*default_headers, 'x-api-key', 'x-odt-csrf')
+CORS_EXPOSE_HEADERS = ['Retry-After', 'Content-Disposition']
+# Credentials (the refresh cookie) are allowed only on /api/auth/session/, by
+# OtwarteDaneTransportowe.session_auth.CorsMiddleware; CORS_ALLOW_CREDENTIALS
+# stays off.
 
 # Permissive localhost origins are only enabled in development. In production
 # rely solely on the explicit CORS_ALLOWED_ORIGINS allowlist.
