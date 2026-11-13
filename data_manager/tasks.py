@@ -690,6 +690,13 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 f'tmp_{entry.id}_{random.randint(1000, 9999)}',
             )
             os.makedirs(validation_temp_dir, exist_ok=True)
+            download_codes = (
+                (ResponseTooLarge, rr.GTFS_DOWNLOAD_TOO_LARGE),
+                (OutboundURLBlocked, rr.GTFS_DOWNLOAD_URL_BLOCKED),
+                (requests.exceptions.HTTPError, rr.GTFS_DOWNLOAD_HTTP_ERROR),
+                (requests.exceptions.Timeout, rr.GTFS_DOWNLOAD_TIMEOUT),
+                (requests.exceptions.ConnectionError, rr.GTFS_DOWNLOAD_UNREACHABLE),
+            )
             try:
                 parsed = urlparse(entry.url)
                 filename = os.path.basename(parsed.path) or 'feed.zip'
@@ -714,23 +721,23 @@ def validate_gtfs_feed_task(self, entry_id: int):
             except (OutboundURLBlocked, requests.exceptions.RequestException) as exc:
                 # The provider's URL, not our infrastructure: rejected. The code is
                 # what the provider sees; the exception text is for the team.
+                # Most specific first: ResponseTooLarge is an OutboundURLBlocked.
+                code = next(
+                    (c for exc_type, c in download_codes if isinstance(exc, exc_type)),
+                    rr.GTFS_DOWNLOAD_FAILED,
+                )
+                details = {}
+                if code == rr.GTFS_DOWNLOAD_TOO_LARGE:
+                    details['limit_bytes'] = exc.max_bytes
+                elif code == rr.GTFS_DOWNLOAD_HTTP_ERROR:
+                    details['status'] = exc.response.status_code
                 logger.warning(
-                    'Download of StaticFeedEntry %s for validation failed: %s',
+                    'Download of StaticFeedEntry %s for validation failed: %s (%s)',
                     entry.id,
+                    code,
                     redact_urls(str(exc)),
                 )
-                if isinstance(exc, ResponseTooLarge):
-                    _reject_submission(rr.GTFS_DOWNLOAD_TOO_LARGE, limit_bytes=exc.max_bytes)
-                elif isinstance(exc, OutboundURLBlocked):
-                    _reject_submission(rr.GTFS_DOWNLOAD_URL_BLOCKED)
-                elif isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
-                    _reject_submission(rr.GTFS_DOWNLOAD_HTTP_ERROR, status=exc.response.status_code)
-                elif isinstance(exc, requests.exceptions.Timeout):
-                    _reject_submission(rr.GTFS_DOWNLOAD_TIMEOUT)
-                elif isinstance(exc, requests.exceptions.ConnectionError):
-                    _reject_submission(rr.GTFS_DOWNLOAD_UNREACHABLE)
-                else:
-                    _reject_submission(rr.GTFS_DOWNLOAD_FAILED)
+                _reject_submission(code, **details)
                 return
         elif not file_field:
             _record_infra_error(ve.FILE_MISSING, 'no file, cached file or URL')
@@ -997,7 +1004,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
             _reject_submission(
                 rr.GTFS_FEED_INVALID,
                 error_count=error_count,
-                notices=dict(sorted(error_code_counts.items())),
+                notices=error_code_counts,
             )
         else:
             _set_validation_status(StaticFeedEntry.VALIDATION_VALID)
