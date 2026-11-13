@@ -296,6 +296,7 @@ class StatsView(generics.GenericAPIView):
             api_key=params.get('api_key'),
             ip=params.get('ip'),
             status=params.get('status'),
+            status_class=params.get('status_class'),
         )
         return rows, params
 

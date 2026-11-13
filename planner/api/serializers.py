@@ -379,6 +379,7 @@ class StatsFilterSerializer(serializers.Serializer):
 
 class RequestLogFilterSerializer(StatsFilterSerializer):
     status = serializers.IntegerField(required=False, min_value=100, max_value=599)
+    status_class = serializers.ChoiceField(choices=list(request_logs.STATUS_RANGES), required=False)
 
 
 class TimeseriesFilterSerializer(StatsFilterSerializer):

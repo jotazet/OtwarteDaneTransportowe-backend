@@ -102,6 +102,22 @@ def test_request_log_is_filtered(admin_client):
     assert older.data['count'] == 2
 
 
+def test_request_log_filters_by_status_class(admin_client):
+    for code in (200, 301, 400, 404, 429, 500, 503):
+        PlannerRequestLog.objects.create(
+            endpoint='a', status_code=code, latency_ms=5, client_ip='198.51.100.1'
+        )
+
+    def codes(**params):
+        response = admin_client.get(f'{BASE}/requests/', params)
+        return sorted(row['status_code'] for row in response.data['results'])
+
+    assert codes(status_class='4xx') == [400, 404, 429]
+    assert codes(status_class='5xx') == [500, 503]
+    assert codes(status_class='4xx', status=404) == [404]
+    assert admin_client.get(f'{BASE}/requests/', {'status_class': '6xx'}).status_code == 400
+
+
 def test_daily_stats_combine_rollups_and_today(admin_client):
     yesterday = timezone.now().date() - timedelta(days=1)
     PlannerDailyStat.objects.create(

@@ -22,7 +22,7 @@ Requests per minute, counted separately for three groups of endpoints:
 | `realtime` | answers computed by the routing engine: departures, timetables, lines, trips, blocks, vehicles, alerts, sharing |
 | `lookup` | stop, line and operator search, status |
 
-Each group has a limit per client (an IP address, an IPv6 `/64`, or an API key) and a limit for all clients together. The numbers are set by ODT and may change; a client over a limit gets:
+Each group has a limit per client (an IP address, an IPv6 `/64`, or an API key) and a limit for all clients together. The numbers are set by ODT and may change (`status/` shows the current limits without a key); a client over a limit gets:
 
 ```http
 HTTP/1.1 429 Too Many Requests
@@ -84,7 +84,8 @@ Whether the planner answers now, which graph it serves and from which feeds. It 
   ],
   "attribution": [
     { "source": "openstreetmap", "license": "ODbL-1.0", "url": "https://www.openstreetmap.org/copyright" }
-  ]
+  ],
+  "anonymous_limits": { "plan": 20, "realtime": 120, "lookup": 150 }
 }
 ```
 
@@ -95,6 +96,7 @@ Whether the planner answers now, which graph it serves and from which feeds. It 
 | `feeds[].outcome` | `fresh`: the newest published version. `stale`: an older version, because the newest could not be used; realtime data is not applied to it. |
 | `feeds[].version_at` | When that version of the feed was obtained. |
 | `rental_networks` | Bike and scooter sharing systems the planner uses (`network` prefixes their station and vehicle IDs), with publisher and licence. |
+| `anonymous_limits` | Requests per minute per client without an API key, by [limit group](#limits). The current settings; read them instead of hardcoding them. |
 
 ## `GET /api/planner/v1/plan/`
 

@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-13: planner anonymous limits in `status/`, `status_class` filter on `requests/`
+
+Additive. `GET /api/planner/v1/status/` returns `anonymous_limits` (`plan`, `realtime`, `lookup`): the requests per minute per client without an API key, as set by Admins, so clients no longer hardcode them. `GET /api/planner/admin/requests/` accepts `status_class` (`1xx` to `5xx`) to list every code of an HTTP class, e.g. all `4xx` or `5xx` errors. See [planner](planner.md#get-apiplannerv1status) and [planner admin](planner-admin.md).
+
+---
+
 ## 2026-11-13: error codes for planner admin fields, case duplicates and GTFS rejections
 
 **Breaking** for clients that read the old text. Status codes and field keys are unchanged ([ADR 0006](../architecture/decisions/0006-api-error-codes.md), [issue #132](https://github.com/jotazet/OtwarteDaneTransportowe-backend/issues/132)).
