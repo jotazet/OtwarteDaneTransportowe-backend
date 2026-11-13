@@ -2,6 +2,17 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-13: proxy-feeds filters and `last_fetch_error_type`
+
+Not breaking.
+
+- `GET /api/data_manager/proxy-feeds/` takes the query parameters `fetch_status`, `source` (`static`/`realtime`), `organization` (transport organization id) and `region` (exact), combined with AND; `count` and the pages cover only the matching feeds. An unknown `fetch_status` or `source` is `400` with the new field code `feeds.invalid_choice`, a non-integer `organization` `400` with `feeds.invalid_integer`. Items gain **`organization_id`** (or `null`). The frontend can drop loading every page and filtering in the browser (frontend issue #35); filter options for organizations come from `/api/cases/transport-organizations/`.
+- The fetch health fields of `proxy-feeds`, `static_entry`/`static-feed-entries` and realtime `endpoints`/`realtime-endpoints` gain **`last_fetch_error_type`**: the `error_type` of the latest fetch error, or `null`. Like the other fetch health fields, it is present only for proxied feeds.
+
+See [Fetch errors and pauses of proxied feeds](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
 ## 2026-11-12: error codes instead of prose in feeds, users and blog
 
 **Breaking.** The remaining English error messages of `data_manager`, `accounts` and `blog` are now error codes ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). Status codes and field keys are unchanged; only the text changes. Request errors that were `{"detail": "..."}` (or a bare `["..."]` list) are now `{"code": "...", "details": {}}`; field errors keep DRF's field dictionary with the code as the message. Every code is listed in [error codes](README.md#error-codes).

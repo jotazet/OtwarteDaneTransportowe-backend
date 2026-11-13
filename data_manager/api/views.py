@@ -42,6 +42,7 @@ from data_manager.api.serializers import (
     raise_as_drf_validation_error,
 )
 from data_manager.models import (
+    FETCH_STATUS_CHOICES,
     FeedFetchError,
     FeedSubmission,
     FeedSubmissionHistory,
@@ -117,6 +118,20 @@ def _int_query_param(request, name):
         ) from None
 
 
+def _choice_query_param(request, name, choices):
+    """Query filter limited to ``choices``, or ``None`` when absent.
+
+    Any other value is a 400 with the code ``feeds.invalid_choice`` (ADR 0006),
+    so a typo does not silently return an unfiltered or empty list.
+    """
+    raw = request.query_params.get(name)
+    if not raw:
+        return None
+    if raw not in choices:
+        raise ValidationError({name: ['feeds.invalid_choice']}, code='feeds.invalid_choice')
+    return raw
+
+
 def _filter_fetch_errors(request, qs):
     """Apply shared query params (error_type, source, endpoint_type) to a FeedFetchError qs."""
     error_type = request.query_params.get('error_type')
@@ -186,6 +201,26 @@ class ProxyManagedFeedListView(APIView):
         if not can_confirm_feeds(request.user):
             static_qs = static_qs.filter(submission__submitted_by=request.user)
             rt_qs = rt_qs.filter(submission__submitted_by=request.user)
+
+        filters = {}
+        fetch_status = _choice_query_param(
+            request, 'fetch_status', {value for value, _ in FETCH_STATUS_CHOICES}
+        )
+        if fetch_status:
+            filters['fetch_status'] = fetch_status
+        organization = _int_query_param(request, 'organization')
+        if organization is not None:
+            filters['submission__transport_organization_id'] = organization
+        region = request.query_params.get('region')
+        if region:
+            filters['submission__transport_organization__region'] = region
+        static_qs = static_qs.filter(**filters)
+        rt_qs = rt_qs.filter(**filters)
+        source = _choice_query_param(request, 'source', {'static', 'realtime'})
+        if source == 'static':
+            rt_qs = rt_qs.none()
+        elif source == 'realtime':
+            static_qs = static_qs.none()
 
         paginator = FetchErrorPagination()
         page_size = paginator.get_page_size(request) or paginator.page_size

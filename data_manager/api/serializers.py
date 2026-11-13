@@ -155,27 +155,33 @@ def annotate_fetch_health(qs, error_fk: str):
     )
     return qs.annotate(
         annotated_last_fetch_error_message=Subquery(latest_error.values('message')[:1]),
+        annotated_last_fetch_error_type=Subquery(latest_error.values('error_type')[:1]),
         annotated_fetch_error_count_7d=Count(
             'fetch_errors', filter=Q(fetch_errors__occurred_at__gte=since)
         ),
     )
 
 
-def _fetch_health_error_aggregates(obj) -> tuple[str | None, int]:
-    """(last error message, 7-day error count) — annotation-aware."""
+def _fetch_health_error_aggregates(obj) -> tuple[str | None, str | None, int]:
+    """(last error message, last error type, 7-day error count) — annotation-aware."""
     if hasattr(obj, 'annotated_last_fetch_error_message'):
-        return obj.annotated_last_fetch_error_message, obj.annotated_fetch_error_count_7d
+        return (
+            obj.annotated_last_fetch_error_message,
+            obj.annotated_last_fetch_error_type,
+            obj.annotated_fetch_error_count_7d,
+        )
     since = timezone.now() - timedelta(days=7)
     last_error = obj.fetch_errors.order_by('-occurred_at', '-id').first()
     return (
         last_error.message if last_error else None,
+        last_error.error_type if last_error else None,
         obj.fetch_errors.filter(occurred_at__gte=since).count(),
     )
 
 
 def _fetch_health_fields(obj) -> dict:
     """Proxy fetch status + recent error aggregates for a static entry or RT endpoint."""
-    last_error_message, error_count_7d = _fetch_health_error_aggregates(obj)
+    last_error_message, last_error_type, error_count_7d = _fetch_health_error_aggregates(obj)
     return {
         'fetch_status': obj.fetch_status,
         'fetch_failure_count': obj.fetch_failure_count,
@@ -185,6 +191,7 @@ def _fetch_health_fields(obj) -> dict:
         'last_fetch_success_at': obj.last_fetch_success_at,
         'last_fetch_error_at': obj.last_fetch_error_at,
         'last_fetch_error_message': last_error_message,
+        'last_fetch_error_type': last_error_type,
         'fetch_error_count_7d': error_count_7d,
     }
 
@@ -195,6 +202,7 @@ class ProxyManagedFeedListSerializer(serializers.Serializer):
     source = serializers.CharField()
     id = serializers.IntegerField()
     submission_id = serializers.IntegerField()
+    organization_id = serializers.IntegerField(allow_null=True)
     organization = serializers.CharField()
     region = serializers.CharField()
     feed_name = serializers.CharField()
@@ -209,6 +217,7 @@ class ProxyManagedFeedListSerializer(serializers.Serializer):
     last_fetch_success_at = serializers.DateTimeField(allow_null=True)
     last_fetch_error_at = serializers.DateTimeField(allow_null=True)
     last_fetch_error_message = serializers.CharField(allow_null=True)
+    last_fetch_error_type = serializers.CharField(allow_null=True)
     fetch_error_count_7d = serializers.IntegerField()
 
     @staticmethod
@@ -218,6 +227,7 @@ class ProxyManagedFeedListSerializer(serializers.Serializer):
             'source': 'static',
             'id': entry.id,
             'submission_id': submission.id,
+            'organization_id': submission.transport_organization_id,
             'organization': feed_organization_name(submission),
             'region': feed_organization_region(submission),
             'feed_name': feed_display_name(submission),
@@ -234,6 +244,7 @@ class ProxyManagedFeedListSerializer(serializers.Serializer):
             'source': 'realtime',
             'id': endpoint.id,
             'submission_id': submission.id,
+            'organization_id': submission.transport_organization_id,
             'organization': feed_organization_name(submission),
             'region': feed_organization_region(submission),
             'feed_name': feed_display_name(submission),
@@ -302,13 +313,17 @@ class FeedFetchErrorSerializer(serializers.ModelSerializer):
 
 class FetchHealthSerializerMixin(serializers.Serializer):
     last_fetch_error_message = serializers.SerializerMethodField()
+    last_fetch_error_type = serializers.SerializerMethodField()
     fetch_error_count_7d = serializers.SerializerMethodField()
 
     def get_last_fetch_error_message(self, obj):
         return _fetch_health_error_aggregates(obj)[0]
 
-    def get_fetch_error_count_7d(self, obj):
+    def get_last_fetch_error_type(self, obj):
         return _fetch_health_error_aggregates(obj)[1]
+
+    def get_fetch_error_count_7d(self, obj):
+        return _fetch_health_error_aggregates(obj)[2]
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +351,7 @@ PROXY_FETCH_FIELDS = frozenset(
         'last_fetch_success_at',
         'last_fetch_error_at',
         'last_fetch_error_message',
+        'last_fetch_error_type',
         'fetch_error_count_7d',
     }
 )
@@ -376,6 +392,7 @@ class StaticFeedEntrySerializer(FetchHealthSerializerMixin, serializers.ModelSer
             'last_fetch_success_at',
             'last_fetch_error_at',
             'last_fetch_error_message',
+            'last_fetch_error_type',
             'fetch_error_count_7d',
         ]
         read_only_fields = [
@@ -396,6 +413,7 @@ class StaticFeedEntrySerializer(FetchHealthSerializerMixin, serializers.ModelSer
             'last_fetch_success_at',
             'last_fetch_error_at',
             'last_fetch_error_message',
+            'last_fetch_error_type',
             'fetch_error_count_7d',
         ]
         extra_kwargs = {
@@ -475,6 +493,7 @@ class RealtimeEndpointRTSerializer(FetchHealthSerializerMixin, serializers.Model
             'last_fetch_success_at',
             'last_fetch_error_at',
             'last_fetch_error_message',
+            'last_fetch_error_type',
             'fetch_error_count_7d',
         ]
         read_only_fields = [
@@ -492,6 +511,7 @@ class RealtimeEndpointRTSerializer(FetchHealthSerializerMixin, serializers.Model
             'last_fetch_success_at',
             'last_fetch_error_at',
             'last_fetch_error_message',
+            'last_fetch_error_type',
             'fetch_error_count_7d',
         ]
         extra_kwargs = {'auth_value': {'write_only': True}}
