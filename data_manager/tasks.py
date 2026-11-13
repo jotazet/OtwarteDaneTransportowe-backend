@@ -570,6 +570,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
     from celery.exceptions import SoftTimeLimitExceeded
     from django.conf import settings
 
+    from data_manager import rejection_reasons as rr
     from data_manager import validation_errors as ve
     from data_manager.models import (
         FeedSubmission,
@@ -622,8 +623,9 @@ def validate_gtfs_feed_task(self, entry_id: int):
             detail,
         )
 
-    def _reject_submission(reason: str) -> None:
-        _set_validation_status(StaticFeedEntry.VALIDATION_INVALID, reason)
+    def _reject_submission(code: str, **details) -> None:
+        reasons = [rr.rejection_reason(code, **details)]
+        _set_validation_status(StaticFeedEntry.VALIDATION_INVALID, code)
         with transaction.atomic():
             submission = _lock_submission()
             stage = submission.current_stage
@@ -632,10 +634,10 @@ def validate_gtfs_feed_task(self, entry_id: int):
                     'GTFS validation failed for published submission %s; not reverting stage (was %s): %s',
                     submission.id,
                     stage,
-                    reason,
+                    code,
                 )
                 return
-            if submission.rejection_cause == reason:
+            if submission.rejection_reasons == reasons:
                 # The same verdict is already recorded, e.g. by an overlapping run.
                 return
             FeedSubmissionHistory.objects.create(
@@ -643,10 +645,10 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 event_type=FeedSubmissionHistory.EVENT_REJECTED,
                 stage_before=stage,
                 stage_after=1,
-                cause=reason,
+                reasons=reasons,
                 actor=None,
             )
-        logger.warning(f"Submission {submission.id} rejected: {reason}")
+        logger.warning(f"Submission {submission.id} rejected: {code}")
 
     # Both work dirs carry a random suffix, so a leaked one is never reused and
     # repeated failures would grow the disk without bound. Declared here, before
@@ -674,7 +676,11 @@ def validate_gtfs_feed_task(self, entry_id: int):
         if not file_field and entry.url:
             from urllib.parse import urlparse
 
-            from data_manager.net_security import OutboundURLBlocked, safe_download
+            from data_manager.net_security import (
+                OutboundURLBlocked,
+                ResponseTooLarge,
+                safe_download,
+            )
             from data_manager.scheduler import _build_auth_headers
 
             validation_temp_dir = os.path.join(
@@ -684,6 +690,13 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 f'tmp_{entry.id}_{random.randint(1000, 9999)}',
             )
             os.makedirs(validation_temp_dir, exist_ok=True)
+            download_codes = (
+                (ResponseTooLarge, rr.GTFS_DOWNLOAD_TOO_LARGE),
+                (OutboundURLBlocked, rr.GTFS_DOWNLOAD_URL_BLOCKED),
+                (requests.exceptions.HTTPError, rr.GTFS_DOWNLOAD_HTTP_ERROR),
+                (requests.exceptions.Timeout, rr.GTFS_DOWNLOAD_TIMEOUT),
+                (requests.exceptions.ConnectionError, rr.GTFS_DOWNLOAD_UNREACHABLE),
+            )
             try:
                 parsed = urlparse(entry.url)
                 filename = os.path.basename(parsed.path) or 'feed.zip'
@@ -705,14 +718,26 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 # Our key configuration, not the provider's credential.
                 _record_infra_error(ve.CREDENTIAL_UNDECRYPTABLE, 'stored credential')
                 return
-            except OutboundURLBlocked as exc:
-                # The provider's URL, not our infrastructure: rejected as before.
-                _reject_submission(str(exc))
-                return
-            except requests.exceptions.RequestException as exc:
-                _reject_submission(
-                    f'Failed to download feed for validation: {redact_urls(str(exc))}'
+            except (OutboundURLBlocked, requests.exceptions.RequestException) as exc:
+                # The provider's URL, not our infrastructure: rejected. The code is
+                # what the provider sees; the exception text is for the team.
+                # Most specific first: ResponseTooLarge is an OutboundURLBlocked.
+                code = next(
+                    (c for exc_type, c in download_codes if isinstance(exc, exc_type)),
+                    rr.GTFS_DOWNLOAD_FAILED,
                 )
+                details = {}
+                if code == rr.GTFS_DOWNLOAD_TOO_LARGE:
+                    details['limit_bytes'] = exc.max_bytes
+                elif code == rr.GTFS_DOWNLOAD_HTTP_ERROR and exc.response is not None:
+                    details['status'] = exc.response.status_code
+                logger.warning(
+                    'Download of StaticFeedEntry %s for validation failed: %s (%s)',
+                    entry.id,
+                    code,
+                    redact_urls(str(exc)),
+                )
+                _reject_submission(code, **details)
                 return
         elif not file_field:
             _record_infra_error(ve.FILE_MISSING, 'no file, cached file or URL')
@@ -975,13 +1000,12 @@ def validate_gtfs_feed_task(self, entry_id: int):
 
         # Update Submission Stage
         if error_count > 0:
-            # Build rejection_cause as "code: count" list
-            if error_code_counts:
-                parts = [f"{code}: {count}" for code, count in sorted(error_code_counts.items())]
-                cause = ", ".join(parts)
-            else:
-                cause = f"Validation failed with {error_count} errors."
-            _reject_submission(cause)
+            # notices: the validator's own notice codes with their counts.
+            _reject_submission(
+                rr.GTFS_FEED_INVALID,
+                error_count=error_count,
+                notices=error_code_counts,
+            )
         else:
             _set_validation_status(StaticFeedEntry.VALIDATION_VALID)
             with transaction.atomic():

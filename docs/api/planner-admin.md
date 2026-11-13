@@ -4,7 +4,7 @@ Operate the planner: choose which published feeds go into the OpenTripPlanner gr
 
 **Permissions:** every route requires the `Admin` group (`RequiresAdminGroup`). Anonymous requests get `401`; other roles and superusers without the group get `403`.
 
-Base path: `/api/planner/admin/`. Error responses of planner operations use the `{code, details}` shape ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)); field validation errors keep DRF's field dictionary, with the codes listed below.
+Base path: `/api/planner/admin/`. Error responses of planner operations use the `{code, details}` shape ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)); field validation errors keep DRF's field dictionary with the code as the message (e.g. `{"feed_id": ["planner.feed_id_immutable"]}`), with the codes listed below. `unique` is DRF's own check and still comes with its English text.
 
 ## Feed candidates
 

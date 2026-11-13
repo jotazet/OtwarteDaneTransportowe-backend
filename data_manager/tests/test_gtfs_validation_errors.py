@@ -24,9 +24,11 @@ from django.core.files.base import ContentFile
 from django.core.management import call_command
 
 from cases.models import TransportOrganization
+from data_manager import rejection_reasons as rr
 from data_manager import tasks
 from data_manager import validation_errors as ve
 from data_manager.models import FeedSubmission, FeedSubmissionHistory, StaticFeedEntry
+from data_manager.net_security import OutboundURLBlocked, ResponseTooLarge
 from data_manager.tasks import validate_gtfs_feed_task
 
 pytestmark = pytest.mark.django_db
@@ -202,10 +204,15 @@ def test_errors_in_the_feed_still_reject_to_stage_1(org, user, stage):
 
     entry.refresh_from_db()
     assert entry.validation_status == StaticFeedEntry.VALIDATION_INVALID
-    assert entry.validation_message == 'missing_required_file: 4'
+    assert entry.validation_message == rr.GTFS_FEED_INVALID
     assert entry.submission.current_stage == 1
     rejection = _rejections(entry).get()
-    assert (rejection.stage_before, rejection.cause) == (stage, 'missing_required_file: 4')
+    assert (rejection.stage_before, rejection.cause) == (stage, '')
+    assert rejection.reasons == [
+        rr.rejection_reason(
+            rr.GTFS_FEED_INVALID, error_count=4, notices={'missing_required_file': 4}
+        )
+    ]
 
 
 def test_errors_in_a_published_feed_do_not_unpublish_it(org, user):
@@ -234,19 +241,41 @@ def test_valid_feed_after_an_infrastructure_error_advances_to_stage_3(org, user)
     assert entry.submission.current_stage == 3
 
 
-def test_failed_download_of_the_providers_url_still_rejects(org, user):
+def _http_error(status):
+    response = requests.Response()
+    response.status_code = status
+    return requests.exceptions.HTTPError('https://user:secret@example.org/', response=response)
+
+
+@pytest.mark.parametrize(
+    ('exc', 'reason'),
+    [
+        (_http_error(404), rr.rejection_reason(rr.GTFS_DOWNLOAD_HTTP_ERROR, status=404)),
+        (ResponseTooLarge(1000), rr.rejection_reason(rr.GTFS_DOWNLOAD_TOO_LARGE, limit_bytes=1000)),
+        (OutboundURLBlocked('private'), rr.rejection_reason(rr.GTFS_DOWNLOAD_URL_BLOCKED)),
+        (requests.exceptions.ReadTimeout('slow'), rr.rejection_reason(rr.GTFS_DOWNLOAD_TIMEOUT)),
+        (
+            requests.exceptions.ConnectionError('refused'),
+            rr.rejection_reason(rr.GTFS_DOWNLOAD_UNREACHABLE),
+        ),
+        (
+            requests.exceptions.TooManyRedirects('loop'),
+            rr.rejection_reason(rr.GTFS_DOWNLOAD_FAILED),
+        ),
+    ],
+)
+def test_failed_download_of_the_providers_url_rejects_with_a_code(org, user, exc, reason):
     entry = _entry(org, user, file=None, url='https://example.org/feed.zip', hide_original=False)
 
-    def failing_download(*args, **kwargs):
-        raise requests.exceptions.ConnectionError('refused')
-
-    with patch('data_manager.net_security.safe_download', failing_download):
+    with patch('data_manager.net_security.safe_download', _raise(exc)):
         validate_gtfs_feed_task(entry.id)
 
     entry.refresh_from_db()
     assert entry.validation_status == StaticFeedEntry.VALIDATION_INVALID
+    assert entry.validation_message == reason['code']
     assert entry.submission.current_stage == 1
-    assert _rejections(entry).count() == 1
+    rejection = _rejections(entry).get()
+    assert (rejection.cause, rejection.reasons) == ('', [reason])
 
 
 # ---------------------------------------------------------------------------

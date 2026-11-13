@@ -136,13 +136,13 @@ def test_too_many_points_is_refused(admin_client):
     )
 
     assert response.status_code == 400
-    assert response.data['interval'][0].code == 'planner.too_many_buckets'
+    assert response.data['interval'][0] == 'planner.too_many_buckets'
 
 
 def test_a_long_range_by_the_minute_is_refused_without_building_it(admin_client):
     response = get(admin_client, 'timeseries', interval='minute', since='2000-01-01T00:00:00Z')
 
-    assert response.data['interval'][0].code == 'planner.too_many_buckets'
+    assert response.data['interval'][0] == 'planner.too_many_buckets'
 
 
 def test_endpoints_busiest_first_with_share_and_latency(admin_client, traffic):
@@ -202,7 +202,7 @@ def test_the_default_range_is_the_last_day(admin_client):
 def test_an_inverted_range_is_refused(admin_client):
     response = get(admin_client, 'summary', since=(T0 + timedelta(hours=3)).isoformat())
 
-    assert response.data['since'][0].code == 'planner.invalid_range'
+    assert response.data['since'][0] == 'planner.invalid_range'
 
 
 @pytest.mark.parametrize(

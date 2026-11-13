@@ -24,6 +24,8 @@ Base endpoint:
 }
 ```
 
+A `name` that another data provider already has returns `400` `{"name": ["cases.data_provider_name_taken"]}` ([error codes](README.md#error-codes)).
+
 ## CaseStatus
 
 Base endpoint:
@@ -80,6 +82,8 @@ Base endpoint:
 - `GET list/retrieve` - public.
 - `POST/PUT/PATCH` - `Helper` or `Admin`.
 - `DELETE` - `Admin` only (`403` for a `Helper`). Deleting an organization also deletes all its static and realtime feed submissions, published ones included, and deleting a submission is `Admin` only too.
+
+A `region` and `transport_organization` pair that another organization already has returns `400` `{"non_field_errors": ["cases.organization_exists"]}`, on create and on update ([error codes](README.md#error-codes)).
 
 **List (`GET /api/cases/transport-organizations/`):**
 

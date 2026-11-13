@@ -93,7 +93,7 @@ def test_a_url_to_a_private_address_is_refused_at_once(admin, fake_dns):
         '/api/planner/admin/osm/', {'url': 'https://intranet.example.org/x.pbf'}, format='json'
     )
 
-    assert response.data['url'][0].code == 'planner.osm_url_blocked'
+    assert response.data['url'][0] == 'planner.osm_url_blocked'
     assert not OsmDownload.objects.exists()
 
 

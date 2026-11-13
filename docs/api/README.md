@@ -569,8 +569,10 @@ Field errors:
 | `users.password_entirely_numeric` | `new_password` | Only digits. |
 | `blog.too_many_tags` | `tags` | More than 5 tags (DRF's own `max_length` message comes with it). |
 | `blog.image_too_large` | `image` | The image exceeds `MAX_IMAGE_FILE_SIZE_BYTES`. |
+| `cases.data_provider_name_taken` | `name` | A data provider with this name already exists. |
+| `cases.organization_exists` | `non_field_errors` | A transport organization with this `region` and `transport_organization` already exists. |
 
-The planner has its own codes ([planner.md](planner.md), [planner-admin.md](planner-admin.md)), and stored causes have theirs: [realtime rejection reasons](feeds.md#realtime-rejection-reasons) and GTFS validation codes in [static feeds](feeds.md#static-feeds-feedsubmission).
+The planner has its own codes ([planner.md](planner.md), [planner-admin.md](planner-admin.md)), and stored causes have theirs: [static](feeds.md#static-rejection-reasons) and [realtime](feeds.md#realtime-rejection-reasons) rejection reasons, and GTFS validation codes in [static feeds](feeds.md#static-feeds-feedsubmission).
 
 ### Multipart nested fields
 

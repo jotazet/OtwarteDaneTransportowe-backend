@@ -18,6 +18,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
 from cases.models import TransportOrganization
+from data_manager import rejection_reasons as rr
 from data_manager.models import (
     FeedSubmission,
     FeedSubmissionHistory,
@@ -306,7 +307,8 @@ def test_gtfs_upload_flow_wrong(api_client, normal_user, org):
         submission=submission, event_type=FeedSubmissionHistory.EVENT_REJECTED
     ).first()
     assert rejected is not None
-    assert rejected.cause != ""
+    assert rejected.cause == ''
+    assert rejected.reasons[0]['code'] == rr.GTFS_FEED_INVALID
 
 
 def test_jwt_token_obtain_and_refresh(api_client, normal_user):
@@ -2206,6 +2208,7 @@ def test_feed_reject_patch_response_reflects_rejection(
     assert response.status_code == 200, response.data
     assert response.data['is_rejected'] is True
     assert response.data['rejection_cause'] == 'Missing stops.txt'
+    assert response.data['rejection_reasons'] is None
     assert response.data['current_stage'] == 1
 
 
@@ -2312,6 +2315,26 @@ def test_overlapping_gtfs_validations_record_the_stage_change_once(
     assert list(transitions) == [(2, stage_after)]
 
 
+def test_automatic_rejection_is_shown_as_rejection_reasons(api_client, normal_user, org, settings):
+    settings.HOST_MEDIA_ROOT = str(settings.MEDIA_ROOT)
+    submission = _feed_at_stage_2(org, normal_user)
+    entry = StaticFeedEntry.objects.create(
+        submission=submission,
+        file=ContentFile(b'PK\x03\x04data', name='feed.zip'),
+    )
+    with patch('docker.from_env', _mock_docker_from_env(3)):
+        validate_gtfs_feed_task(entry.id)
+    api_client.force_authenticate(user=normal_user)
+
+    detail = api_client.get(f'/api/data_manager/feed-submissions/{submission.id}/').data
+    listed = api_client.get('/api/data_manager/submissions/').data['static']
+
+    assert detail['rejection_cause'] is None
+    assert detail['rejection_reasons'] == [_feed_invalid(3)]
+    assert detail['history'][0]['reasons'] == [_feed_invalid(3)]
+    assert [row['has_rejection_cause'] for row in listed] == [True]
+
+
 def test_failed_revalidation_of_rejected_feed_records_only_a_new_cause(normal_user, org, settings):
     """A rejected submission can be re-validated without leaving stage 1 (e.g.
     an Admin replaced its file). A new failure is recorded with its own cause;
@@ -2330,9 +2353,17 @@ def test_failed_revalidation_of_rejected_feed_records_only_a_new_cause(normal_us
     rejections = (
         submission.history.filter(event_type=FeedSubmissionHistory.EVENT_REJECTED)
         .order_by('created_at', 'id')
-        .values_list('stage_before', 'cause')
+        .values_list('stage_before', 'reasons')
     )
     assert list(rejections) == [
-        (2, 'test_validation_error: 3'),
-        (1, 'test_validation_error: 5'),
+        (2, [_feed_invalid(3)]),
+        (1, [_feed_invalid(5)]),
     ]
+
+
+def _feed_invalid(error_count):
+    return rr.rejection_reason(
+        rr.GTFS_FEED_INVALID,
+        error_count=error_count,
+        notices={'test_validation_error': error_count},
+    )

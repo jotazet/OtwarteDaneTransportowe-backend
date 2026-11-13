@@ -36,7 +36,11 @@ class PlannerFeed(models.Model):
     feed_id = models.CharField(
         max_length=32,
         unique=True,
-        validators=[RegexValidator(SCOPE_ID_PATTERN, code='planner.invalid_feed_id')],
+        validators=[
+            RegexValidator(
+                SCOPE_ID_PATTERN, 'planner.invalid_feed_id', code='planner.invalid_feed_id'
+            )
+        ],
     )
     is_enabled = models.BooleanField(default=True)
     include_realtime = models.BooleanField(default=True)
@@ -83,7 +87,11 @@ class PlannerRentalSource(models.Model):
     network = models.CharField(
         max_length=32,
         unique=True,
-        validators=[RegexValidator(SCOPE_ID_PATTERN, code='planner.invalid_network')],
+        validators=[
+            RegexValidator(
+                SCOPE_ID_PATTERN, 'planner.invalid_network', code='planner.invalid_network'
+            )
+        ],
     )
     is_enabled = models.BooleanField(default=True)
 

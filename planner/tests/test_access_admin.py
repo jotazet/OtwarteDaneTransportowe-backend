@@ -71,7 +71,7 @@ def test_ban_networks_are_normalised_validated_and_applied_at_once(admin_client)
     invalid = admin_client.post(f'{BASE}/ip-bans/', {'network': 'not-an-ip'}, format='json')
 
     assert created.data['network'] == '203.0.113.7/32'
-    assert invalid.data['network'][0].code == 'planner.invalid_network'
+    assert invalid.data['network'][0] == 'planner.invalid_network'
     assert access.is_banned('203.0.113.7')
 
 

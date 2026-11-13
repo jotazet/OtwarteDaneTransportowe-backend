@@ -42,6 +42,7 @@ class FeedSubmissionHistorySerializer(serializers.ModelSerializer):
             'stage_after',
             'actor',
             'cause',
+            'reasons',
             'created_at',
         ]
         read_only_fields = fields
@@ -837,7 +838,7 @@ class FeedSubmissionListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_has_rejection_cause(self, obj: FeedSubmission) -> bool:
-        return bool(obj.rejection_cause)
+        return bool(obj.rejection_cause or obj.rejection_reasons)
 
 
 class UserFeedSubmissionListSerializer(FeedSubmissionListSerializer):
@@ -859,6 +860,7 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
     current_stage_label = serializers.CharField(read_only=True)
     is_rejected = serializers.BooleanField(read_only=True)
     rejection_cause = serializers.CharField(read_only=True, allow_null=True)
+    rejection_reasons = serializers.JSONField(read_only=True, allow_null=True)
     published_at = serializers.DateTimeField(read_only=True, allow_null=True)
     history = FeedSubmissionHistorySerializer(many=True, read_only=True)
 
@@ -877,6 +879,7 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
             'current_stage_label',
             'is_rejected',
             'rejection_cause',
+            'rejection_reasons',
             'published_at',
             'static_entry',
             'realtime_submissions',
@@ -891,6 +894,7 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
             'current_stage_label',
             'is_rejected',
             'rejection_cause',
+            'rejection_reasons',
             'published_at',
             'history',
         ]
