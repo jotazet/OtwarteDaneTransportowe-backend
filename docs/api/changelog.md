@@ -2,6 +2,10 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-13: planner anonymous limits in `status/`, `status_class` filter on `requests/`
+
+Additive. `GET /api/planner/v1/status/` returns `anonymous_limits` (`plan`, `realtime`, `lookup`): the requests per minute per client without an API key, as set by Admins, so clients no longer hardcode them. `GET /api/planner/admin/requests/` accepts `status_class` (`1xx` to `5xx`) to list every code of an HTTP class, e.g. all `4xx` or `5xx` errors. See [planner](planner.md#get-apiplannerv1status) and [planner admin](planner-admin.md).
+
 ## 2026-11-12: error codes instead of prose in feeds, users and blog
 
 **Breaking.** The remaining English error messages of `data_manager`, `accounts` and `blog` are now error codes ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). Status codes and field keys are unchanged; only the text changes. Request errors that were `{"detail": "..."}` (or a bare `["..."]` list) are now `{"code": "...", "details": {}}`; field errors keep DRF's field dictionary with the code as the message. Every code is listed in [error codes](README.md#error-codes).

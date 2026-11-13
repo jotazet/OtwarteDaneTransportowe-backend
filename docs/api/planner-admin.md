@@ -286,10 +286,10 @@ DELETE /api/planner/admin/ip-bans/{id}/
 ## Request log
 
 ```http
-GET /api/planner/admin/requests/?since=&until=&endpoint=&status=&ip=&api_key=
+GET /api/planner/admin/requests/?since=&until=&endpoint=&status=&status_class=&ip=&api_key=
 ```
 
-Requests to `/api/planner/v1/` of the last 30 days, newest first, paginated. The filters are those of the statistics below (default: the 24 hours before `until`, which defaults to now; `since` must be before `until`, else `planner.invalid_range`), plus `status`.
+Requests to `/api/planner/v1/` of the last 30 days, newest first, paginated. The filters are those of the statistics below (default: the 24 hours before `until`, which defaults to now; `since` must be before `until`, else `planner.invalid_range`), plus `status` (one exact code) and `status_class` (`1xx` to `5xx`, a whole HTTP class; `4xx` includes `429`). Both may be combined.
 
 ```json
 { "id": 9, "created_at": "2026-10-13T11:25:00Z", "endpoint": "planner-v1-status", "status_code": 200, "latency_ms": 12,

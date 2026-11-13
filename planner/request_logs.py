@@ -30,6 +30,9 @@ STATUS_CLASSES = {
     'server_errors': Q(status_code__gte=500),
 }
 
+# HTTP status classes of the request-log filter: 4xx includes 429.
+STATUS_RANGES = {f'{n}xx': (n * 100, n * 100 + 100) for n in range(1, 6)}
+
 
 class Percentile(Aggregate):
     """PostgreSQL's PERCENTILE_CONT(fraction) WITHIN GROUP (ORDER BY expression)."""
@@ -68,7 +71,7 @@ def _byte_order(field: str):
     return Collate(field, 'C')
 
 
-def filtered(since, until, endpoint=None, api_key=None, ip=None, status=None):
+def filtered(since, until, endpoint=None, api_key=None, ip=None, status=None, status_class=None):
     """Raw log rows in [since, until) matching the dashboard and request-log filters."""
     rows = PlannerRequestLog.objects.filter(created_at__gte=since, created_at__lt=until)
     if endpoint:
@@ -79,6 +82,9 @@ def filtered(since, until, endpoint=None, api_key=None, ip=None, status=None):
         rows = rows.filter(client_ip=ip)
     if status is not None:
         rows = rows.filter(status_code=status)
+    if status_class:
+        low, high = STATUS_RANGES[status_class]
+        rows = rows.filter(status_code__gte=low, status_code__lt=high)
     return rows
 
 

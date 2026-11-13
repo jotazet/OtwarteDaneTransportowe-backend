@@ -49,6 +49,12 @@ def test_api_is_off_until_switched_on_but_status_answers():
     assert (status['available'], status['reason']) == (False, 'disabled')
 
 
+def test_status_shows_the_anonymous_limits_set_by_admins():
+    PlannerSettings.objects.update_or_create(pk=1, defaults={'anonymous_plan_per_minute': 7})
+
+    assert get(STATUS).json()['anonymous_limits'] == {'plan': 7, 'realtime': 120, 'lookup': 150}
+
+
 def test_status_lists_served_feeds_with_licences_and_osm_attribution(enabled, make_feed):
     feed = make_feed('krk')
     feed.submission.static_entry.license = 'CC-BY-4.0'

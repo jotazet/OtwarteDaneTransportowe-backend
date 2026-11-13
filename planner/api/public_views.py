@@ -37,6 +37,14 @@ class StatusRentalSerializer(serializers.Serializer):
     license = serializers.CharField(allow_blank=True)
 
 
+class StatusLimitsSerializer(serializers.Serializer):
+    """Requests per minute per client without an API key, by limit group."""
+
+    plan = serializers.IntegerField()
+    realtime = serializers.IntegerField()
+    lookup = serializers.IntegerField()
+
+
 class StatusSerializer(serializers.Serializer):
     available = serializers.BooleanField()
     reason = serializers.ChoiceField(
@@ -46,6 +54,7 @@ class StatusSerializer(serializers.Serializer):
     feeds = StatusFeedSerializer(many=True)
     rental_networks = StatusRentalSerializer(many=True)
     attribution = serializers.ListField(child=serializers.DictField())
+    anonymous_limits = StatusLimitsSerializer()
 
 
 class StatusView(PlannerPublicView):
@@ -59,7 +68,8 @@ class StatusView(PlannerPublicView):
     @extend_schema(responses=StatusSerializer, summary='Planner availability and data sources')
     def get(self, request):
         active = GraphBuild.objects.filter(is_active=True).select_related('rollback_of').first()
-        if not planner_settings().public_api_enabled:
+        limits = planner_settings()
+        if not limits.public_api_enabled:
             reason = 'disabled'
         elif services.maintenance_active():
             reason = 'maintenance'
@@ -75,6 +85,10 @@ class StatusView(PlannerPublicView):
                 'feeds': _feeds(active),
                 'rental_networks': _rental_networks(active),
                 'attribution': [OSM_ATTRIBUTION],
+                'anonymous_limits': {
+                    group: limits.limit('anonymous', group)
+                    for group in ('plan', 'realtime', 'lookup')
+                },
             }
         )
 
