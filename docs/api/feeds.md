@@ -166,6 +166,7 @@ Base endpoint:
     "last_fetch_success_at": "2026-04-27T10:05:00Z",
     "last_fetch_error_at": null,
     "last_fetch_error_message": null,
+    "last_fetch_error_type": null,
     "fetch_error_count_7d": 0
   },
   "realtime_submissions": [],

@@ -148,9 +148,10 @@ Static and realtime feeds also return fetch health fields in their serializers (
 - `last_fetch_success_at`
 - `last_fetch_error_at`
 - `last_fetch_error_message`
+- `last_fetch_error_type` — the `error_type` of the latest fetch error (`timeout`, `connection_error`, `http_error`, `invalid_content`, `auth_error`), or `null` when there is none. Clients can show a translated label from it instead of the English `last_fetch_error_message`.
 - `fetch_error_count_7d`
 
-`fetch_pause_reason`, `last_fetch_error_message` and the server logs show the source URL without userinfo (`user:pass@`), query string and fragment, where providers put credentials (`data_manager.net_security.redact_url`).
+`url_attempted`, `fetch_pause_reason`, `last_fetch_error_message` and the server logs show the source URL without userinfo (`user:pass@`), query string and fragment, where providers put credentials (`data_manager.net_security.redact_url`).
 
 After consecutive failed fetches the system automatically postpones the next attempts. A realtime endpoint that fails with a **transient** error (timeout, connection error, a body cut off mid-transfer, HTTP 5xx or 429) retries sooner, because realtime data is worthless after an hour; static feeds and **permanent** errors (HTTP 401/403/404 and other 4xx, a blocked URL, content that is not a valid feed) use the long ladder:
 
@@ -182,6 +183,15 @@ POST /api/data_manager/realtime-endpoints/{id}/resume-fetch/
 
 `GET /api/data_manager/proxy-feeds/` returns a single, paginated list of all proxied feeds (static and realtime). Each item has a `source` (`static` or `realtime`) and the entry `id` — these values indicate which `pause-fetch` / `resume-fetch` endpoint to call. The list is sorted by `region`, `organization`, `feed_name`, then `source` and `id`, in the database with its collation (`en_US.utf8` in the `postgres:16` image): case does not decide the order and Polish letters sort next to their base letters (`łódzkie` next to `lubelskie`, not after `z`). Pages are cut from that one order, so every feed appears on exactly one page.
 
+The list takes these query parameters, combined with AND; `count` and the pages cover only the matching feeds:
+
+- `fetch_status` — `active`, `delayed`, `auto_paused` or `manual_paused`
+- `source` — `static` or `realtime`
+- `organization` — id of the transport organization (each item returns it as `organization_id`); a name is not unique across regions
+- `region` — the organization's region, ignoring case
+
+An unknown `fetch_status` or `source` returns `400` with `{"<param>": ["feeds.invalid_choice"]}`, a non-integer `organization` `400` with `feeds.invalid_integer`. A `DataProvider` still sees only its own feeds.
+
 Example item from `GET /api/data_manager/proxy-feeds/`:
 
 ```json
@@ -189,6 +199,7 @@ Example item from `GET /api/data_manager/proxy-feeds/`:
   "source": "static",
   "id": 12,
   "submission_id": 23,
+  "organization_id": 7,
   "organization": "ZTM Warszawa",
   "region": "mazowieckie",
   "feed_name": "#23 GTFS ZTM",
@@ -203,6 +214,7 @@ Example item from `GET /api/data_manager/proxy-feeds/`:
   "last_fetch_success_at": "2026-06-22T14:00:00Z",
   "last_fetch_error_at": null,
   "last_fetch_error_message": null,
+  "last_fetch_error_type": null,
   "fetch_error_count_7d": 0
 }
 ```

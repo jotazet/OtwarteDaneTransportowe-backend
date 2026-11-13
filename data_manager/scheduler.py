@@ -256,7 +256,7 @@ def _log_static_error(entry, error_type, exc, http_code=None) -> None:
         error_type=error_type,
         http_status_code=http_code,
         message=message,
-        url_attempted=entry.url,
+        url_attempted=redact_url(entry.url),
     )
     entry.mark_fetch_failure(message)
     logger.warning('Fetch error static entry=%d type=%s: %s', entry.pk, error_type, message)
@@ -350,7 +350,7 @@ def _log_endpoint_rt_error(endpoint, error_type, exc, outcome, http_code=None) -
         error_type=error_type,
         http_status_code=http_code,
         message=message,
-        url_attempted=endpoint.url,
+        url_attempted=redact_url(endpoint.url),
     )
     transient = outcome == FETCH_TRANSIENT
     delays = REALTIME_TRANSIENT_RETRY_DELAYS if transient else FETCH_RETRY_DELAYS
