@@ -298,7 +298,8 @@ class FeedSubmissionAdmin(admin.ModelAdmin):
 
     @admin.display(description='Rejection cause')
     def get_rejection_cause(self, obj):
-        return obj.rejection_cause or '—'
+        reasons = ', '.join(reason['code'] for reason in obj.rejection_reasons or [])
+        return obj.rejection_cause or reasons or '—'
 
     def has_advance_stage_permission(self, request):
         """Stage changes need Django's ``change`` permission AND a reviewer role.

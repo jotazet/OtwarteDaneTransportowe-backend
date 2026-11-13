@@ -729,7 +729,7 @@ def validate_gtfs_feed_task(self, entry_id: int):
                 details = {}
                 if code == rr.GTFS_DOWNLOAD_TOO_LARGE:
                     details['limit_bytes'] = exc.max_bytes
-                elif code == rr.GTFS_DOWNLOAD_HTTP_ERROR:
+                elif code == rr.GTFS_DOWNLOAD_HTTP_ERROR and exc.response is not None:
                     details['status'] = exc.response.status_code
                 logger.warning(
                     'Download of StaticFeedEntry %s for validation failed: %s (%s)',
