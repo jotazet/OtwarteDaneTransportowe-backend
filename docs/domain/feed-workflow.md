@@ -188,7 +188,7 @@ The list takes these query parameters, combined with AND; `count` and the pages 
 - `fetch_status` — `active`, `delayed`, `auto_paused` or `manual_paused`
 - `source` — `static` or `realtime`
 - `organization` — id of the transport organization (each item returns it as `organization_id`); a name is not unique across regions
-- `region` — the organization's region, an exact match
+- `region` — the organization's region, ignoring case
 
 An unknown `fetch_status` or `source` returns `400` with `{"<param>": ["feeds.invalid_choice"]}`, a non-integer `organization` `400` with `feeds.invalid_integer`. A `DataProvider` still sees only its own feeds.
 

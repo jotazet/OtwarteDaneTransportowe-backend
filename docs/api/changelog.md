@@ -6,7 +6,7 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 Not breaking.
 
-- `GET /api/data_manager/proxy-feeds/` takes the query parameters `fetch_status`, `source` (`static`/`realtime`), `organization` (transport organization id) and `region` (exact), combined with AND; `count` and the pages cover only the matching feeds. An unknown `fetch_status` or `source` is `400` with the new field code `feeds.invalid_choice`, a non-integer `organization` `400` with `feeds.invalid_integer`. Items gain **`organization_id`** (or `null`). The frontend can drop loading every page and filtering in the browser (frontend issue #35); filter options for organizations come from `/api/cases/transport-organizations/`.
+- `GET /api/data_manager/proxy-feeds/` takes the query parameters `fetch_status`, `source` (`static`/`realtime`), `organization` (transport organization id) and `region` (ignoring case), combined with AND; `count` and the pages cover only the matching feeds. An unknown `fetch_status` or `source` is `400` with the new field code `feeds.invalid_choice`, a non-integer `organization` `400` with `feeds.invalid_integer`. Items gain **`organization_id`** (or `null`). The frontend can drop loading every page and filtering in the browser (frontend issue #35); filter options for organizations come from `/api/cases/transport-organizations/`.
 - The fetch health fields of `proxy-feeds`, `static_entry`/`static-feed-entries` and realtime `endpoints`/`realtime-endpoints` gain **`last_fetch_error_type`**: the `error_type` of the latest fetch error, or `null`. Like the other fetch health fields, it is present only for proxied feeds.
 
 See [Fetch errors and pauses of proxied feeds](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).

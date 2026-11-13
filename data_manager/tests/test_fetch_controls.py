@@ -690,7 +690,7 @@ def test_proxy_feeds_filters(api_client, org, provider_user, helper_user):
         ('static', paused_static.id),
         ('realtime', other_rt.id),
     }
-    assert _proxy_feed_keys(api_client, '?region=R') == {
+    assert _proxy_feed_keys(api_client, '?region=r') == {
         ('static', static_entry.id),
         ('realtime', rt_endpoint.id),
     }
@@ -760,6 +760,10 @@ def test_proxy_feeds_return_last_fetch_error_type(api_client, org, provider_user
     endpoint = api_client.get(f'/api/data_manager/realtime-endpoints/{rt_endpoint.id}/')
     assert endpoint.status_code == 200
     assert endpoint.data['last_fetch_error_type'] is None
+    # Nested in the submission, the entry is not annotated and takes the fallback.
+    submission = api_client.get(f'/api/data_manager/feed-submissions/{static_entry.submission_id}/')
+    assert submission.status_code == 200
+    assert submission.data['static_entry']['last_fetch_error_type'] == FeedFetchError.ERROR_TIMEOUT
 
 
 # Content-Length promises 1000 bytes; the server sends 10 and hangs up.

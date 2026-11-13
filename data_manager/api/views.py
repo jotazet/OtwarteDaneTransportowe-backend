@@ -213,7 +213,7 @@ class ProxyManagedFeedListView(APIView):
             filters['submission__transport_organization_id'] = organization
         region = request.query_params.get('region')
         if region:
-            filters['submission__transport_organization__region'] = region
+            filters['submission__transport_organization__region__iexact'] = region
         static_qs = static_qs.filter(**filters)
         rt_qs = rt_qs.filter(**filters)
         source = _choice_query_param(request, 'source', {'static', 'realtime'})
