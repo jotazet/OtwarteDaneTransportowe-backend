@@ -2,6 +2,17 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-13: proxy-feeds filters and `last_fetch_error_type`
+
+Not breaking.
+
+- `GET /api/data_manager/proxy-feeds/` takes the query parameters `fetch_status`, `source` (`static`/`realtime`), `organization` (transport organization id) and `region` (ignoring case), combined with AND; `count` and the pages cover only the matching feeds. An unknown `fetch_status` or `source` is `400` with the new field code `feeds.invalid_choice`, a non-integer `organization` `400` with `feeds.invalid_integer`. Items gain **`organization_id`** (or `null`). The frontend can drop loading every page and filtering in the browser (frontend issue #35); filter options for organizations come from `/api/cases/transport-organizations/`.
+- The fetch health fields of `proxy-feeds`, `static_entry`/`static-feed-entries` and realtime `endpoints`/`realtime-endpoints` gain **`last_fetch_error_type`**: the `error_type` of the latest fetch error, or `null`. Like the other fetch health fields, it is present only for proxied feeds.
+
+See [Fetch errors and pauses of proxied feeds](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
 ## 2026-11-13: cookie sessions for the website; `Content-Disposition` readable
 
 Not breaking: the existing endpoints are unchanged.
@@ -9,6 +20,8 @@ Not breaking: the existing endpoints are unchanged.
 - New endpoints `POST /api/auth/session/` (log in), `POST /api/auth/session/refresh/` and `POST /api/auth/session/logout/` keep the refresh token in the HttpOnly cookie `odt_refresh` (`Secure`, `SameSite=Strict`, `Path=/api/auth/session/`, lifetime `JWT_REFRESH_DAYS`) and return only `{"access": "..."}`. Refresh rotates the cookie and blacklists the old token; logout blacklists it and clears the cookie. Requests need `credentials: "include"`, the header `X-ODT-CSRF: 1` and an allowlisted `Origin`. Only these endpoints allow CORS credentials. The cookie refresh has its own rate limit, `session_refresh` (60/min per IP); login shares the `login` budget. New error codes: `auth.csrf_failed` (403), `auth.invalid_credentials`, `auth.refresh_cookie_missing`, `auth.refresh_cookie_invalid` (401). See [cookie sessions](README.md#cookie-sessions-for-the-website) and [ADR 0017](../architecture/decisions/0017-refresh-token-in-an-httponly-cookie-for-the-website.md).
 - `/api/auth/token/`, `/api/auth/token/refresh/` and `/api/auth/logout/` keep the refresh token in the body, for other clients and for the website until it moves.
 - `Content-Disposition` is now in `Access-Control-Expose-Headers`, so a browser client can read the file name of downloads, e.g. a submission's file.
+
+---
 
 ## 2026-11-12: error codes instead of prose in feeds, users and blog
 

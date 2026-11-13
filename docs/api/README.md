@@ -371,7 +371,7 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `GET` | `/api/data_manager/static-feed-entries/{id}/` | owner or `Helper`/`Admin` | Details of a single static feed with its fetch status |
 | `POST` | `/api/data_manager/static-feed-entries/{id}/pause-fetch/` | `Helper`/`Admin` | Manually pause fetching of a static feed |
 | `POST` | `/api/data_manager/static-feed-entries/{id}/resume-fetch/` | `Helper`/`Admin` | Resume fetching of a static feed and cancel the retry block; proxied feeds only (`400` otherwise, as `pause-fetch`) |
-| `GET` | `/api/data_manager/proxy-feeds/` | logged in | A single, paginated list of proxied feeds (static + realtime), sorted by region, organization and feed name ([order](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds)): a provider sees their own, helper/admin see all. Pausing/resuming (`pause-fetch`/`resume-fetch`) is `Helper`/`Admin` only |
+| `GET` | `/api/data_manager/proxy-feeds/` | logged in | A single, paginated list of proxied feeds (static + realtime), sorted by region, organization and feed name ([order](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds)), filtered by `fetch_status`, `source`, `organization` (id) and `region`: a provider sees their own, helper/admin see all. Pausing/resuming (`pause-fetch`/`resume-fetch`) is `Helper`/`Admin` only |
 | `GET` | `/api/data_manager/fetch-errors/?days=7` | logged in | Global, paginated list of fetch errors: a provider sees their own feeds, helper/admin see all |
 | `GET` | `/api/data_manager/submissions/` | `DataProvider`/`Helper`/`Admin` | Combined list of the logged-in user's own static and realtime submissions (not paginated) |
 | `GET` | `/api/data_manager/realtime-submissions/` | `DataProvider`/`Helper`/`Admin` | List of realtime submissions: a provider sees their own, helper/admin see all |
@@ -537,6 +537,7 @@ Field errors:
 | Code | Field | Meaning |
 |---|---|---|
 | `feeds.invalid_integer` | list query params, e.g. `transport_organization` | The value is not an integer. |
+| `feeds.invalid_choice` | list query params `fetch_status`, `source` of `proxy-feeds` | The value is not one of the allowed values. |
 | `feeds.invalid_stage` | `stage` | The stage is not an integer from 1 to 4. |
 | `feeds.field_locked` | `name`, `transport_organization`, `data_type`, `static_entry.<field>`, `protocol`, `static_submission`, `endpoints` | The owner cannot change this field while the submission is in review or published (stages 2–4 without a rejection). |
 | `feeds.url_blocked` | `static_entry.url`, an endpoint's `url` | The URL is refused by ODT's outbound security rules: not http(s), no host name, the host does not resolve, or it resolves to a non-public address. |
