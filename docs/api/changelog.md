@@ -29,6 +29,14 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ---
 
+## 2026-11-13: cookie sessions for the website; `Content-Disposition` readable
+
+Not breaking: the existing endpoints are unchanged.
+
+- New endpoints `POST /api/auth/session/` (log in), `POST /api/auth/session/refresh/` and `POST /api/auth/session/logout/` keep the refresh token in the HttpOnly cookie `odt_refresh` (`Secure`, `SameSite=Strict`, `Path=/api/auth/session/`, lifetime `JWT_REFRESH_DAYS`) and return only `{"access": "..."}`. Refresh rotates the cookie and blacklists the old token; logout blacklists it and clears the cookie. Requests need `credentials: "include"`, the header `X-ODT-CSRF: 1` and an allowlisted `Origin`. Only these endpoints allow CORS credentials. The cookie refresh has its own rate limit, `session_refresh` (60/min per IP); login shares the `login` budget. New error codes: `auth.csrf_failed` (403), `auth.invalid_credentials`, `auth.refresh_cookie_missing`, `auth.refresh_cookie_invalid` (401). See [cookie sessions](README.md#cookie-sessions-for-the-website) and [ADR 0017](../architecture/decisions/0017-refresh-token-in-an-httponly-cookie-for-the-website.md).
+- `/api/auth/token/`, `/api/auth/token/refresh/` and `/api/auth/logout/` keep the refresh token in the body, for other clients and for the website until it moves.
+- `Content-Disposition` is now in `Access-Control-Expose-Headers`, so a browser client can read the file name of downloads, e.g. a submission's file.
+
 ## 2026-11-12: error codes instead of prose in feeds, users and blog
 
 **Breaking.** The remaining English error messages of `data_manager`, `accounts` and `blog` are now error codes ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). Status codes and field keys are unchanged; only the text changes. Request errors that were `{"detail": "..."}` (or a bare `["..."]` list) are now `{"code": "...", "details": {}}`; field errors keep DRF's field dictionary with the code as the message. Every code is listed in [error codes](README.md#error-codes).

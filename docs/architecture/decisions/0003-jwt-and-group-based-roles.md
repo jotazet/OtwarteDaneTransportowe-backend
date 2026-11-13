@@ -18,7 +18,7 @@ The website is a separate Next.js application that calls the API from the browse
 
 - New permission logic goes into `auth_roles.py`, never inline in views.
 - Role names are part of the API contract (JWT claims, user endpoints) and of the frontend's labels.
-- The frontend stores tokens in `localStorage`, which exposes them to any XSS. Moving the refresh token to an HttpOnly cookie would need a backend change and an ADR.
+- The frontend stores tokens in `localStorage`, which exposes them to any XSS. Moving the refresh token to an HttpOnly cookie would need a backend change and an ADR. *Update 2026-11-13:* [ADR 0017](0017-refresh-token-in-an-httponly-cookie-for-the-website.md) adds cookie sessions for the website.
 
 ## Alternatives considered
 
