@@ -340,12 +340,23 @@ class FeedSubmission(models.Model):
         return latest is not None and latest.event_type == FeedSubmissionHistory.EVENT_REJECTED
 
     @property
-    def rejection_cause(self):
-        """Cause text of the latest rejection; None if not rejected or no text."""
+    def _latest_rejection(self):
+        """The latest history entry if it is a rejection, else None."""
         latest = self._latest_history_entry
         if latest is None or latest.event_type != FeedSubmissionHistory.EVENT_REJECTED:
             return None
-        return latest.cause or None
+        return latest
+
+    @property
+    def rejection_cause(self):
+        """A reviewer's text of the latest rejection; None if not rejected or no text."""
+        rejection = self._latest_rejection
+        return (rejection.cause or None) if rejection else None
+
+    @property
+    def rejection_reasons(self):
+        rejection = self._latest_rejection
+        return rejection.reasons if rejection else None
 
     @property
     def published_at(self):
@@ -405,6 +416,8 @@ class FeedSubmissionHistory(models.Model):
         blank=True,
         help_text='Reason for rejection — only filled for event_type=rejected',
     )
+    # Automatic rejections: [{"code": ..., "details": {...}}], see rejection_reasons.py.
+    reasons = models.JSONField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

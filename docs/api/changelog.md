@@ -2,6 +2,33 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-13: error codes for planner admin fields, case duplicates and GTFS rejections
+
+**Breaking** for clients that read the old text. Status codes and field keys are unchanged ([ADR 0006](../architecture/decisions/0006-api-error-codes.md), [issue #132](https://github.com/jotazet/OtwarteDaneTransportowe-backend/issues/132)).
+
+**Planner admin field errors** now carry the code as the message; the codes were already documented but the message was English, e.g. `{"feed_id": ["feed_id cannot change."]}` is now `{"feed_id": ["planner.feed_id_immutable"]}`. Affected: `planner.feed_id_immutable`, `planner.invalid_feed_id`, `planner.feed_not_gtfs`, `planner.feed_not_published`, `planner.feed_other_organization`, `planner.network_immutable`, `planner.invalid_network`, `planner.feed_not_gbfs`, `planner.rental_source_without_gbfs`, `planner.rental_source_requires_auth`, `planner.osm_url_blocked`, `planner.invalid_range`, `planner.too_many_buckets` ([Planner admin](planner-admin.md)). `unique` errors are unchanged (DRF's text).
+
+**Cases** (new codes, [Organizations and cases](cases.md)):
+
+| Old message | New code | Shape |
+|---|---|---|
+| `data provider with this name already exists.` | `cases.data_provider_name_taken` | field `name` |
+| `The fields region, transport_organization must make a unique set.` | `cases.organization_exists` | field `non_field_errors` |
+
+**Automatic GTFS rejections** no longer write English text to `rejection_cause`; it stays `null` for them, as for realtime since 2026-10. Fields are added:
+
+- `GET /api/data_manager/feed-submissions/{id}/` (and its write responses) gain **`rejection_reasons`**: a list of `{code, details}` or `null`. Each `history` entry gains **`reasons`**.
+- `has_rejection_cause` in `GET /api/data_manager/submissions/` is also `true` when only `rejection_reasons` is set.
+- `static_entry.validation_message` of an `invalid` entry is the reason's code instead of the text.
+- New codes: `gtfs_validation.feed_invalid` (`error_count`, `notices`), `gtfs_validation.download_http_error` (`status`), `gtfs_validation.download_too_large` (`limit_bytes`), `gtfs_validation.download_url_blocked`, `gtfs_validation.download_timeout`, `gtfs_validation.download_unreachable`, `gtfs_validation.download_failed`; see [static rejection reasons](feeds.md#static-rejection-reasons).
+- Rejections recorded before this change keep their text in `rejection_cause` (no data migration).
+
+**Deploy:** migration `data_manager.0018` adds the nullable `FeedSubmissionHistory.reasons` column; `planner.0011` changes only validator messages (no SQL). The previous image runs with the new column in place, so no reverse migration is needed for a rollback; it shows no cause for rejections stored with codes only.
+
+**Frontend:** translate the `cases.*` and new `gtfs_validation.*` codes and show `rejection_reasons` of static submissions; until then automatic GTFS rejections show no reason. Add `cases` to the areas grepped into `lib/__fixtures__/backend-error-codes.json`.
+
+---
+
 ## 2026-11-12: error codes instead of prose in feeds, users and blog
 
 **Breaking.** The remaining English error messages of `data_manager`, `accounts` and `blog` are now error codes ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). Status codes and field keys are unchanged; only the text changes. Request errors that were `{"detail": "..."}` (or a bare `["..."]` list) are now `{"code": "...", "details": {}}`; field errors keep DRF's field dictionary with the code as the message. Every code is listed in [error codes](README.md#error-codes).

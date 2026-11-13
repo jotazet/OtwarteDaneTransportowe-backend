@@ -69,3 +69,36 @@ def test_case_manager_can_write(api_client, helper_user, org):
     )
     assert response.status_code == 201
     assert CaseStatus.objects.filter(case=org, status='denial').exists()
+
+
+def test_duplicate_data_provider_name_returns_a_code(api_client, helper_user):
+    api_client.force_authenticate(user=helper_user)
+    assert api_client.post('/api/cases/data-providers/', {'name': 'ZTM'}).status_code == 201
+
+    response = api_client.post('/api/cases/data-providers/', {'name': 'ZTM'})
+
+    assert response.status_code == 400
+    assert response.json() == {'name': ['cases.data_provider_name_taken']}
+
+
+def test_duplicate_organization_returns_a_code(api_client, helper_user, org):
+    api_client.force_authenticate(user=helper_user)
+
+    created = api_client.post(
+        '/api/cases/transport-organizations/', {'region': 'R', 'transport_organization': 'Org'}
+    )
+    other = api_client.post(
+        '/api/cases/transport-organizations/', {'region': 'R2', 'transport_organization': 'New'}
+    )
+    renamed = api_client.patch(
+        f'/api/cases/transport-organizations/{other.data["id"]}/', {'region': 'R'}
+    )
+    moved = api_client.patch(
+        f'/api/cases/transport-organizations/{other.data["id"]}/', {'transport_organization': 'Org'}
+    )
+
+    assert created.status_code == 400
+    assert created.json() == {'non_field_errors': ['cases.organization_exists']}
+    assert renamed.status_code == 200
+    assert moved.status_code == 400
+    assert moved.json() == {'non_field_errors': ['cases.organization_exists']}

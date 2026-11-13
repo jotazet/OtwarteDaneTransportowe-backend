@@ -64,16 +64,16 @@ class PlannerFeedSerializer(serializers.ModelSerializer):
         if self.instance is not None and value != self.instance.feed_id:
             # Every stop, route and trip ID served by the planner starts with it.
             raise serializers.ValidationError(
-                'feed_id cannot change.', code='planner.feed_id_immutable'
+                'planner.feed_id_immutable', code='planner.feed_id_immutable'
             )
         return value
 
     def validate_submission(self, submission):
         if submission.data_type != 'gtfs':
-            raise serializers.ValidationError('Only GTFS feeds.', code='planner.feed_not_gtfs')
+            raise serializers.ValidationError('planner.feed_not_gtfs', code='planner.feed_not_gtfs')
         if submission.id not in completed_submission_ids():
             raise serializers.ValidationError(
-                'The feed is not published.', code='planner.feed_not_published'
+                'planner.feed_not_published', code='planner.feed_not_published'
             )
         if (
             self.instance is not None
@@ -81,8 +81,7 @@ class PlannerFeedSerializer(serializers.ModelSerializer):
             != self.instance.submission.transport_organization_id
         ):
             raise serializers.ValidationError(
-                'A planner feed can only move to a feed of the same organization.',
-                code='planner.feed_other_organization',
+                'planner.feed_other_organization', code='planner.feed_other_organization'
             )
         return submission
 
@@ -95,7 +94,7 @@ class PlannerFeedSerializer(serializers.ModelSerializer):
             and realtime_from.transport_organization_id != submission.transport_organization_id
         ):
             raise serializers.ValidationError(
-                {'realtime_from': 'Realtime only from a feed of the same organization.'},
+                {'realtime_from': 'planner.feed_other_organization'},
                 code='planner.feed_other_organization',
             )
         return attrs
@@ -132,25 +131,25 @@ class PlannerRentalSourceSerializer(serializers.ModelSerializer):
         if self.instance is not None and value != self.instance.network:
             # Every station and vehicle ID served by the planner starts with it.
             raise serializers.ValidationError(
-                'network cannot change.', code='planner.network_immutable'
+                'planner.network_immutable', code='planner.network_immutable'
             )
         return value
 
     def validate_submission(self, submission):
         if submission.protocol != RealtimeSubmission.PROTOCOL_GBFS:
-            raise serializers.ValidationError('Only GBFS feeds.', code='planner.feed_not_gbfs')
+            raise serializers.ValidationError('planner.feed_not_gbfs', code='planner.feed_not_gbfs')
         if submission.id not in completed_realtime_submission_ids():
             raise serializers.ValidationError(
-                'The feed is not published.', code='planner.feed_not_published'
+                'planner.feed_not_published', code='planner.feed_not_published'
             )
         endpoint = submission.endpoints.filter(endpoint_type='gbfs').first()
         if endpoint is None:
             raise serializers.ValidationError(
-                'No gbfs.json endpoint.', code='planner.rental_source_without_gbfs'
+                'planner.rental_source_without_gbfs', code='planner.rental_source_without_gbfs'
             )
         if otp_config.gbfs_needs_credentials(endpoint):
             raise serializers.ValidationError(
-                'Needs credentials.', code='planner.rental_source_requires_auth'
+                'planner.rental_source_requires_auth', code='planner.rental_source_requires_auth'
             )
         return submission
 
@@ -256,7 +255,7 @@ class OsmDownloadRequestSerializer(serializers.ModelSerializer):
             assert_safe_outbound_url(value)
         except OutboundURLBlocked:
             raise serializers.ValidationError(
-                'Not a public address.', code='planner.osm_url_blocked'
+                'planner.osm_url_blocked', code='planner.osm_url_blocked'
             ) from None
         return value
 
@@ -313,7 +312,7 @@ class IpBanSerializer(serializers.ModelSerializer):
             network = str(ipaddress.ip_network(value.strip(), strict=False))
         except ValueError:
             raise serializers.ValidationError(
-                'Not an IP address or network.', code='planner.invalid_network'
+                'planner.invalid_network', code='planner.invalid_network'
             ) from None
         # The model's unique check saw the input before normalisation.
         duplicates = IpBan.objects.filter(network=network)
@@ -355,9 +354,7 @@ class DailyStatsFilterSerializer(serializers.Serializer):
             and attrs.get('date_to')
             and attrs['date_from'] > attrs['date_to']
         ):
-            raise serializers.ValidationError(
-                'date_from is after date_to.', code='planner.invalid_range'
-            )
+            raise serializers.ValidationError('planner.invalid_range', code='planner.invalid_range')
         return attrs
 
 
@@ -375,7 +372,7 @@ class StatsFilterSerializer(serializers.Serializer):
         attrs['since'] = attrs.get('since') or attrs['until'] - timedelta(days=1)
         if attrs['since'] >= attrs['until']:
             raise serializers.ValidationError(
-                {'since': 'since is not before until.'}, code='planner.invalid_range'
+                {'since': 'planner.invalid_range'}, code='planner.invalid_range'
             )
         return attrs
 
@@ -393,7 +390,7 @@ class TimeseriesFilterSerializer(StatsFilterSerializer):
         buckets = request_logs.bucket_count(attrs['since'], attrs['until'], attrs['interval'])
         if buckets > request_logs.MAX_BUCKETS:
             raise serializers.ValidationError(
-                {'interval': 'Too many points for this range.'}, code='planner.too_many_buckets'
+                {'interval': 'planner.too_many_buckets'}, code='planner.too_many_buckets'
             )
         return attrs
 
