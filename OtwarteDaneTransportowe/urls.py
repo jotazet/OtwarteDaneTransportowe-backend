@@ -33,6 +33,11 @@ from data_manager.api.views import PublicFeedDownloadView, RealtimePublicFeedDow
 from OtwarteDaneTransportowe.admin_login import throttled_admin_login
 from OtwarteDaneTransportowe.auth_roles import AdminGroupOrDebug
 from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairView, ThrottledTokenRefreshView
+from OtwarteDaneTransportowe.session_auth import (
+    SessionLoginView,
+    SessionLogoutView,
+    SessionRefreshView,
+)
 
 urlpatterns = [
     # Before admin.site.urls so it replaces the admin's own login view.
@@ -83,6 +88,10 @@ urlpatterns = [
     path('api/auth/token/', RolesInTokenObtainPairView.as_view(), name='token-obtain-pair'),
     path('api/auth/token/refresh/', ThrottledTokenRefreshView.as_view(), name='token-refresh'),
     path('api/auth/logout/', TokenBlacklistView.as_view(), name='logout'),
+    # The website's cookie sessions (ADR 0017); session_auth.SESSION_PATH is their prefix.
+    path('api/auth/session/', SessionLoginView.as_view(), name='session-login'),
+    path('api/auth/session/refresh/', SessionRefreshView.as_view(), name='session-refresh'),
+    path('api/auth/session/logout/', SessionLogoutView.as_view(), name='session-logout'),
 ]
 
 # The API schema and interactive docs are public in development but restricted to

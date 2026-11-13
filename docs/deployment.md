@@ -300,6 +300,7 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12
 | `POSTGRES_PASSWORD` | Database password — strong, unique. |
 | `CORS_ALLOWED_ORIGINS` | Frontend browser origins (whitelist). |
 | `CSRF_TRUSTED_ORIGINS` | Required for POST behind a TLS proxy. |
+| `AUTH_REFRESH_COOKIE_SECURE` | Development only. Default `true`; `false` drops the `Secure` flag of the website's refresh cookie for a local http setup in a browser that refuses `Secure` cookies on `http://localhost` ([ADR 0017](architecture/decisions/0017-refresh-token-in-an-httponly-cookie-for-the-website.md)). `settings_prod` ignores it and always sets `Secure`. |
 | `FEED_AUTH_ENCRYPTION_KEY` | At-rest encryption of feed credentials (Fernet key). `settings_prod` **refuses to start** (`ImproperlyConfigured`) when it is empty or not a Fernet key. A stored credential that no configured key decrypts is never used: its fetches fail with `auth_error` / `fetch.credential_undecryptable` ([section 18](#18-troubleshooting)). |
 | `FEED_AUTH_ENCRYPTION_OLD_KEYS` | Optional, comma-separated previous keys that still decrypt but never encrypt. Set only while [rotating the key](#rotating-feed_auth_encryption_key). |
 | `REDIS_CACHE_URL` | Shared cache (realtime lock + throttling). Set by `docker-compose.yml` (database `2`), which overrides `.env`. |
@@ -372,6 +373,13 @@ CORS is handled by `django-cors-headers`. Rules:
 - **`CSRF_TRUSTED_ORIGINS`** — required for POST requests from forms/sessions to pass
   CSRF verification behind a TLS-terminating proxy. Provide the full `scheme://host`
   (e.g. `https://api.example.org`).
+- **Credentials** (cookies) are allowed only on `/api/auth/session/`, the website's cookie
+  sessions ([ADR 0017](architecture/decisions/0017-refresh-token-in-an-httponly-cookie-for-the-website.md)).
+  Those endpoints also refuse a `POST` whose `Origin` is not in `CORS_ALLOWED_ORIGINS`
+  (or `CORS_ALLOWED_ORIGIN_REGEXES`), so the allowlist is their CSRF allowlist too: list the
+  website's exact origins (`https://odt.org.pl`, and `https://www.odt.org.pl` if it is served),
+  nothing broader. The proxy and Cloudflare must pass `Set-Cookie`, `Cookie`, `Origin` and
+  `X-ODT-CSRF` through unchanged.
 
 > The proxy **must** forward the `X-Forwarded-Proto: https` header — the application uses
 > `SECURE_PROXY_SSL_HEADER` to recognize HTTPS. Without it `Secure` cookies and CSRF
