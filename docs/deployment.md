@@ -276,6 +276,7 @@ CELERY_FEEDS_CONCURRENCY=1
 # DATA_UPLOAD_MAX_MEMORY_SIZE=10485760
 # FILE_UPLOAD_MAX_MEMORY_SIZE=5242880
 # THROTTLE_LOGIN=10/min                   # token + refresh + admin login POSTs, one budget per client IP
+# THROTTLE_SESSION_REFRESH=60/min         # the website's cookie refresh (every page load), per client IP
 # THROTTLE_ACCOUNT_CHANGE=5/min      # me/change-password, me/change-email; per user
 # THROTTLE_FEED_DOWNLOAD=120/min
 # THROTTLE_REACTION=30/min

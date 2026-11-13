@@ -9,7 +9,7 @@ API clients.
 
 from __future__ import annotations
 
-import re
+from urllib.parse import urlsplit
 
 from corsheaders.middleware import (
     ACCESS_CONTROL_ALLOW_CREDENTIALS,
@@ -18,6 +18,7 @@ from corsheaders.middleware import (
 from corsheaders.middleware import CorsMiddleware as BaseCorsMiddleware
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from rest_framework import status
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny
@@ -26,24 +27,31 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from OtwarteDaneTransportowe.api_errors import CodedError
 from OtwarteDaneTransportowe.jwt_views import RolesInTokenObtainPairSerializer
 
+# urls.py builds the session routes from this prefix; the cookie's Path and the
+# CORS credentials below depend on it.
 SESSION_PATH = '/api/auth/session/'
 REFRESH_COOKIE = 'odt_refresh'
 CSRF_HEADER = 'X-ODT-CSRF'
 
 
 def _origin_allowed(origin: str) -> bool:
-    """The same allowlist django-cors-headers uses for the website's origins."""
-    return origin in settings.CORS_ALLOWED_ORIGINS or any(
-        re.match(pattern, origin) for pattern in settings.CORS_ALLOWED_ORIGIN_REGEXES
-    )
+    """Whether django-cors-headers' allowlist holds ``origin`` (one source of truth)."""
+    try:
+        url = urlsplit(origin)
+    except ValueError:
+        return False
+    return _ALLOWLIST.origin_found_in_white_lists(origin, url)
 
 
 def _set_refresh_cookie(response: Response, value: str, max_age: int) -> None:
+    # Also clears it (max_age=0): unlike delete_cookie(), this keeps Secure and
+    # HttpOnly on the clearing Set-Cookie.
     response.set_cookie(
         REFRESH_COOKIE,
         value,
@@ -70,12 +78,13 @@ class _CookieSessionView(APIView):
     permission_classes = (AllowAny,)
 
     def initial(self, request, *args, **kwargs):
-        super().initial(request, *args, **kwargs)
         # The custom header forces a CORS preflight, which only allowlisted
         # origins pass; the Origin check refuses the rest on the server too.
+        # Checked before throttling, so forged requests cannot use up the budget.
         origin = request.headers.get('Origin', '')
         if request.headers.get(CSRF_HEADER) != '1' or not _origin_allowed(origin):
             raise CodedError('auth.csrf_failed', status.HTTP_403_FORBIDDEN)
+        super().initial(request, *args, **kwargs)
 
 
 class SessionLoginView(_CookieSessionView):
@@ -97,7 +106,8 @@ class SessionLoginView(_CookieSessionView):
 class SessionRefreshView(_CookieSessionView):
     """Rotates the refresh cookie (the old token is blacklisted) -> ``{access}``."""
 
-    throttle_scope = 'login'
+    # Every page load and tab refreshes, so not the login budget (ADR 0017).
+    throttle_scope = 'session_refresh'
 
     def post(self, request):
         refresh = request.COOKIES.get(REFRESH_COOKIE)
@@ -105,7 +115,12 @@ class SessionRefreshView(_CookieSessionView):
             raise CodedError('auth.refresh_cookie_missing', status.HTTP_401_UNAUTHORIZED)
         serializer = TokenRefreshSerializer(data={'refresh': refresh})
         try:
-            serializer.is_valid(raise_exception=True)
+            with transaction.atomic():
+                # Lock the token's row: two parallel refreshes of one token must
+                # not both pass simplejwt's blacklist check and fork the session.
+                jti = RefreshToken(refresh)[jwt_settings.JTI_CLAIM]
+                OutstandingToken.objects.select_for_update().filter(jti=jti).first()
+                serializer.is_valid(raise_exception=True)
         except (TokenError, AuthenticationFailed, get_user_model().DoesNotExist):
             # The cookie is left alone: a parallel refresh from another tab may
             # just have replaced it with a valid one.
@@ -126,6 +141,9 @@ class SessionLogoutView(_CookieSessionView):
         response = Response({})
         _set_refresh_cookie(response, '', 0)
         return response
+
+
+_ALLOWLIST = BaseCorsMiddleware(get_response=lambda request: None)
 
 
 class CorsMiddleware(BaseCorsMiddleware):

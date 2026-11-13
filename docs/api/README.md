@@ -195,9 +195,9 @@ Browser sessions in which the refresh token never reaches JavaScript ([ADR 0017]
 
 - be sent with `fetch(url, {method: "POST", credentials: "include", ...})`, so the browser sends and stores the cookie;
 - carry the header `X-ODT-CSRF: 1` (exactly `1`);
-- come from an origin in the API's CORS allowlist (`CORS_ALLOWED_ORIGINS`, or `CORS_ALLOWED_ORIGIN_REGEXES`; with `DEBUG`, any `http://localhost:<port>` and `http://127.0.0.1:<port>`). Browsers send the `Origin` header themselves on every `POST`; a request without it, with `Origin: null` or with another origin is refused.
+- come from an origin in the API's CORS allowlist (`CORS_ALLOWED_ORIGINS` or `CORS_ALLOWED_ORIGIN_REGEXES`, matched exactly as django-cors-headers does). Browsers send the `Origin` header themselves on every `POST`; a request without it, with `Origin: null` or with another origin is refused. For local development, put the website's origin (e.g. `http://localhost:3000`) into `CORS_ALLOWED_ORIGINS` of the backend's `.env`.
 
-Otherwise the answer is `403` `{"code": "auth.csrf_failed", "details": {}}`, checked before the body or the cookie is read (nothing is rotated or blacklisted). These endpoints are meant for browsers; other clients use `/api/auth/token/`.
+Otherwise the answer is `403` `{"code": "auth.csrf_failed", "details": {}}`, checked before anything else: nothing is rotated or blacklisted, and the request does not count against a rate limit. These endpoints are meant for browsers; other clients use `/api/auth/token/`.
 
 **The cookie:**
 
@@ -227,8 +227,8 @@ The cookie is cleared with the same name, `Path` and flags and `Max-Age=0`.
 **`POST /api/auth/session/refresh/`** reads the cookie, blacklists that refresh token and sets a new one (rotation, as `/api/auth/token/refresh/` does), and returns a new `{"access": "..."}`. The claims of the new access token come from the refresh token, as with the body-based refresh. Errors:
 
 - `401` `{"code": "auth.refresh_cookie_missing", "details": {}}`: no cookie was sent (never logged in, logged out, or the cookie expired);
-- `401` `{"code": "auth.refresh_cookie_invalid", "details": {}}`: the token in the cookie is invalid, expired or blacklisted, or its user is inactive or deleted. The cookie is **not** cleared (another tab may just have replaced it);
-- `429`: the `login` throttle (shared with login).
+- `401` `{"code": "auth.refresh_cookie_invalid", "details": {}}`: the token in the cookie is invalid, expired or blacklisted, or its user is inactive or deleted. Two refreshes with the same token never both succeed: the second waits for the first and gets this code. The cookie is **not** cleared (another tab may just have replaced it);
+- `429`: the `session_refresh` throttle (`THROTTLE_SESSION_REFRESH`, 60/min per client IP by default), separate from the login budget.
 
 **`POST /api/auth/session/logout/`** blacklists the cookie's refresh token, if it is still valid, and clears the cookie. It answers `200` `{}` also without a cookie or with an invalid one, so the client always treats it as done. As with `/api/auth/logout/`, the access token stays valid until it expires; the client drops it.
 
@@ -498,7 +498,7 @@ Most common responses:
 | `403` | Valid token, but the required role/permission is missing |
 | `404` | Object does not exist or is not publicly available |
 | `409` | Conflict with the current state, e.g. a feed submission's stage changed while the request ran (`feeds.stage_changed`, see [Feeds API](feeds.md)) or a planner job already runs |
-| `429` | Rate limit: DRF throttling of login (`/api/auth/token/`, `/api/auth/token/refresh/`, `/api/auth/session/`, `/api/auth/session/refresh/` and the Django admin login form share one budget), feed downloads and blog reaction changes (`login`, `feed_download`, `reaction`; rates set by the `THROTTLE_*` settings; counted per client IP), of password and email changes (`account_change`, counted per user), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
+| `429` | Rate limit: DRF throttling of login (`/api/auth/token/`, `/api/auth/token/refresh/`, `/api/auth/session/` and the Django admin login form share one budget), feed downloads and blog reaction changes (`login`, `feed_download`, `reaction`; rates set by the `THROTTLE_*` settings; counted per client IP), of the website's cookie refresh (`session_refresh`, `POST /api/auth/session/refresh/`), of password and email changes (`account_change`, counted per user), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
 
 ### Error codes
 

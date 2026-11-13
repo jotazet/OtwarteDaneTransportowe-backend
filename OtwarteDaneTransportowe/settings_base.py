@@ -219,6 +219,8 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'login': os.getenv('THROTTLE_LOGIN', '10/min'),
+        # The website's cookie refresh (ADR 0017): every page load and tab calls it.
+        'session_refresh': os.getenv('THROTTLE_SESSION_REFRESH', '60/min'),
         # me/change-password and me/change-email check the current password;
         # counted per user (they require login).
         'account_change': os.getenv('THROTTLE_ACCOUNT_CHANGE', '5/min'),

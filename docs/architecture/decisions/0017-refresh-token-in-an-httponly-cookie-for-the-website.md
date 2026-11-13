@@ -22,14 +22,15 @@ The website and the API are different origins but the **same site**: `org.pl` is
   - host-only (no `Domain`), so other subdomains of `odt.org.pl` never receive it;
   - `Max-Age` = `JWT_REFRESH_DAYS`. Every refresh rotates it and blacklists the old token, as the body-based refresh does. Logout blacklists it and clears the cookie.
 - **The access token lives in the website's memory only.** A new tab or a reload calls the refresh endpoint to get one.
-- **CSRF.** The cookie is sent automatically, so the session endpoints check two things before they read the body or the cookie, and answer `403 auth.csrf_failed` otherwise:
+- **CSRF.** The cookie is sent automatically, so the session endpoints check two things before anything else, throttling included, and answer `403 auth.csrf_failed` otherwise:
   - the header `X-ODT-CSRF: 1`. A custom header makes every cross-origin request non-simple, so the browser sends a CORS preflight first, and only allowlisted origins pass it;
   - an `Origin` header that is one of the CORS allowlist (`CORS_ALLOWED_ORIGINS`, `CORS_ALLOWED_ORIGIN_REGEXES`). Browsers send `Origin` on every `POST`, so the server refuses a forged request even if the CORS configuration were wrong, and a request from another subdomain of the same site (which `SameSite` lets through).
 
   The views use no authentication class, so a Django admin session cookie sent along does not trigger DRF's session CSRF check.
 - **CORS with credentials only where needed.** `CORS_ALLOW_CREDENTIALS` stays off. A thin subclass of django-cors-headers' middleware adds `Access-Control-Allow-Credentials: true` on `/api/auth/session/` when the origin passed the allowlist. Every other endpoint is still called without cookies, and the public planner API, which answers any origin, never allows credentials.
 - **Errors are codes** ([ADR 0006](0006-api-error-codes.md)): `auth.csrf_failed` (403), `auth.invalid_credentials` (401), `auth.refresh_cookie_missing` (401) and `auth.refresh_cookie_invalid` (401). A failed refresh does not clear the cookie: another tab may have just rotated it, and clearing it would log out every tab.
-- Refresh and login share the existing `login` throttle, as the body-based endpoints do.
+- **Rotation is serialized.** The refresh locks the token's `OutstandingToken` row before simplejwt checks the blacklist, so two parallel refreshes of one token cannot both succeed and leave two live tokens; the second gets `auth.refresh_cookie_invalid`. (The body-based refresh keeps simplejwt's unlocked behaviour.)
+- **Rate limits.** Login shares the existing `login` budget (10/min per IP). The cookie refresh gets its own `session_refresh` scope (`THROTTLE_SESSION_REFRESH`, 60/min per IP), because the website calls it on every page load and in every tab, and users of one office share an IP; on the login budget a few reloads would log them out. Requests refused by the CSRF check are not counted, so a forged request cannot use up a victim's budget.
 
 ## Consequences
 

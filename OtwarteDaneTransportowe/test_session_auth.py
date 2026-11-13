@@ -238,3 +238,22 @@ def test_body_based_endpoints_are_unchanged(user):
         ).status_code
         == 200
     )
+
+
+def test_refresh_has_its_own_budget_that_forged_requests_do_not_use(monkeypatch, user):
+    from rest_framework.throttling import SimpleRateThrottle
+    from rest_framework.views import APIView
+
+    from OtwarteDaneTransportowe.throttling import ScopedRateThrottle
+
+    monkeypatch.setattr(APIView, 'throttle_classes', [ScopedRateThrottle])
+    rates = {'login': '1/min', 'session_refresh': '2/min'}
+    monkeypatch.setattr(SimpleRateThrottle, 'THROTTLE_RATES', rates)
+    client = APIClient()
+    assert _login(client, **BROWSER).status_code == 200  # uses up the login budget
+
+    forged = [client.post(f'{SESSION_PATH}refresh/').status_code for _ in range(3)]
+    refreshes = [client.post(f'{SESSION_PATH}refresh/', **BROWSER).status_code for _ in range(3)]
+
+    assert forged == [403, 403, 403]
+    assert refreshes == [200, 200, 429]
