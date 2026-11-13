@@ -13,7 +13,7 @@ from planner.api.params import (
     id_list,
     organization_list,
 )
-from planner.models import GraphBuild, PlannerFeed, PlannerRentalSource
+from planner.models import LIMIT_GROUPS, GraphBuild, PlannerFeed, PlannerRentalSource
 
 # Routing results are computed on OpenStreetMap data, which must be credited.
 OSM_ATTRIBUTION = {
@@ -86,8 +86,7 @@ class StatusView(PlannerPublicView):
                 'rental_networks': _rental_networks(active),
                 'attribution': [OSM_ATTRIBUTION],
                 'anonymous_limits': {
-                    group: limits.limit('anonymous', group)
-                    for group in ('plan', 'realtime', 'lookup')
+                    group: limits.limit('anonymous', group) for group in LIMIT_GROUPS
                 },
             }
         )
