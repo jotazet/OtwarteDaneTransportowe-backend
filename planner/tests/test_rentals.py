@@ -151,7 +151,7 @@ def test_admin_adds_a_published_gbfs_feed_but_never_renames_its_network(
     candidates = admin.get('/api/planner/admin/rental-candidates/').json()
 
     assert created.status_code == 201
-    assert renamed.data['network'][0].code == 'planner.network_immutable'
+    assert renamed.data['network'][0] == 'planner.network_immutable'
     assert [(c['id'], c['rental_source']) for c in candidates['results']] == [
         (other.id, created.json()['id'])
     ]

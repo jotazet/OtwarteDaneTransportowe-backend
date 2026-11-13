@@ -73,7 +73,7 @@ def test_only_published_gtfs_feeds_can_be_added(admin_client, make_submission, k
     )
 
     assert response.status_code == 400
-    assert response.data['submission'][0].code == code
+    assert response.data['submission'][0] == code
 
 
 def test_feed_id_is_validated_and_immutable(admin_client, make_feed, make_submission):
@@ -85,8 +85,8 @@ def test_feed_id_is_validated_and_immutable(admin_client, make_feed, make_submis
     feed = make_feed('krk')
     renamed = admin_client.patch(f'{BASE}/feeds/{feed.id}/', {'feed_id': 'other'}, format='json')
 
-    assert bad.data['feed_id'][0].code == 'planner.invalid_feed_id'
-    assert renamed.data['feed_id'][0].code == 'planner.feed_id_immutable'
+    assert bad.data['feed_id'][0] == 'planner.invalid_feed_id'
+    assert renamed.data['feed_id'][0] == 'planner.feed_id_immutable'
 
 
 def test_feed_moves_only_within_its_organization(admin_client, make_feed, make_submission):
@@ -102,7 +102,7 @@ def test_feed_moves_only_within_its_organization(admin_client, make_feed, make_s
     )
 
     assert moved.status_code == 200
-    assert refused.data['submission'][0].code == 'planner.feed_other_organization'
+    assert refused.data['submission'][0] == 'planner.feed_other_organization'
 
 
 def test_realtime_from_only_names_a_feed_of_the_same_organization(
@@ -122,7 +122,7 @@ def test_realtime_from_only_names_a_feed_of_the_same_organization(
 
     assert linked.status_code == 200
     assert linked.data['realtime_from'] == same_org.id
-    assert refused.data['realtime_from'][0].code == 'planner.feed_other_organization'
+    assert refused.data['realtime_from'][0] == 'planner.feed_other_organization'
     assert cleared.data['realtime_from'] is None
 
 
@@ -136,7 +136,7 @@ def test_new_feed_takes_realtime_only_from_its_organization(admin_client, make_s
         format='json',
     )
 
-    assert refused.data['realtime_from'][0].code == 'planner.feed_other_organization'
+    assert refused.data['realtime_from'][0] == 'planner.feed_other_organization'
 
 
 def test_candidates_show_which_feeds_are_already_included(admin_client, make_feed, make_submission):

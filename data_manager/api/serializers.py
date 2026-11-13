@@ -42,6 +42,7 @@ class FeedSubmissionHistorySerializer(serializers.ModelSerializer):
             'stage_after',
             'actor',
             'cause',
+            'reasons',
             'created_at',
         ]
         read_only_fields = fields
@@ -155,27 +156,34 @@ def annotate_fetch_health(qs, error_fk: str):
     )
     return qs.annotate(
         annotated_last_fetch_error_message=Subquery(latest_error.values('message')[:1]),
+        annotated_last_fetch_error_type=Subquery(latest_error.values('error_type')[:1]),
         annotated_fetch_error_count_7d=Count(
             'fetch_errors', filter=Q(fetch_errors__occurred_at__gte=since)
         ),
     )
 
 
-def _fetch_health_error_aggregates(obj) -> tuple[str | None, int]:
-    """(last error message, 7-day error count) — annotation-aware."""
-    if hasattr(obj, 'annotated_last_fetch_error_message'):
-        return obj.annotated_last_fetch_error_message, obj.annotated_fetch_error_count_7d
-    since = timezone.now() - timedelta(days=7)
-    last_error = obj.fetch_errors.order_by('-occurred_at', '-id').first()
-    return (
-        last_error.message if last_error else None,
-        obj.fetch_errors.filter(occurred_at__gte=since).count(),
-    )
+def _fetch_health_error_aggregates(obj) -> dict:
+    """Latest error message and type plus the 7-day error count — annotation-aware.
+
+    Without the ``annotate_fetch_health`` annotations they are queried once and
+    stored on ``obj`` as if annotated, so each serializer field reuses them.
+    """
+    if not hasattr(obj, 'annotated_last_fetch_error_message'):
+        since = timezone.now() - timedelta(days=7)
+        last_error = obj.fetch_errors.order_by('-occurred_at', '-id').first()
+        obj.annotated_last_fetch_error_message = last_error.message if last_error else None
+        obj.annotated_last_fetch_error_type = last_error.error_type if last_error else None
+        obj.annotated_fetch_error_count_7d = obj.fetch_errors.filter(occurred_at__gte=since).count()
+    return {
+        'last_fetch_error_message': obj.annotated_last_fetch_error_message,
+        'last_fetch_error_type': obj.annotated_last_fetch_error_type,
+        'fetch_error_count_7d': obj.annotated_fetch_error_count_7d,
+    }
 
 
 def _fetch_health_fields(obj) -> dict:
     """Proxy fetch status + recent error aggregates for a static entry or RT endpoint."""
-    last_error_message, error_count_7d = _fetch_health_error_aggregates(obj)
     return {
         'fetch_status': obj.fetch_status,
         'fetch_failure_count': obj.fetch_failure_count,
@@ -184,8 +192,7 @@ def _fetch_health_fields(obj) -> dict:
         'fetch_pause_reason': obj.fetch_pause_reason or '',
         'last_fetch_success_at': obj.last_fetch_success_at,
         'last_fetch_error_at': obj.last_fetch_error_at,
-        'last_fetch_error_message': last_error_message,
-        'fetch_error_count_7d': error_count_7d,
+        **_fetch_health_error_aggregates(obj),
     }
 
 
@@ -195,6 +202,7 @@ class ProxyManagedFeedListSerializer(serializers.Serializer):
     source = serializers.CharField()
     id = serializers.IntegerField()
     submission_id = serializers.IntegerField()
+    organization_id = serializers.IntegerField(allow_null=True)
     organization = serializers.CharField()
     region = serializers.CharField()
     feed_name = serializers.CharField()
@@ -209,6 +217,7 @@ class ProxyManagedFeedListSerializer(serializers.Serializer):
     last_fetch_success_at = serializers.DateTimeField(allow_null=True)
     last_fetch_error_at = serializers.DateTimeField(allow_null=True)
     last_fetch_error_message = serializers.CharField(allow_null=True)
+    last_fetch_error_type = serializers.CharField(allow_null=True)
     fetch_error_count_7d = serializers.IntegerField()
 
     @staticmethod
@@ -218,6 +227,7 @@ class ProxyManagedFeedListSerializer(serializers.Serializer):
             'source': 'static',
             'id': entry.id,
             'submission_id': submission.id,
+            'organization_id': submission.transport_organization_id,
             'organization': feed_organization_name(submission),
             'region': feed_organization_region(submission),
             'feed_name': feed_display_name(submission),
@@ -234,6 +244,7 @@ class ProxyManagedFeedListSerializer(serializers.Serializer):
             'source': 'realtime',
             'id': endpoint.id,
             'submission_id': submission.id,
+            'organization_id': submission.transport_organization_id,
             'organization': feed_organization_name(submission),
             'region': feed_organization_region(submission),
             'feed_name': feed_display_name(submission),
@@ -302,13 +313,17 @@ class FeedFetchErrorSerializer(serializers.ModelSerializer):
 
 class FetchHealthSerializerMixin(serializers.Serializer):
     last_fetch_error_message = serializers.SerializerMethodField()
+    last_fetch_error_type = serializers.SerializerMethodField()
     fetch_error_count_7d = serializers.SerializerMethodField()
 
     def get_last_fetch_error_message(self, obj):
-        return _fetch_health_error_aggregates(obj)[0]
+        return _fetch_health_error_aggregates(obj)['last_fetch_error_message']
+
+    def get_last_fetch_error_type(self, obj):
+        return _fetch_health_error_aggregates(obj)['last_fetch_error_type']
 
     def get_fetch_error_count_7d(self, obj):
-        return _fetch_health_error_aggregates(obj)[1]
+        return _fetch_health_error_aggregates(obj)['fetch_error_count_7d']
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +351,7 @@ PROXY_FETCH_FIELDS = frozenset(
         'last_fetch_success_at',
         'last_fetch_error_at',
         'last_fetch_error_message',
+        'last_fetch_error_type',
         'fetch_error_count_7d',
     }
 )
@@ -376,6 +392,7 @@ class StaticFeedEntrySerializer(FetchHealthSerializerMixin, serializers.ModelSer
             'last_fetch_success_at',
             'last_fetch_error_at',
             'last_fetch_error_message',
+            'last_fetch_error_type',
             'fetch_error_count_7d',
         ]
         read_only_fields = [
@@ -396,6 +413,7 @@ class StaticFeedEntrySerializer(FetchHealthSerializerMixin, serializers.ModelSer
             'last_fetch_success_at',
             'last_fetch_error_at',
             'last_fetch_error_message',
+            'last_fetch_error_type',
             'fetch_error_count_7d',
         ]
         extra_kwargs = {
@@ -475,6 +493,7 @@ class RealtimeEndpointRTSerializer(FetchHealthSerializerMixin, serializers.Model
             'last_fetch_success_at',
             'last_fetch_error_at',
             'last_fetch_error_message',
+            'last_fetch_error_type',
             'fetch_error_count_7d',
         ]
         read_only_fields = [
@@ -492,6 +511,7 @@ class RealtimeEndpointRTSerializer(FetchHealthSerializerMixin, serializers.Model
             'last_fetch_success_at',
             'last_fetch_error_at',
             'last_fetch_error_message',
+            'last_fetch_error_type',
             'fetch_error_count_7d',
         ]
         extra_kwargs = {'auth_value': {'write_only': True}}
@@ -818,7 +838,7 @@ class FeedSubmissionListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_has_rejection_cause(self, obj: FeedSubmission) -> bool:
-        return bool(obj.rejection_cause)
+        return bool(obj.rejection_cause or obj.rejection_reasons)
 
 
 class UserFeedSubmissionListSerializer(FeedSubmissionListSerializer):
@@ -840,6 +860,7 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
     current_stage_label = serializers.CharField(read_only=True)
     is_rejected = serializers.BooleanField(read_only=True)
     rejection_cause = serializers.CharField(read_only=True, allow_null=True)
+    rejection_reasons = serializers.JSONField(read_only=True, allow_null=True)
     published_at = serializers.DateTimeField(read_only=True, allow_null=True)
     history = FeedSubmissionHistorySerializer(many=True, read_only=True)
 
@@ -858,6 +879,7 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
             'current_stage_label',
             'is_rejected',
             'rejection_cause',
+            'rejection_reasons',
             'published_at',
             'static_entry',
             'realtime_submissions',
@@ -872,6 +894,7 @@ class FeedSubmissionSerializer(serializers.ModelSerializer):
             'current_stage_label',
             'is_rejected',
             'rejection_cause',
+            'rejection_reasons',
             'published_at',
             'history',
         ]

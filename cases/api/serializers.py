@@ -1,12 +1,24 @@
 from rest_framework import serializers
+from rest_framework.validators import UniqueTogetherValidator, UniqueValidator
 
 from cases.models import CaseStatus, DataProvider, TransportOrganization
+
+# Error codes (ADR 0006), listed in docs/api/cases.md.
+DATA_PROVIDER_NAME_TAKEN = 'cases.data_provider_name_taken'
+ORGANIZATION_EXISTS = 'cases.organization_exists'
 
 
 class DataProviderSerializer(serializers.ModelSerializer):
     class Meta:
         model = DataProvider
         fields = ['id', 'name', 'website', 'contact_email']
+        extra_kwargs = {
+            'name': {
+                'validators': [
+                    UniqueValidator(DataProvider.objects.all(), message=DATA_PROVIDER_NAME_TAKEN)
+                ]
+            }
+        }
 
 
 class CaseStatusSerializer(serializers.ModelSerializer):
@@ -47,6 +59,13 @@ class TransportOrganizationSerializer(serializers.ModelSerializer):
             'latest_status',
         ]
         read_only_fields = ['created_at', 'updated_at', 'latest_status', 'data_providers']
+        validators = [
+            UniqueTogetherValidator(
+                TransportOrganization.objects.all(),
+                fields=['region', 'transport_organization'],
+                message=ORGANIZATION_EXISTS,
+            )
+        ]
 
     def get_data_providers(self, obj: TransportOrganization):
         providers = obj.data_providers.all()

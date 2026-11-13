@@ -92,8 +92,16 @@ class RealtimeEndpointRTInline(admin.TabularInline):
 class FeedSubmissionHistoryInline(admin.TabularInline):
     model = FeedSubmissionHistory
     extra = 0
-    fields = ('event_type', 'stage_before', 'stage_after', 'actor', 'cause', 'created_at')
-    readonly_fields = ('event_type', 'stage_before', 'stage_after', 'actor', 'cause', 'created_at')
+    fields = (
+        'event_type',
+        'stage_before',
+        'stage_after',
+        'actor',
+        'cause',
+        'reasons',
+        'created_at',
+    )
+    readonly_fields = fields
     can_delete = False
 
     def has_add_permission(self, request, obj=None):
@@ -290,7 +298,8 @@ class FeedSubmissionAdmin(admin.ModelAdmin):
 
     @admin.display(description='Rejection cause')
     def get_rejection_cause(self, obj):
-        return obj.rejection_cause or '—'
+        reasons = ', '.join(reason['code'] for reason in obj.rejection_reasons or [])
+        return obj.rejection_cause or reasons or '—'
 
     def has_advance_stage_permission(self, request):
         """Stage changes need Django's ``change`` permission AND a reviewer role.

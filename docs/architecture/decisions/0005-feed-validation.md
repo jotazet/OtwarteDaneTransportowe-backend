@@ -9,7 +9,7 @@ A feed is verified before an admin confirms it (stage 2 of the [workflow](../../
 
 ## Decision
 
-- **Static GTFS:** `validate_gtfs_feed` (queue `feeds`) runs the `ghcr.io/mobilitydata/gtfs-validator` container through the Docker API. Only the `docker-socket-proxy` service mounts the Docker socket; the validator worker reaches it over TCP with everything except containers, images and POST denied. The report is stored as a `FeedValidationReport`, and rejection causes list validator codes as `code: count`.
+- **Static GTFS:** `validate_gtfs_feed` (queue `feeds`) runs the `ghcr.io/mobilitydata/gtfs-validator` container through the Docker API. Only the `docker-socket-proxy` service mounts the Docker socket; the validator worker reaches it over TCP with everything except containers, images and POST denied. The report is stored as a `FeedValidationReport`, and an automatic rejection stores the code `gtfs_validation.feed_invalid` with the validator's notice codes and counts in `rejection_reasons`.
 - **Realtime:** fetched GTFS-RT bodies are parsed with `gtfs-realtime-bindings` in the worker (`data_manager/validators.py`) before they are cached; SIRI and GBFS bodies get content sniffing.
 - A failed validation of an already published feed does not unpublish it.
 

@@ -6,6 +6,62 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 Additive. `GET /api/planner/v1/status/` returns `anonymous_limits` (`plan`, `realtime`, `lookup`): the requests per minute per client without an API key, as set by Admins, so clients no longer hardcode them. `GET /api/planner/admin/requests/` accepts `status_class` (`1xx` to `5xx`) to list every code of an HTTP class, e.g. all `4xx` or `5xx` errors. See [planner](planner.md#get-apiplannerv1status) and [planner admin](planner-admin.md).
 
+---
+
+## 2026-11-13: error codes for planner admin fields, case duplicates and GTFS rejections
+
+**Breaking** for clients that read the old text. Status codes and field keys are unchanged ([ADR 0006](../architecture/decisions/0006-api-error-codes.md), [issue #132](https://github.com/jotazet/OtwarteDaneTransportowe-backend/issues/132)).
+
+**Planner admin field errors** now carry the code as the message; the codes were already documented but the message was English, e.g. `{"feed_id": ["feed_id cannot change."]}` is now `{"feed_id": ["planner.feed_id_immutable"]}`. Affected: `planner.feed_id_immutable`, `planner.invalid_feed_id`, `planner.feed_not_gtfs`, `planner.feed_not_published`, `planner.feed_other_organization`, `planner.network_immutable`, `planner.invalid_network`, `planner.feed_not_gbfs`, `planner.rental_source_without_gbfs`, `planner.rental_source_requires_auth`, `planner.osm_url_blocked`, `planner.invalid_range`, `planner.too_many_buckets` ([Planner admin](planner-admin.md)). `unique` errors are unchanged (DRF's text).
+
+**Cases** (new codes, [Organizations and cases](cases.md)):
+
+| Old message | New code | Shape |
+|---|---|---|
+| `data provider with this name already exists.` | `cases.data_provider_name_taken` | field `name` |
+| `The fields region, transport_organization must make a unique set.` | `cases.organization_exists` | field `non_field_errors` |
+
+**Automatic GTFS rejections** no longer write English text to `rejection_cause`; it stays `null` for them, as for realtime since 2026-10. Fields are added:
+
+- `GET /api/data_manager/feed-submissions/{id}/` (and its write responses) gain **`rejection_reasons`**: a list of `{code, details}` or `null`. Each `history` entry gains **`reasons`**.
+- `has_rejection_cause` in `GET /api/data_manager/submissions/` is also `true` when only `rejection_reasons` is set.
+- `static_entry.validation_message` of an `invalid` entry is the reason's code instead of the text.
+- New codes: `gtfs_validation.feed_invalid` (`error_count`, `notices`), `gtfs_validation.download_http_error` (`status`), `gtfs_validation.download_too_large` (`limit_bytes`), `gtfs_validation.download_url_blocked`, `gtfs_validation.download_timeout`, `gtfs_validation.download_unreachable`, `gtfs_validation.download_failed`; see [static rejection reasons](feeds.md#static-rejection-reasons).
+- Rejections recorded before this change keep their text in `rejection_cause` (no data migration).
+
+**Deploy:** migration `data_manager.0018` adds the nullable `FeedSubmissionHistory.reasons` column; `planner.0011` changes only validator messages (no SQL). The previous image runs with the new column in place, so no reverse migration is needed for a rollback; it shows no cause for rejections stored with codes only.
+
+**Frontend:** translate the `cases.*` and new `gtfs_validation.*` codes and show `rejection_reasons` of static submissions; until then automatic GTFS rejections show no reason. Add `cases` to the areas grepped into `lib/__fixtures__/backend-error-codes.json`.
+
+---
+
+## 2026-11-13: `url_attempted` of fetch errors is redacted
+
+Not breaking. `url_attempted` in `GET /api/data_manager/fetch-errors/`, `/feed-submissions/{id}/fetch-errors/` and `/realtime-submissions/{id}/fetch-errors/` keeps only scheme, host, port and path, like the URLs inside `message`; userinfo, the query string and the fragment are removed. Errors recorded before this change are left as they were. See [Fetch errors and pauses](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
+## 2026-11-13: proxy-feeds filters and `last_fetch_error_type`
+
+Not breaking.
+
+- `GET /api/data_manager/proxy-feeds/` takes the query parameters `fetch_status`, `source` (`static`/`realtime`), `organization` (transport organization id) and `region` (ignoring case), combined with AND; `count` and the pages cover only the matching feeds. An unknown `fetch_status` or `source` is `400` with the new field code `feeds.invalid_choice`, a non-integer `organization` `400` with `feeds.invalid_integer`. Items gain **`organization_id`** (or `null`). The frontend can drop loading every page and filtering in the browser (frontend issue #35); filter options for organizations come from `/api/cases/transport-organizations/`.
+- The fetch health fields of `proxy-feeds`, `static_entry`/`static-feed-entries` and realtime `endpoints`/`realtime-endpoints` gain **`last_fetch_error_type`**: the `error_type` of the latest fetch error, or `null`. Like the other fetch health fields, it is present only for proxied feeds.
+
+See [Fetch errors and pauses of proxied feeds](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
+
+---
+
+## 2026-11-13: cookie sessions for the website; `Content-Disposition` readable
+
+Not breaking: the existing endpoints are unchanged.
+
+- New endpoints `POST /api/auth/session/` (log in), `POST /api/auth/session/refresh/` and `POST /api/auth/session/logout/` keep the refresh token in the HttpOnly cookie `odt_refresh` (`Secure`, `SameSite=Strict`, `Path=/api/auth/session/`, lifetime `JWT_REFRESH_DAYS`) and return only `{"access": "..."}`. Refresh rotates the cookie and blacklists the old token; logout blacklists it and clears the cookie. Requests need `credentials: "include"`, the header `X-ODT-CSRF: 1` and an allowlisted `Origin`. Only these endpoints allow CORS credentials. The cookie refresh has its own rate limit, `session_refresh` (60/min per IP); login shares the `login` budget. New error codes: `auth.csrf_failed` (403), `auth.invalid_credentials`, `auth.refresh_cookie_missing`, `auth.refresh_cookie_invalid` (401). See [cookie sessions](README.md#cookie-sessions-for-the-website) and [ADR 0017](../architecture/decisions/0017-refresh-token-in-an-httponly-cookie-for-the-website.md).
+- `/api/auth/token/`, `/api/auth/token/refresh/` and `/api/auth/logout/` keep the refresh token in the body, for other clients and for the website until it moves.
+- `Content-Disposition` is now in `Access-Control-Expose-Headers`, so a browser client can read the file name of downloads, e.g. a submission's file.
+
+---
+
 ## 2026-11-12: error codes instead of prose in feeds, users and blog
 
 **Breaking.** The remaining English error messages of `data_manager`, `accounts` and `blog` are now error codes ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). Status codes and field keys are unchanged; only the text changes. Request errors that were `{"detail": "..."}` (or a bare `["..."]` list) are now `{"code": "...", "details": {}}`; field errors keep DRF's field dictionary with the code as the message. Every code is listed in [error codes](README.md#error-codes).

@@ -52,6 +52,7 @@ SECURE_HSTS_PRELOAD = True
 # the app is exposed directly to clients without a TLS-terminating proxy.
 SECURE_SSL_REDIRECT = _env_bool('DJANGO_SECURE_SSL_REDIRECT', False)
 SESSION_COOKIE_HTTPONLY = True
+AUTH_REFRESH_COOKIE_SECURE = True
 
 # Healthchecks and the local reverse-proxy reach the app on loopback.
 _INTERNAL_ALLOWED_HOSTS = ('127.0.0.1', 'localhost')

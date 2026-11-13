@@ -9,9 +9,20 @@ from urllib3 import HTTPSConnectionPool
 from urllib3.exceptions import MaxRetryError
 
 from cases.models import TransportOrganization
-from data_manager.models import FeedFetchError, FeedSubmission, StaticFeedEntry
+from data_manager.models import (
+    FeedFetchError,
+    FeedSubmission,
+    RealtimeEndpointRT,
+    RealtimeSubmission,
+    StaticFeedEntry,
+)
 from data_manager.net_security import redact_url, redact_urls
-from data_manager.scheduler import FETCH_PERMANENT, FETCH_TRANSIENT, _fetch_static_entry
+from data_manager.scheduler import (
+    FETCH_PERMANENT,
+    FETCH_TRANSIENT,
+    _fetch_realtime_endpoint_rt,
+    _fetch_static_entry,
+)
 from OtwarteDaneTransportowe.auth_roles import ROLE_DATA_PROVIDER
 
 SOURCE = 'https://feeduser:s3cret-pass@example.org:8443/gtfs.zip?token=s3cret-token#frag'
@@ -93,5 +104,30 @@ def test_fetch_failure_stores_and_logs_no_secret(entry, monkeypatch, caplog, mak
     entry.refresh_from_db()
     error = FeedFetchError.objects.get(static_entry=entry)
     assert 'example.org' in error.message
+    assert error.url_attempted == 'https://example.org:8443/gtfs.zip'
     stored = (error.message, entry.fetch_pause_reason, caplog.text)
     assert not any(secret in text for text in stored for secret in SECRETS)
+
+
+@pytest.mark.django_db
+def test_realtime_fetch_failure_stores_url_attempted_without_secret(make_user, monkeypatch):
+    owner = make_user(ROLE_DATA_PROVIDER, 'owner')
+    org = TransportOrganization.objects.create(region='R', transport_organization='Org')
+    submission = RealtimeSubmission.objects.create(
+        transport_organization=org,
+        submitted_by=owner,
+        protocol=RealtimeSubmission.PROTOCOL_GBFS,
+    )
+    endpoint = RealtimeEndpointRT.objects.create(
+        submission=submission, endpoint_type='gbfs', url=SOURCE, hide_original=True, interval=30
+    )
+
+    def failing_download(url, **kwargs):
+        raise _connection_error()
+
+    monkeypatch.setattr('data_manager.scheduler.safe_download', failing_download)
+
+    assert _fetch_realtime_endpoint_rt(endpoint, now=None) == FETCH_TRANSIENT
+
+    error = FeedFetchError.objects.get(endpoint_rt=endpoint)
+    assert error.url_attempted == 'https://example.org:8443/gtfs.zip'

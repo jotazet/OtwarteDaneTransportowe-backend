@@ -39,6 +39,14 @@ POST /api/auth/token/refresh/
 POST /api/auth/logout/
 ```
 
+The website uses [cookie sessions](#cookie-sessions-for-the-website) instead, which keep the refresh token in an HttpOnly cookie:
+
+```http
+POST /api/auth/session/
+POST /api/auth/session/refresh/
+POST /api/auth/session/logout/
+```
+
 For requests that require login, the client sends:
 
 ```http
@@ -171,6 +179,69 @@ A refresh token that is invalid, expired or already blacklisted returns `401` wi
 
 The access token of that session is not revoked: access tokens are stateless and stay valid until they expire (`JWT_ACCESS_MINUTES`, 15 minutes by default). The client discards it.
 
+### Cookie sessions for the website
+
+Browser sessions in which the refresh token never reaches JavaScript ([ADR 0017](../architecture/decisions/0017-refresh-token-in-an-httponly-cookie-for-the-website.md)). The API keeps the refresh token in an HttpOnly cookie and answers with the access token only; the client keeps the access token in memory, never in `localStorage`. The endpoints above (`/api/auth/token/…`, `/api/auth/logout/`) are unchanged for other clients.
+
+| Method | Path | Body | Success |
+|---|---|---|---|
+| `POST` | `/api/auth/session/` | `{"username": "...", "password": "..."}` (JSON) | `200` `{"access": "eyJ..."}`, sets the cookie |
+| `POST` | `/api/auth/session/refresh/` | none | `200` `{"access": "eyJ..."}`, sets a new cookie |
+| `POST` | `/api/auth/session/logout/` | none | `200` `{}`, clears the cookie |
+
+**Permissions:** public; no `Authorization` header is needed or read.
+
+**Every request must:**
+
+- be sent with `fetch(url, {method: "POST", credentials: "include", ...})`, so the browser sends and stores the cookie;
+- carry the header `X-ODT-CSRF: 1` (exactly `1`);
+- come from an origin in the API's CORS allowlist (`CORS_ALLOWED_ORIGINS` or `CORS_ALLOWED_ORIGIN_REGEXES`, matched exactly as django-cors-headers does). Browsers send the `Origin` header themselves on every `POST`; a request without it, with `Origin: null` or with another origin is refused. For local development, put the website's origin (e.g. `http://localhost:3000`) into `CORS_ALLOWED_ORIGINS` of the backend's `.env`.
+
+Otherwise the answer is `403` `{"code": "auth.csrf_failed", "details": {}}`, checked before anything else: nothing is rotated or blacklisted, and the request does not count against a rate limit. These endpoints are meant for browsers; other clients use `/api/auth/token/`.
+
+**The cookie:**
+
+```http
+Set-Cookie: odt_refresh=eyJ...; expires=...; HttpOnly; Max-Age=86400; Path=/api/auth/session/; SameSite=Strict; Secure
+```
+
+| Attribute | Value |
+|---|---|
+| Name | `odt_refresh` |
+| Value | the refresh JWT (the same token `/api/auth/token/` returns as `refresh`, with the `roles`, `first_name`, `last_name` claims) |
+| `HttpOnly` | always |
+| `Secure` | always in production; a local http setup may turn it off with `AUTH_REFRESH_COOKIE_SECURE=false` |
+| `SameSite` | `Strict` (the website and the API are the same site, `odt.org.pl`) |
+| `Path` | `/api/auth/session/`: the browser sends it to these three endpoints only |
+| `Domain` | none: a host-only cookie of the API's host |
+| `Max-Age` | the refresh token lifetime, `JWT_REFRESH_DAYS` × 86400 s (86400 by default), counted again from every refresh |
+
+The cookie is cleared with the same name, `Path` and flags and `Max-Age=0`.
+
+**`POST /api/auth/session/`** logs in. On success it sets the cookie and returns `{"access": "..."}`; the access token is the same as from `/api/auth/token/`. Errors:
+
+- `401` `{"code": "auth.invalid_credentials", "details": {}}`: wrong username or password, or an inactive account;
+- `400` with DRF's field dictionary when `username` or `password` is missing (DRF prose, e.g. `{"password": ["This field is required."]}`);
+- `429`: the `login` throttle.
+
+**`POST /api/auth/session/refresh/`** reads the cookie, blacklists that refresh token and sets a new one (rotation, as `/api/auth/token/refresh/` does), and returns a new `{"access": "..."}`. The claims of the new access token come from the refresh token, as with the body-based refresh. Errors:
+
+- `401` `{"code": "auth.refresh_cookie_missing", "details": {}}`: no cookie was sent (never logged in, logged out, or the cookie expired);
+- `401` `{"code": "auth.refresh_cookie_invalid", "details": {}}`: the token in the cookie is invalid, expired or blacklisted, or its user is inactive or deleted. Two refreshes with the same token never both succeed: the second waits for the first and gets this code. The cookie is **not** cleared (another tab may just have replaced it);
+- `429`: the `session_refresh` throttle (`THROTTLE_SESSION_REFRESH`, 60/min per client IP by default), separate from the login budget.
+
+**`POST /api/auth/session/logout/`** blacklists the cookie's refresh token, if it is still valid, and clears the cookie. It answers `200` `{}` also without a cookie or with an invalid one, so the client always treats it as done. As with `/api/auth/logout/`, the access token stays valid until it expires; the client drops it.
+
+**CORS:** responses of these endpoints, and their preflights, carry `Access-Control-Allow-Origin: <the origin>` and `Access-Control-Allow-Credentials: true` for allowlisted origins only; `X-ODT-CSRF` and `Content-Type` are allowed request headers. No other endpoint allows credentials, so the client sends `credentials: "include"` only to these three.
+
+**Client flow:**
+
+1. Login: `POST /api/auth/session/`; keep `access` in memory.
+2. Page load, a new tab, or an access token that expired or got a `401`: `POST /api/auth/session/refresh/`. `auth.refresh_cookie_missing` or `auth.refresh_cookie_invalid` means the visitor is logged out.
+3. Refreshes from several tabs race: each rotates the cookie, and a request that still carried the previous token gets `auth.refresh_cookie_invalid`. Run refreshes one at a time across tabs (e.g. `navigator.locks.request("odt-refresh", …)`), and retry once after `auth.refresh_cookie_invalid` before treating the visitor as logged out.
+4. Logout: `POST /api/auth/session/logout/`, then drop `access` whatever the answer.
+5. After `POST /api/users/me/change-password/` the cookie's token is blacklisted with all others of the user. Ignore the `refresh` in that response and log in again with `POST /api/auth/session/` and the new password.
+
 ### Ending all sessions of a user
 
 A password change (`POST /api/users/me/change-password/`) and an admin password reset (`POST /api/users/{id}/reset-password/`) blacklist **all** refresh tokens of that user, so every session must log in again once its access token expires. A self-service change returns a fresh pair for the session that made it (see the [endpoint map](#users-djangocontribauthmodelsuser)). Expired tokens are deleted daily by the beat task `accounts.flush_expired_tokens` (03:15 UTC).
@@ -202,6 +273,9 @@ page (max 50); fetch errors and `proxy-feeds` 25 per page (max 100).
 | `POST` | `/api/auth/token/` | public | Obtain JWT `access` and `refresh` |
 | `POST` | `/api/auth/token/refresh/` | public | Refresh JWT `access`; returns a new `refresh` as well |
 | `POST` | `/api/auth/logout/` | public | Blacklist the given `refresh` (end the session) |
+| `POST` | `/api/auth/session/` | public, [CSRF header and origin](#cookie-sessions-for-the-website) | Website login: `access` in the body, `refresh` in an HttpOnly cookie |
+| `POST` | `/api/auth/session/refresh/` | public, CSRF header and origin | Rotate the refresh cookie; returns a new `access` |
+| `POST` | `/api/auth/session/logout/` | public, CSRF header and origin | Blacklist the refresh cookie and clear it |
 | `GET` | `/api/schema/` | public when `DEBUG`, otherwise `Admin` (group) only | OpenAPI schema |
 | `GET` | `/api/schema/swagger-ui/` | public when `DEBUG`, otherwise `Admin` (group) only | Swagger UI |
 | `GET` | `/api/schema/redoc/` | public when `DEBUG`, otherwise `Admin` (group) only | ReDoc |
@@ -297,7 +371,7 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `GET` | `/api/data_manager/static-feed-entries/{id}/` | owner or `Helper`/`Admin` | Details of a single static feed with its fetch status |
 | `POST` | `/api/data_manager/static-feed-entries/{id}/pause-fetch/` | `Helper`/`Admin` | Manually pause fetching of a static feed |
 | `POST` | `/api/data_manager/static-feed-entries/{id}/resume-fetch/` | `Helper`/`Admin` | Resume fetching of a static feed and cancel the retry block; proxied feeds only (`400` otherwise, as `pause-fetch`) |
-| `GET` | `/api/data_manager/proxy-feeds/` | logged in | A single, paginated list of proxied feeds (static + realtime), sorted by region, organization and feed name ([order](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds)): a provider sees their own, helper/admin see all. Pausing/resuming (`pause-fetch`/`resume-fetch`) is `Helper`/`Admin` only |
+| `GET` | `/api/data_manager/proxy-feeds/` | logged in | A single, paginated list of proxied feeds (static + realtime), sorted by region, organization and feed name ([order](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds)), filtered by `fetch_status`, `source`, `organization` (id) and `region`: a provider sees their own, helper/admin see all. Pausing/resuming (`pause-fetch`/`resume-fetch`) is `Helper`/`Admin` only |
 | `GET` | `/api/data_manager/fetch-errors/?days=7` | logged in | Global, paginated list of fetch errors: a provider sees their own feeds, helper/admin see all |
 | `GET` | `/api/data_manager/submissions/` | `DataProvider`/`Helper`/`Admin` | Combined list of the logged-in user's own static and realtime submissions (not paginated) |
 | `GET` | `/api/data_manager/realtime-submissions/` | `DataProvider`/`Helper`/`Admin` | List of realtime submissions: a provider sees their own, helper/admin see all |
@@ -396,6 +470,7 @@ Details: [Journey planner: admin API](planner-admin.md).
 - On logout, send the stored `refresh` to `POST /api/auth/logout/`, then clear the tokens whatever the response.
 - After `POST /api/users/me/change-password/`, store the `access` and `refresh` from the response: the old `refresh` no longer works.
 - Public endpoints do not need a token.
+- A browser client should use [cookie sessions](#cookie-sessions-for-the-website) instead: the refresh token stays in an HttpOnly cookie and the access token in memory.
 
 ### Role-based UI
 
@@ -423,7 +498,7 @@ Most common responses:
 | `403` | Valid token, but the required role/permission is missing |
 | `404` | Object does not exist or is not publicly available |
 | `409` | Conflict with the current state, e.g. a feed submission's stage changed while the request ran (`feeds.stage_changed`, see [Feeds API](feeds.md)) or a planner job already runs |
-| `429` | Rate limit: DRF throttling of login (`/api/auth/token/`, `/api/auth/token/refresh/` and the Django admin login form share one budget), feed downloads and blog reaction changes (`login`, `feed_download`, `reaction`; rates set by the `THROTTLE_*` settings; counted per client IP), of password and email changes (`account_change`, counted per user), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
+| `429` | Rate limit: DRF throttling of login (`/api/auth/token/`, `/api/auth/token/refresh/`, `/api/auth/session/` and the Django admin login form share one budget), feed downloads and blog reaction changes (`login`, `feed_download`, `reaction`; rates set by the `THROTTLE_*` settings; counted per client IP), of the website's cookie refresh (`session_refresh`, `POST /api/auth/session/refresh/`), of password and email changes (`account_change`, counted per user), the per-IP blog reaction limit, or the planner API limits ([planner.md](planner.md)). Other endpoints have no rate limit |
 
 ### Error codes
 
@@ -438,6 +513,10 @@ Request errors:
 
 | Status | Code | Where | Meaning |
 |---|---|---|---|
+| `403` | `auth.csrf_failed` | `/api/auth/session/…` | The `X-ODT-CSRF: 1` header is missing or the `Origin` is not allowed ([cookie sessions](#cookie-sessions-for-the-website)). |
+| `401` | `auth.invalid_credentials` | `POST /api/auth/session/` | Wrong username or password, or an inactive account. |
+| `401` | `auth.refresh_cookie_missing` | `POST /api/auth/session/refresh/` | No refresh cookie was sent. |
+| `401` | `auth.refresh_cookie_invalid` | `POST /api/auth/session/refresh/` | The refresh cookie holds an invalid, expired or blacklisted token. |
 | `400` | `feeds.feed_id_required` | `GET /feed/` | The download URL has no feed ID. |
 | `400` | `feeds.not_proxy_managed` | `pause-fetch`, `resume-fetch` | The feed is not proxied, so its fetching cannot be paused. |
 | `403` | `feeds.submissions_forbidden` | `GET /api/data_manager/submissions/` | The user has none of the `DataProvider`, `Helper`, `Admin` roles. |
@@ -458,6 +537,7 @@ Field errors:
 | Code | Field | Meaning |
 |---|---|---|
 | `feeds.invalid_integer` | list query params, e.g. `transport_organization` | The value is not an integer. |
+| `feeds.invalid_choice` | list query params `fetch_status`, `source` of `proxy-feeds` | The value is not one of the allowed values. |
 | `feeds.invalid_stage` | `stage` | The stage is not an integer from 1 to 4. |
 | `feeds.field_locked` | `name`, `transport_organization`, `data_type`, `static_entry.<field>`, `protocol`, `static_submission`, `endpoints` | The owner cannot change this field while the submission is in review or published (stages 2–4 without a rejection). |
 | `feeds.url_blocked` | `static_entry.url`, an endpoint's `url` | The URL is refused by ODT's outbound security rules: not http(s), no host name, the host does not resolve, or it resolves to a non-public address. |
@@ -489,8 +569,10 @@ Field errors:
 | `users.password_entirely_numeric` | `new_password` | Only digits. |
 | `blog.too_many_tags` | `tags` | More than 5 tags (DRF's own `max_length` message comes with it). |
 | `blog.image_too_large` | `image` | The image exceeds `MAX_IMAGE_FILE_SIZE_BYTES`. |
+| `cases.data_provider_name_taken` | `name` | A data provider with this name already exists. |
+| `cases.organization_exists` | `non_field_errors` | A transport organization with this `region` and `transport_organization` already exists. |
 
-The planner has its own codes ([planner.md](planner.md), [planner-admin.md](planner-admin.md)), and stored causes have theirs: [realtime rejection reasons](feeds.md#realtime-rejection-reasons) and GTFS validation codes in [static feeds](feeds.md#static-feeds-feedsubmission).
+The planner has its own codes ([planner.md](planner.md), [planner-admin.md](planner-admin.md)), and stored causes have theirs: [static](feeds.md#static-rejection-reasons) and [realtime](feeds.md#realtime-rejection-reasons) rejection reasons, and GTFS validation codes in [static feeds](feeds.md#static-feeds-feedsubmission).
 
 ### Multipart nested fields
 

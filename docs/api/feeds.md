@@ -138,6 +138,7 @@ Base endpoint:
   "current_stage_label": "Step 3: Admin confirmation",
   "is_rejected": false,
   "rejection_cause": null,
+  "rejection_reasons": null,
   "published_at": null,
   "static_entry": {
     "id": 9,
@@ -165,6 +166,7 @@ Base endpoint:
     "last_fetch_success_at": "2026-04-27T10:05:00Z",
     "last_fetch_error_at": null,
     "last_fetch_error_message": null,
+    "last_fetch_error_type": null,
     "fetch_error_count_7d": 0
   },
   "realtime_submissions": [],
@@ -191,7 +193,7 @@ In `static_entry`:
 - The fetch health fields, from `fetch_status` to `fetch_error_count_7d`, are present only when `is_proxy_managed` is `true` (a URL with `hide_original=true`); for an uploaded file or a non-proxied URL they are left out. They are described in the [feed workflow](../domain/feed-workflow.md#fetch-errors-and-pauses-of-proxied-feeds).
 - `validation_status` is `pending`, `valid`, `invalid` or `error`. `validation_message` depends on it:
   - `pending`, `valid`: empty.
-  - `invalid`: the feed failed validation and the submission was rejected; the same text as the rejection cause (validator notice codes as `code: count`, or English text when the provider's URL could not be downloaded).
+  - `invalid`: the feed failed validation and the submission was rejected; the code of the rejection reason, see [static rejection reasons](#static-rejection-reasons).
   - `error`: validation **could not run** because of a problem on ODT's side; the feed was not judged. The submission keeps its stage (no rejection); the ODT team re-runs the validation (`manage.py retry_gtfs_validation`), and a proxied feed is also re-validated at its next fetch. `validation_message` is one of the codes below, which the frontend translates ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
 
 | Code | Meaning |
@@ -201,6 +203,33 @@ In `static_entry`:
 | `gtfs_validation.validator_failed` | The validator stopped or produced no usable report (e.g. it ran out of memory). |
 | `gtfs_validation.timeout` | Validation did not finish within ODT's time limit. |
 | `gtfs_validation.credential_undecryptable` | ODT cannot decrypt the stored source credential (a key configuration problem on ODT's side), so it did not download the feed. |
+
+### Static rejection reasons
+
+As for [realtime submissions](#realtime-rejection-reasons), a static submission is rejected either by **automatic validation** (`rejection_reasons` is a list of `{code, details}`, `rejection_cause` is `null`) or by **a reviewer** (`rejection_cause` holds their free text, `rejection_reasons` is `null`). Both are `null` unless the submission is currently rejected; history entries carry the pair as `cause` and `reasons`. A published submission (stage 4) is never rejected automatically. The frontend translates each code ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)).
+
+```json
+{
+  "is_rejected": true,
+  "rejection_cause": null,
+  "rejection_reasons": [
+    { "code": "gtfs_validation.feed_invalid",
+      "details": { "error_count": 2, "notices": { "missing_required_file": 2 } } }
+  ]
+}
+```
+
+| Code | `details` | Meaning |
+|------|-----------|---------|
+| `gtfs_validation.feed_invalid` | `error_count`, `notices` | The validator found `error_count` errors. `notices` maps each ERROR notice code of the MobilityData GTFS validator to its count (empty when the report has only summary counts); the full report is in `validation_report`. |
+| `gtfs_validation.download_http_error` | `status` | ODT could not download the provider's URL for validation: HTTP `status` (400 or higher). |
+| `gtfs_validation.download_too_large` | `limit_bytes` | The download exceeded the size limit. |
+| `gtfs_validation.download_url_blocked` | – | The URL is refused by ODT's outbound security rules (e.g. it resolves to a non-public address). |
+| `gtfs_validation.download_timeout` | – | The download timed out. |
+| `gtfs_validation.download_unreachable` | – | The host could not be reached. |
+| `gtfs_validation.download_failed` | – | Any other download failure. |
+
+Rejections recorded before these codes keep their English text in `rejection_cause` and have `rejection_reasons` `null`.
 
 `realtime_submissions` lists the realtime submissions linked to this static feed. For a `DataProvider` it holds only the ones the feed's owner submitted; `GET .../download/realtime/{endpoint_pk}/` likewise returns `404` for an endpoint of another user's realtime submission.
 

@@ -649,6 +649,123 @@ def test_proxy_feeds_list_combines_static_and_realtime(api_client, org, provider
     assert filtered.data['count'] == 2
 
 
+def _proxy_feed_keys(api_client, query=''):
+    response = api_client.get(f'/api/data_manager/proxy-feeds/{query}')
+    assert response.status_code == 200
+    keys = {(row['source'], row['id']) for row in response.data['results']}
+    assert response.data['count'] == len(keys)
+    return keys
+
+
+def test_proxy_feeds_filters(api_client, org, provider_user, helper_user):
+    other_org = TransportOrganization.objects.create(region='S', transport_organization='Org')
+    static_entry = _published_static_entry(org, provider_user)
+    paused_static = _published_static_entry(
+        other_org, provider_user, fetch_status=FETCH_STATUS_AUTO_PAUSED
+    )
+    rt_endpoint = _published_realtime_endpoint(org, provider_user)
+    other_rt = _published_realtime_endpoint(other_org, provider_user)
+    every = {
+        ('static', static_entry.id),
+        ('static', paused_static.id),
+        ('realtime', rt_endpoint.id),
+        ('realtime', other_rt.id),
+    }
+
+    api_client.force_authenticate(user=helper_user)
+    assert _proxy_feed_keys(api_client) == every
+    assert _proxy_feed_keys(api_client, '?source=static') == {
+        ('static', static_entry.id),
+        ('static', paused_static.id),
+    }
+    assert _proxy_feed_keys(api_client, '?source=realtime') == {
+        ('realtime', rt_endpoint.id),
+        ('realtime', other_rt.id),
+    }
+    assert _proxy_feed_keys(api_client, f'?fetch_status={FETCH_STATUS_AUTO_PAUSED}') == {
+        ('static', paused_static.id)
+    }
+    # Same organization name in two regions: the id tells them apart.
+    assert _proxy_feed_keys(api_client, f'?organization={other_org.id}') == {
+        ('static', paused_static.id),
+        ('realtime', other_rt.id),
+    }
+    assert _proxy_feed_keys(api_client, '?region=r') == {
+        ('static', static_entry.id),
+        ('realtime', rt_endpoint.id),
+    }
+    assert _proxy_feed_keys(api_client, f'?source=realtime&organization={org.id}') == {
+        ('realtime', rt_endpoint.id)
+    }
+    assert _proxy_feed_keys(api_client, '?fetch_status=active&source=static&region=S') == set()
+
+    row = api_client.get(f'/api/data_manager/proxy-feeds/?organization={org.id}').data['results'][0]
+    assert row['organization_id'] == org.id
+
+
+def test_proxy_feeds_filters_keep_provider_scope(api_client, org, provider_user, helper_user):
+    _published_static_entry(org, helper_user)
+    own = _published_static_entry(org, provider_user)
+
+    api_client.force_authenticate(user=provider_user)
+    assert _proxy_feed_keys(api_client, f'?organization={org.id}&source=static') == {
+        ('static', own.id)
+    }
+
+
+@pytest.mark.parametrize(
+    ('query', 'field', 'code'),
+    [
+        ('?source=gtfs', 'source', 'feeds.invalid_choice'),
+        ('?fetch_status=paused', 'fetch_status', 'feeds.invalid_choice'),
+        ('?organization=Org', 'organization', 'feeds.invalid_integer'),
+    ],
+)
+def test_proxy_feeds_invalid_filter_is_a_coded_400(api_client, helper_user, query, field, code):
+    api_client.force_authenticate(user=helper_user)
+    response = api_client.get(f'/api/data_manager/proxy-feeds/{query}')
+    assert response.status_code == 400
+    assert response.data == {field: [code]}
+
+
+def test_proxy_feeds_return_last_fetch_error_type(api_client, org, provider_user, helper_user):
+    static_entry = _published_static_entry(org, provider_user)
+    rt_endpoint = _published_realtime_endpoint(org, provider_user)
+    FeedFetchError.objects.create(
+        static_entry=static_entry,
+        error_type=FeedFetchError.ERROR_HTTP,
+        http_status_code=500,
+        message='older',
+        url_attempted='https://example.org/feed.zip',
+    )
+    FeedFetchError.objects.create(
+        static_entry=static_entry,
+        error_type=FeedFetchError.ERROR_TIMEOUT,
+        message='newer',
+        url_attempted='https://example.org/feed.zip',
+    )
+
+    api_client.force_authenticate(user=helper_user)
+    rows = {
+        row['source']: row
+        for row in api_client.get('/api/data_manager/proxy-feeds/').data['results']
+    }
+    assert rows['static']['last_fetch_error_type'] == FeedFetchError.ERROR_TIMEOUT
+    assert rows['static']['last_fetch_error_message'] == 'newer'
+    assert rows['realtime']['last_fetch_error_type'] is None
+
+    detail = api_client.get(f'/api/data_manager/static-feed-entries/{static_entry.id}/')
+    assert detail.status_code == 200
+    assert detail.data['last_fetch_error_type'] == FeedFetchError.ERROR_TIMEOUT
+    endpoint = api_client.get(f'/api/data_manager/realtime-endpoints/{rt_endpoint.id}/')
+    assert endpoint.status_code == 200
+    assert endpoint.data['last_fetch_error_type'] is None
+    # Nested in the submission, the entry is not annotated and takes the fallback.
+    submission = api_client.get(f'/api/data_manager/feed-submissions/{static_entry.submission_id}/')
+    assert submission.status_code == 200
+    assert submission.data['static_entry']['last_fetch_error_type'] == FeedFetchError.ERROR_TIMEOUT
+
+
 # Content-Length promises 1000 bytes; the server sends 10 and hangs up.
 TRUNCATED = (1000, [b'PK\x03\x04part'])
 
