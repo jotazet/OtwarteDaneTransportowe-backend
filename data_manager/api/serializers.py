@@ -162,26 +162,27 @@ def annotate_fetch_health(qs, error_fk: str):
     )
 
 
-def _fetch_health_error_aggregates(obj) -> tuple[str | None, str | None, int]:
-    """(last error message, last error type, 7-day error count) — annotation-aware."""
-    if hasattr(obj, 'annotated_last_fetch_error_message'):
-        return (
-            obj.annotated_last_fetch_error_message,
-            obj.annotated_last_fetch_error_type,
-            obj.annotated_fetch_error_count_7d,
-        )
-    since = timezone.now() - timedelta(days=7)
-    last_error = obj.fetch_errors.order_by('-occurred_at', '-id').first()
-    return (
-        last_error.message if last_error else None,
-        last_error.error_type if last_error else None,
-        obj.fetch_errors.filter(occurred_at__gte=since).count(),
-    )
+def _fetch_health_error_aggregates(obj) -> dict:
+    """Latest error message and type plus the 7-day error count — annotation-aware.
+
+    Without the ``annotate_fetch_health`` annotations they are queried once and
+    stored on ``obj`` as if annotated, so each serializer field reuses them.
+    """
+    if not hasattr(obj, 'annotated_last_fetch_error_message'):
+        since = timezone.now() - timedelta(days=7)
+        last_error = obj.fetch_errors.order_by('-occurred_at', '-id').first()
+        obj.annotated_last_fetch_error_message = last_error.message if last_error else None
+        obj.annotated_last_fetch_error_type = last_error.error_type if last_error else None
+        obj.annotated_fetch_error_count_7d = obj.fetch_errors.filter(occurred_at__gte=since).count()
+    return {
+        'last_fetch_error_message': obj.annotated_last_fetch_error_message,
+        'last_fetch_error_type': obj.annotated_last_fetch_error_type,
+        'fetch_error_count_7d': obj.annotated_fetch_error_count_7d,
+    }
 
 
 def _fetch_health_fields(obj) -> dict:
     """Proxy fetch status + recent error aggregates for a static entry or RT endpoint."""
-    last_error_message, last_error_type, error_count_7d = _fetch_health_error_aggregates(obj)
     return {
         'fetch_status': obj.fetch_status,
         'fetch_failure_count': obj.fetch_failure_count,
@@ -190,9 +191,7 @@ def _fetch_health_fields(obj) -> dict:
         'fetch_pause_reason': obj.fetch_pause_reason or '',
         'last_fetch_success_at': obj.last_fetch_success_at,
         'last_fetch_error_at': obj.last_fetch_error_at,
-        'last_fetch_error_message': last_error_message,
-        'last_fetch_error_type': last_error_type,
-        'fetch_error_count_7d': error_count_7d,
+        **_fetch_health_error_aggregates(obj),
     }
 
 
@@ -317,13 +316,13 @@ class FetchHealthSerializerMixin(serializers.Serializer):
     fetch_error_count_7d = serializers.SerializerMethodField()
 
     def get_last_fetch_error_message(self, obj):
-        return _fetch_health_error_aggregates(obj)[0]
+        return _fetch_health_error_aggregates(obj)['last_fetch_error_message']
 
     def get_last_fetch_error_type(self, obj):
-        return _fetch_health_error_aggregates(obj)[1]
+        return _fetch_health_error_aggregates(obj)['last_fetch_error_type']
 
     def get_fetch_error_count_7d(self, obj):
-        return _fetch_health_error_aggregates(obj)[2]
+        return _fetch_health_error_aggregates(obj)['fetch_error_count_7d']
 
 
 # ---------------------------------------------------------------------------

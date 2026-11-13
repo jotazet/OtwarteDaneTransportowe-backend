@@ -128,7 +128,7 @@ def _choice_query_param(request, name, choices):
     if not raw:
         return None
     if raw not in choices:
-        raise ValidationError({name: ['feeds.invalid_choice']}, code='feeds.invalid_choice')
+        raise field_error(name, 'feeds.invalid_choice')
     return raw
 
 

@@ -660,9 +660,9 @@ def _proxy_feed_keys(api_client, query=''):
 def test_proxy_feeds_filters(api_client, org, provider_user, helper_user):
     other_org = TransportOrganization.objects.create(region='S', transport_organization='Org')
     static_entry = _published_static_entry(org, provider_user)
-    paused_static = _published_static_entry(other_org, provider_user)
-    paused_static.fetch_status = FETCH_STATUS_AUTO_PAUSED
-    paused_static.save(update_fields=['fetch_status'])
+    paused_static = _published_static_entry(
+        other_org, provider_user, fetch_status=FETCH_STATUS_AUTO_PAUSED
+    )
     rt_endpoint = _published_realtime_endpoint(org, provider_user)
     other_rt = _published_realtime_endpoint(other_org, provider_user)
     every = {
