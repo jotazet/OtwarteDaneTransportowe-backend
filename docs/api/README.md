@@ -315,8 +315,6 @@ For `POST /api/users/` the body does **not** contain a password — example `201
 | `GET` | `/api/data_manager/feeds/` | public | Public catalog of all transport organizations and their published feeds (organizations without one are listed too) |
 | `GET` | `/api/data_manager/feeds/{id}/` | public | Details of an organization and its published feeds |
 
-The `feed-submissions/{id}/download/static|realtime/{endpoint_pk}/` downloads send the file name in `Content-Disposition`, which browsers on an allowed origin (`CORS_ALLOWED_ORIGINS`) may read.
-
 In the paths above, `{id-organizacji}` is the organization ID and `{typ}` is the feed type.
 
 ### Journey planner (admin)

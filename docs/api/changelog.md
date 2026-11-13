@@ -4,7 +4,7 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ## 2026-11-13: `Content-Disposition` readable cross-origin
 
-Not breaking. CORS responses now list `Content-Disposition` in `Access-Control-Expose-Headers` (next to `Retry-After`), so the website can read the server's file name of `feed-submissions/{id}/download/static|realtime/{endpoint_pk}/` and the public `/feed/` files. See [API reference](README.md).
+Not breaking. CORS responses now list `Content-Disposition` in `Access-Control-Expose-Headers` (next to `Retry-After`), so the website can read the server's file name of `feed-submissions/{id}/download/static|realtime/{endpoint_pk}/` and the public `/feed/` files.
 
 ## 2026-11-12: error codes instead of prose in feeds, users and blog
 
