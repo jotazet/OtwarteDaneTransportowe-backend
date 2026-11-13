@@ -443,8 +443,11 @@ PLANNER_ODT_INTERNAL_URL = (os.getenv('PLANNER_ODT_INTERNAL_URL') or 'http://odt
 )
 PLANNER_INTERNAL_TOKEN = os.getenv('PLANNER_INTERNAL_TOKEN', '')
 # Memory of build containers. Builds run while the serving OTP is stopped and
-# may spill into swap: the heap can exceed the container's RAM limit.
-PLANNER_OTP_BUILD_HEAP = os.getenv('PLANNER_OTP_BUILD_HEAP') or '14g'
+# may spill into swap: the heap can exceed the container's RAM limit. G1 grows
+# the heap to the cap before it collects, so the cap is the build's footprint:
+# all of Poland peaks at ~6.6 GB live heap, and 14g got the build killed by the
+# host's memory guard (docs/deployment.md, section 19).
+PLANNER_OTP_BUILD_HEAP = os.getenv('PLANNER_OTP_BUILD_HEAP') or '10g'
 PLANNER_OTP_BUILD_MEM_LIMIT = os.getenv('PLANNER_OTP_BUILD_MEM_LIMIT') or '8g'
 PLANNER_OTP_BUILD_MEMSWAP_LIMIT = os.getenv('PLANNER_OTP_BUILD_MEMSWAP_LIMIT') or '22g'
 PLANNER_OTP_FEED_TEST_HEAP = os.getenv('PLANNER_OTP_FEED_TEST_HEAP') or '6g'
