@@ -168,6 +168,17 @@ def test_static_feed_owner_downloads_only_own_realtime_cache(owner, static, link
     assert client.get(_download(static, foreign)).status_code == 404
 
 
+def test_frontend_can_read_the_download_file_name(owner, static, linked, client_as, settings):
+    settings.CORS_ALLOWED_ORIGINS = ['https://odt.example.pl']
+
+    response = client_as(owner).get(
+        _download(static, linked[0]), HTTP_ORIGIN='https://odt.example.pl'
+    )
+
+    assert response['Content-Disposition'].startswith('attachment;')
+    assert 'Content-Disposition' in response['Access-Control-Expose-Headers']
+
+
 @pytest.mark.parametrize('role', [ROLE_HELPER, ROLE_ADMIN])
 def test_reviewer_downloads_any_realtime_cache(role, static, linked, make_user, client_as):
     client = client_as(make_user(role))

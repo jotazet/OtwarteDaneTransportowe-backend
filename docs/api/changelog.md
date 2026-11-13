@@ -2,6 +2,10 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-13: `Content-Disposition` readable cross-origin
+
+Not breaking. CORS responses now list `Content-Disposition` in `Access-Control-Expose-Headers` (next to `Retry-After`), so the website can read the server's file name of `feed-submissions/{id}/download/static|realtime/{endpoint_pk}/` and the public `/feed/` files. See [API reference](README.md).
+
 ## 2026-11-12: error codes instead of prose in feeds, users and blog
 
 **Breaking.** The remaining English error messages of `data_manager`, `accounts` and `blog` are now error codes ([ADR 0006](../architecture/decisions/0006-api-error-codes.md)). Status codes and field keys are unchanged; only the text changes. Request errors that were `{"detail": "..."}` (or a bare `["..."]` list) are now `{"code": "...", "details": {}}`; field errors keep DRF's field dictionary with the code as the message. Every code is listed in [error codes](README.md#error-codes).
