@@ -147,6 +147,13 @@ def plan_variables(params: dict) -> dict:
             'transfer': {'slack': f"PT{params['min_transfer_minutes']}M"},
         },
     }
+    # Unset = OTP's default.
+    if params.get('walk_reluctance') is not None:
+        preferences['street']['walk']['reluctance'] = params['walk_reluctance']
+    if params.get('walk_board_cost') is not None:
+        preferences['street']['walk']['boardCost'] = params['walk_board_cost']
+    if params.get('wait_reluctance') is not None:
+        preferences['transit']['board'] = {'waitReluctance': params['wait_reluctance']}
     if params.get('max_transfers') is not None:
         preferences['transit']['transfer']['maximumTransfers'] = params['max_transfers']
     filters = _filters(params)

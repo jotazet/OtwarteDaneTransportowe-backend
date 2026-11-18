@@ -173,6 +173,27 @@ class PlanQuerySerializer(FromFieldMixin, serializers.Serializer):
     )
     wheelchair = QueryBoolean(default=False)
     walk_speed = serializers.ChoiceField(choices=list(planning.WALK_SPEEDS), default='normal')
+    walk_reluctance = serializers.FloatField(
+        min_value=0.1,
+        max_value=10.0,
+        required=False,
+        help_text='0.1-10.0: how much worse walking is than riding for the same time;'
+        ' default 2.0. Higher means less walking.',
+    )
+    wait_reluctance = serializers.FloatField(
+        min_value=0.1,
+        max_value=2.0,
+        required=False,
+        help_text='0.1-2.0: how much worse waiting at a stop is than riding; default 1.0.'
+        ' Below 1, the planner waits for a connection rather than walking.',
+    )
+    walk_board_cost = serializers.IntegerField(
+        min_value=0,
+        max_value=3600,
+        required=False,
+        help_text='0-3600 s: cost of every boarding, in seconds of riding; default 600.'
+        ' Higher means fewer transfers.',
+    )
     max_transfers = serializers.IntegerField(min_value=0, max_value=8, required=False)
     min_transfer_minutes = serializers.IntegerField(min_value=0, max_value=30, default=2)
     via = id_list(2)
