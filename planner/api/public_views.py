@@ -173,11 +173,12 @@ class PlanQuerySerializer(FromFieldMixin, serializers.Serializer):
     )
     wheelchair = QueryBoolean(default=False)
     walk_speed = serializers.ChoiceField(choices=list(planning.WALK_SPEEDS), default='normal')
-    walk_reluctance = serializers.ChoiceField(
-        choices=list(planning.WALK_RELUCTANCES),
-        default='normal',
-        help_text='How much to avoid walking: `low` (1.0), `normal` (2.0), `high` (3.0) or'
-        ' `very_high` (5.0) times worse than riding for the same time.',
+    walk_reluctance = serializers.FloatField(
+        min_value=0.1,
+        max_value=10.0,
+        required=False,
+        help_text='0.1-10.0: how much worse walking is than riding for the same time;'
+        ' default 2.0. Higher means less walking.',
     )
     wait_reluctance = serializers.FloatField(
         min_value=0.1,

@@ -116,10 +116,6 @@ RENTAL_MODES = {'bicycle': 'BICYCLE_RENTAL', 'scooter': 'SCOOTER_RENTAL'}
 # m/s. Presets rather than any number: OTP caches transfers per set of walking
 # preferences, so a few fixed values keep that cache (and memory) bounded.
 WALK_SPEEDS = {'slow': 1.0, 'normal': 1.33, 'fast': 1.7}
-# How much worse walking is than riding, for the same time (OTP's walk reluctance;
-# 2.0 is its default). Presets for the same reason as WALK_SPEEDS: reluctance is
-# part of OTP's transfer cache key (RaptorRequestTransferCacheKey in 2.10).
-WALK_RELUCTANCES = {'low': 1.0, 'normal': 2.0, 'high': 3.0, 'very_high': 5.0}
 COORDINATE = re.compile(r'^\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$')
 # OTP's feed-scoped IDs: `<feed_id>:<id in the feed>`, both parts non-empty.
 FEED_SCOPED_ID = re.compile(r'^[^:]+:.+$')
@@ -145,18 +141,15 @@ def plan_variables(params: dict) -> dict:
     """GraphQL variables for validated /plan/ parameters (see PlanQuerySerializer)."""
     preferences = {
         'accessibility': {'wheelchair': {'enabled': params['wheelchair']}},
-        'street': {
-            'walk': {
-                'speed': WALK_SPEEDS[params['walk_speed']],
-                'reluctance': WALK_RELUCTANCES[params['walk_reluctance']],
-            }
-        },
+        'street': {'walk': {'speed': WALK_SPEEDS[params['walk_speed']]}},
         'transit': {
             'timetable': {'excludeRealTimeUpdates': not params['realtime']},
             'transfer': {'slack': f"PT{params['min_transfer_minutes']}M"},
         },
     }
-    # Not in the transfer cache key, so any value in range; unset = OTP's default.
+    # Unset = OTP's default.
+    if params.get('walk_reluctance') is not None:
+        preferences['street']['walk']['reluctance'] = params['walk_reluctance']
     if params.get('walk_board_cost') is not None:
         preferences['street']['walk']['boardCost'] = params['walk_board_cost']
     if params.get('wait_reluctance') is not None:

@@ -4,7 +4,7 @@ Breaking and notable changes to the API contract, newest first. Every change tha
 
 ## 2026-11-18: planner preferences for walking, waiting and boarding
 
-Additive. `GET /api/planner/v1/plan/` accepts **`walk_reluctance`** (`low`, `normal`, `high`, `very_high`; default `normal`, the engine's 2.0 as before), **`wait_reluctance`** (0.1–2.0) and **`walk_board_cost`** (0–3600 seconds). Together they let a client trade a shorter trip for less walking or fewer transfers, e.g. `walk_reluctance=high&wait_reluctance=0.8` for routes that wait for a connection instead of walking a long way. Values out of range return `400 planner.invalid_request` with DRF's `invalid_choice`, `min_value` or `max_value`. Requests without them plan exactly as before. See [planner](planner.md#get-apiplannerv1plan).
+Additive. `GET /api/planner/v1/plan/` accepts **`walk_reluctance`** (0.1–10.0), **`wait_reluctance`** (0.1–2.0) and **`walk_board_cost`** (0–3600 seconds). Together they let a client trade a shorter trip for less walking or fewer transfers, e.g. `walk_reluctance=3&wait_reluctance=0.8` for routes that wait for a connection instead of walking a long way. Values out of range return `400 planner.invalid_request` with DRF's `invalid`, `min_value` or `max_value`. Requests without them plan exactly as before. See [planner](planner.md#get-apiplannerv1plan).
 
 ---
 
