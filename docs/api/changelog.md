@@ -2,6 +2,12 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-18: planner preferences for walking, waiting and boarding
+
+Additive. `GET /api/planner/v1/plan/` accepts **`walk_reluctance`** (`low`, `normal`, `high`, `very_high`; default `normal`, the engine's 2.0 as before), **`wait_reluctance`** (0.1–2.0) and **`walk_board_cost`** (0–3600 seconds). Together they let a client trade a shorter trip for less walking or fewer transfers, e.g. `walk_reluctance=high&wait_reluctance=0.8` for routes that wait for a connection instead of walking a long way. Values out of range return `400 planner.invalid_request` with DRF's `invalid_choice`, `min_value` or `max_value`. Requests without them plan exactly as before. See [planner](planner.md#get-apiplannerv1plan).
+
+---
+
 ## 2026-11-13: password change for cookie sessions
 
 Additive. **`POST /api/auth/session/change-password/`** takes `{current_password, new_password}` with `Authorization: Bearer <access>`, the `X-ODT-CSRF: 1` header and an allowlisted `Origin`, like the other session endpoints. It changes the password as `POST /api/users/me/change-password/` does (all refresh tokens of the user are blacklisted, the same `400` codes, the `account_change` throttle), sets a new `odt_refresh` cookie and returns `{"access": "..."}`. Errors: `403` `auth.csrf_failed`, `401` without a valid access token, `400` `users.wrong_password` / `users.password_*`, `429`. No new error codes. `/api/users/me/change-password/` is unchanged for other clients. See [Cookie sessions for the website](README.md#cookie-sessions-for-the-website) and [ADR 0017](../architecture/decisions/0017-refresh-token-in-an-httponly-cookie-for-the-website.md).

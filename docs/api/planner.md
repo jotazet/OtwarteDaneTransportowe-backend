@@ -116,6 +116,9 @@ GET /api/planner/v1/plan/?from=50.0617,19.9373&to=krk:2047513&time=2026-10-14T08
 | `modes` | all | Transit modes to use; repeat the parameter (`modes=tram&modes=bus`). `bus`, `coach`, `tram`, `trolleybus`, `subway`, `rail`, `ferry`, `funicular`, `cable_car`, `gondola`, `monorail`. |
 | `wheelchair` | `false` | Only stops and trips the feed marks as wheelchair-accessible; those without the information are not used. Few feeds publish it (in October 2026, for most stops, only Warsaw's), so elsewhere the answer is usually `planner.no_stops_in_range`. |
 | `walk_speed` | `normal` | `slow` (1.0 m/s), `normal` (1.33 m/s) or `fast` (1.7 m/s). |
+| `walk_reluctance` | `normal` | How much to avoid walking: walking counts as `low` (1.0), `normal` (2.0), `high` (3.0) or `very_high` (5.0) times worse than riding for the same time. Higher values prefer a connection, even with a wait, over a long walk. Presets only, because each value builds its own set of transfers in the engine. |
+| `wait_reluctance` | engine default (1.0) | 0.1–2.0: how much worse waiting at a stop is than riding for the same time. Below 1, the planner would rather wait for a connection than walk. |
+| `walk_board_cost` | engine default (600) | 0–3600: the cost of every boarding, in seconds of riding. Higher values mean fewer transfers, at the price of a longer trip. |
 | `max_transfers` | engine default | 0–8. |
 | `min_transfer_minutes` | `2` | 0–30: extra time added to every transfer. |
 | `via` | — | Up to 2 stop IDs the trip must pass through, in order; repeat the parameter. |

@@ -65,7 +65,7 @@ def test_minimal_query_uses_defaults(otp):
         'destination': {'location': {'stopLocation': {'stopLocationId': 'krk:2047513'}}},
         'preferences': {
             'accessibility': {'wheelchair': {'enabled': False}},
-            'street': {'walk': {'speed': 1.33}},
+            'street': {'walk': {'speed': 1.33, 'reluctance': 2.0}},
             'transit': {
                 'timetable': {'excludeRealTimeUpdates': False},
                 'transfer': {'slack': 'PT2M'},
@@ -87,6 +87,9 @@ def test_every_parameter_reaches_otp_as_a_variable(otp):
             'modes': ['tram', 'bus'],
             'wheelchair': 'true',
             'walk_speed': 'slow',
+            'walk_reluctance': 'very_high',
+            'wait_reluctance': '0.6',
+            'walk_board_cost': '1200',
             'max_transfers': '1',
             'min_transfer_minutes': '4',
             'via': ['krk:2047482'],
@@ -107,9 +110,10 @@ def test_every_parameter_reaches_otp_as_a_variable(otp):
     assert variables['via'] == [{'visit': {'stopLocationIds': ['krk:2047482']}}]
     assert variables['preferences'] == {
         'accessibility': {'wheelchair': {'enabled': True}},
-        'street': {'walk': {'speed': 1.0}},
+        'street': {'walk': {'speed': 1.0, 'reluctance': 5.0, 'boardCost': 1200}},
         'transit': {
             'timetable': {'excludeRealTimeUpdates': True},
+            'board': {'waitReluctance': 0.6},
             'transfer': {'slack': 'PT4M', 'maximumTransfers': 1},
             'filters': [
                 {
@@ -375,6 +379,18 @@ def test_routing_errors_are_codes_with_no_itineraries(otp):
         (
             {'from': '50.06,19.93', 'to': '50.07,20.03', 'num_itineraries': '11'},
             {'num_itineraries': ['max_value']},
+        ),
+        (
+            {'from': '50.06,19.93', 'to': '50.07,20.03', 'walk_reluctance': '3'},
+            {'walk_reluctance': ['invalid_choice']},
+        ),
+        (
+            {'from': '50.06,19.93', 'to': '50.07,20.03', 'wait_reluctance': '0'},
+            {'wait_reluctance': ['min_value']},
+        ),
+        (
+            {'from': '50.06,19.93', 'to': '50.07,20.03', 'walk_board_cost': '3601'},
+            {'walk_board_cost': ['max_value']},
         ),
     ],
 )

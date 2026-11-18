@@ -280,6 +280,7 @@ def test_plan_may_use_shared_scooters_and_bikes():
             'to': '50.03,19.24',
             'wheelchair': False,
             'walk_speed': 'normal',
+            'walk_reluctance': 'normal',
             'realtime': True,
             'min_transfer_minutes': 2,
             'num_itineraries': 3,
