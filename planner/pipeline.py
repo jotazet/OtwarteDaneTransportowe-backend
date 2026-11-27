@@ -15,7 +15,7 @@ import shutil
 import time
 import zipfile
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
 
 import requests
 from django.conf import settings
@@ -25,7 +25,7 @@ from django.utils import timezone
 
 from data_manager.models import completed_submission_ids
 from data_manager.net_security import OutboundURLBlocked, ResponseTooLarge, safe_download
-from planner import osm, otp_config, otp_runtime, search_index
+from planner import gtfs, osm, otp_config, otp_runtime, schedules, search_index
 from planner.models import GraphBuild, OsmDownload, PlannerFeed, PlannerRentalSource
 
 logger = logging.getLogger(__name__)
@@ -314,10 +314,12 @@ def _build_and_activate(build: GraphBuild, workdir: str) -> None:
     _build_graph(build, included, workdir, street_graph)
 
     fresh = [c for c in included if c.outcome == GraphBuild.OUTCOME_FRESH]
+    # A pending feed serves today's schedule, which is what its realtime describes.
+    live = [c for c in included if c.outcome != GraphBuild.OUTCOME_STALE]
     updaters, skipped = otp_config.realtime_updaters(
-        [c.feed for c in fresh if c.feed.include_realtime]
+        [c.feed for c in live if c.feed.include_realtime]
     )
-    for candidate in fresh:
+    for candidate in live:
         feed_id = candidate.feed.feed_id
         candidate.realtime_skipped = [s for s in skipped if s['feed_id'] == feed_id]
         candidate.realtime_polled = sorted({u['type'] for u in updaters if u['feedId'] == feed_id})
@@ -341,6 +343,7 @@ def _build_and_activate(build: GraphBuild, workdir: str) -> None:
 
 def _collect_candidates(build: GraphBuild, workdir: str) -> list[Candidate]:
     published = set(completed_submission_ids())
+    today = schedules.today()
     candidates = []
     feeds = PlannerFeed.objects.filter(is_enabled=True).select_related('submission__static_entry')
     for feed in feeds:
@@ -359,16 +362,38 @@ def _collect_candidates(build: GraphBuild, workdir: str) -> list[Candidate]:
         except FeedUnavailable:
             candidates.append(_fall_back(feed, target, 'planner.feed_source_unavailable'))
             continue
+        sha256 = _sha256(target)
+        # The sha256 check is a shortcut: an unchanged file never waits.
+        if sha256 != feed.last_good_sha256 and _not_started_yet(feed, target, today):
+            candidates.append(
+                _last_good(feed, target, GraphBuild.OUTCOME_PENDING, 'planner.feed_not_started')
+            )
+            continue
         candidates.append(
             Candidate(
                 feed,
                 GraphBuild.OUTCOME_FRESH,
                 path=target,
-                sha256=_sha256(target),
+                sha256=sha256,
                 version_at=version_at.isoformat(),
             )
         )
     return candidates
+
+
+def _not_started_yet(feed: PlannerFeed, newest: str, today: date) -> bool:
+    """Whether the newest file starts after today while the last good version runs today.
+
+    Providers such as ZTM Poznań publish the next schedule days before it starts;
+    serving only that file would leave the feed without service until then (ADR 0018).
+    """
+    if not _has_last_good(feed):
+        return False
+    newest_period = gtfs.service_period(newest)
+    if newest_period is None or newest_period[0] <= today:
+        return False
+    current_period = gtfs.service_period(snapshot_path(feed))
+    return current_period is not None and current_period[0] <= today <= current_period[1]
 
 
 def _fetch_feed(build: GraphBuild, feed: PlannerFeed, target: str):
@@ -416,26 +441,31 @@ def _fetch_feed(build: GraphBuild, feed: PlannerFeed, target: str):
 
 def _fall_back(feed: PlannerFeed, target: str, error_code: str, log: str = '') -> Candidate:
     """Apply the feed's failure policy: its last good version, or nothing."""
-    snapshot = snapshot_path(feed)
-    log = log[-LOG_EXCERPT_CHARS:]
+    if feed.failure_policy == PlannerFeed.POLICY_KEEP_LAST_GOOD and _has_last_good(feed):
+        return _last_good(feed, target, GraphBuild.OUTCOME_STALE, error_code, log)
+    return _excluded(feed, target, error_code, log)
+
+
+def _has_last_good(feed: PlannerFeed) -> bool:
     # last_good_sha256 ties the snapshot to this feed: a feed deleted and created
     # again with the same feed_id must not inherit the old file.
-    if (
-        feed.failure_policy == PlannerFeed.POLICY_KEEP_LAST_GOOD
-        and feed.last_good_sha256
-        and os.path.exists(snapshot)
-    ):
-        shutil.copyfile(snapshot, target)
-        return Candidate(
-            feed,
-            GraphBuild.OUTCOME_STALE,
-            path=target,
-            sha256=feed.last_good_sha256,
-            version_at=feed.last_good_at.isoformat() if feed.last_good_at else None,
-            error_code=error_code,
-            log_excerpt=log,
-        )
-    return _excluded(feed, target, error_code, log)
+    return bool(feed.last_good_sha256) and os.path.exists(snapshot_path(feed))
+
+
+def _last_good(
+    feed: PlannerFeed, target: str, outcome: str, error_code: str, log: str = ''
+) -> Candidate:
+    """The feed's last good version copied to ``target``."""
+    shutil.copyfile(snapshot_path(feed), target)
+    return Candidate(
+        feed,
+        outcome,
+        path=target,
+        sha256=feed.last_good_sha256,
+        version_at=feed.last_good_at.isoformat() if feed.last_good_at else None,
+        error_code=error_code,
+        log_excerpt=log[-LOG_EXCERPT_CHARS:],
+    )
 
 
 def _excluded(feed: PlannerFeed, path: str, error_code: str, log: str = '') -> Candidate:
@@ -482,7 +512,7 @@ def _test_changed_feeds(build: GraphBuild, candidates: list[Candidate], workdir:
             code = 'planner.feed_no_service_in_period'
         else:
             code = 'planner.feed_invalid'
-        if candidate.outcome == GraphBuild.OUTCOME_STALE:
+        if candidate.outcome != GraphBuild.OUTCOME_FRESH:
             candidates[index] = _excluded(candidate.feed, candidate.path, code, result.log_tail)
         else:
             candidates[index] = _fall_back(candidate.feed, candidate.path, code, result.log_tail)
@@ -496,9 +526,7 @@ def _ensure_street_graph(build: GraphBuild, candidates: list[Candidate]) -> str:
     # failing feed does not force a street graph rebuild now and again later.
     area_files = [c.path for c in candidates if c.path]
     area_files += [
-        snapshot_path(c.feed)
-        for c in candidates
-        if not c.path and c.feed.last_good_sha256 and os.path.exists(snapshot_path(c.feed))
+        snapshot_path(c.feed) for c in candidates if not c.path and _has_last_good(c.feed)
     ]
     cells = osm.stop_cells(area_files)
     street_dir = data_path('street', osm.street_graph_key(cells, osm_file, build.otp_image))

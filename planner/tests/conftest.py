@@ -1,6 +1,7 @@
 import io
 import json
 import zipfile
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -17,14 +18,28 @@ from planner.models import PlannerFeed
 GTFS_ZIP = (Path(__file__).parents[2] / 'data_manager' / 'tests' / 'GTFS_correct.zip').read_bytes()
 
 
-def gtfs_variant(marker: str) -> bytes:
+def gtfs_variant(marker: str, replace: dict[str, str] | None = None) -> bytes:
     """A valid GTFS archive whose bytes (and so sha256) differ per marker."""
+    replace = replace or {}
     buffer = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(GTFS_ZIP)) as src, zipfile.ZipFile(buffer, 'w') as dst:
         for name in src.namelist():
-            dst.writestr(name, src.read(name))
+            dst.writestr(name, replace[name] if name in replace else src.read(name))
         dst.writestr('marker.txt', marker)
     return buffer.getvalue()
+
+
+def gtfs_running(start: date, end: date) -> bytes:
+    """A GTFS archive whose services (service_1 to service_5) run every day from start to end."""
+    rows = [f'service_{n},1,1,1,1,1,1,1,{start:%Y%m%d},{end:%Y%m%d}' for n in range(1, 6)]
+    calendar = (
+        'service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n'
+        + '\n'.join(rows)
+    )
+    return gtfs_variant(
+        f'{start}-{end}',
+        {'calendar.txt': calendar, 'calendar_dates.txt': 'service_id,date,exception_type\n'},
+    )
 
 
 @pytest.fixture(autouse=True)

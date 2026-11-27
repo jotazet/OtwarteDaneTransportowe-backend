@@ -62,7 +62,7 @@ DELETE /api/planner/admin/feeds/{id}/
 | `is_enabled` | Disabled feeds are left out of the next build. |
 | `include_realtime` | Whether OTP polls the feed's published GTFS-RT endpoints. |
 | `realtime_from` | A `FeedSubmission` of the **same organization** whose published GTFS-RT OTP polls instead of this feed's own, or `null` (default). For a copy of a provider's feed with the same trip IDs that has no GTFS-RT of its own, such as ODT's version with shapes added. |
-| `failure_policy` | `keep_last_good` (default): if the newest file fails, the last version that went into a served graph is used and the feed is marked `stale`. `exclude`: the feed is left out. |
+| `failure_policy` | `keep_last_good` (default): if the newest file fails, the last version that went into a served graph is used and the feed is marked `stale`. `exclude`: the feed is left out. Either way, a newest file that starts after today is held back while the last good version runs today (`pending`). |
 | `last_good_at` | When the feed's last good version went into a served graph. Read-only. |
 | `active_result` | This feed's entry in the build being served, or `null`. Read-only. |
 
@@ -185,8 +185,8 @@ POST /api/planner/admin/builds/{id}/activate/
 | `trigger` | `schedule`, `manual`, `rollback` |
 | `otp_stopped_at` | Start of the maintenance window: the serving OTP is stopped from then until the build ends. A failed build ends (and the window with it) once OTP is healthy on the previous graph again, at most 20 minutes later. |
 | `indexed_at` | When stop and line search was refreshed from this build's graph; `null` until then (retried every 5 minutes while the build is active). |
-| `feed_results[].outcome` | `fresh`, `stale`, `excluded` (see [journey planner](../domain/journey-planner.md#build-outcomes-per-feed)) |
-| `feed_results[].error_code` | `planner.feed_not_published`, `planner.feed_source_unavailable`, `planner.feed_invalid`, `planner.feed_no_service_in_period` |
+| `feed_results[].outcome` | `fresh`, `pending`, `stale`, `excluded` (see [journey planner](../domain/journey-planner.md#build-outcomes-per-feed)) |
+| `feed_results[].error_code` | `planner.feed_not_published`, `planner.feed_source_unavailable`, `planner.feed_invalid`, `planner.feed_no_service_in_period`, `planner.feed_not_started` (with `pending`) |
 | `feed_results[].realtime_skipped` | `[{feed_id, endpoint_type, error_code}]`, `error_code` `planner.rt_url_blocked` (private address) or `planner.rt_url_unsupported` (the URL contains `${`) |
 | `feed_results[].realtime_polled` | OTP updaters configured for the feed: `stop-time-updater`, `vehicle-positions`, `real-time-alerts` (empty for a `stale` feed). |
 | `error_code` (build) | `planner.no_feeds`, `planner.osm_missing`, `planner.osm_preparation_failed`, `planner.street_build_failed`, `planner.graph_build_failed`, `planner.build_out_of_memory`, `planner.graph_missing`, `planner.activation_failed`, `planner.docker_unavailable`, `planner.build_interrupted`, `planner.build_failed` |

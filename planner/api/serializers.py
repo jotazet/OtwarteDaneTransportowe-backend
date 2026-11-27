@@ -57,7 +57,7 @@ class PlannerFeedSerializer(serializers.ModelSerializer):
         return _organization(obj.submission)
 
     def get_active_result(self, obj):
-        """This feed's outcome in the build being served (fresh, stale or excluded)."""
+        """This feed's outcome in the build being served (fresh, pending, stale or excluded)."""
         return self.context.get('active_results', {}).get(obj.id)
 
     def validate_feed_id(self, value):

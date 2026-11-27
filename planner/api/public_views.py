@@ -27,7 +27,7 @@ class StatusFeedSerializer(serializers.Serializer):
     feed_id = serializers.CharField()
     organization = serializers.DictField()
     license = serializers.CharField(allow_blank=True)
-    outcome = serializers.ChoiceField(choices=['fresh', 'stale'])
+    outcome = serializers.ChoiceField(choices=['fresh', 'pending', 'stale'])
     version_at = serializers.DateTimeField(allow_null=True)
 
 
