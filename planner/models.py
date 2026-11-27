@@ -129,6 +129,8 @@ class GraphBuild(models.Model):
 
     OUTCOME_FRESH = 'fresh'
     OUTCOME_STALE = 'stale'
+    # The newest file starts later; the last good version, which runs today, is served.
+    OUTCOME_PENDING = 'pending'
     OUTCOME_EXCLUDED = 'excluded'
 
     status = models.CharField(

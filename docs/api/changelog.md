@@ -2,6 +2,14 @@
 
 Breaking and notable changes to the API contract, newest first. Every change that a client must react to gets an entry here in the same pull request.
 
+## 2026-11-27: planner feed outcome `pending`
+
+Additive. A planner feed whose newest file starts after today, while its last good version runs today, is served from that last good version until a build on or after the start date. `GET /api/planner/v1/status/` reports it with **`feeds[].outcome: "pending"`**, and build results (`GET /api/planner/admin/builds/`) with `feed_results[].outcome: "pending"` and the new code **`planner.feed_not_started`**. Unlike `stale`, a `pending` feed gets realtime data. Before, such feeds were `fresh` with no service until the new version started (ZTM Poznań on 2026-11-27). See [planner](planner.md#get-apiplannerv1status), [planner admin](planner-admin.md) and [ADR 0018](../architecture/decisions/0018-hold-back-feed-versions-that-have-not-started.md).
+
+**Frontend:** a label for `pending` wherever outcomes are shown, and translations of `planner.feed_not_started`.
+
+---
+
 ## 2026-11-18: planner preferences for walking, waiting and boarding
 
 Additive. `GET /api/planner/v1/plan/` accepts **`walk_reluctance`** (0.1–10.0), **`wait_reluctance`** (0.1–2.0) and **`walk_board_cost`** (0–3600 seconds). Together they let a client trade a shorter trip for less walking or fewer transfers, e.g. `walk_reluctance=3&wait_reluctance=0.8` for routes that wait for a connection instead of walking a long way. Values out of range return `400 planner.invalid_request` with DRF's `invalid`, `min_value` or `max_value`. Requests without them plan exactly as before. See [planner](planner.md#get-apiplannerv1plan).

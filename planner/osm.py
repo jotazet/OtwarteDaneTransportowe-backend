@@ -5,15 +5,15 @@ sizing), so only ~3 km grid cells around stops are kept, plus one cell of
 margin, and only the ways OTP routes on (the tag filter from OTP's docs).
 """
 
-import csv
 import hashlib
-import io
 import json
 import os
 import subprocess
 import time
 import zipfile
 from datetime import datetime
+
+from planner import gtfs
 
 # About 3 x 3 km in Poland.
 CELL_LAT = 0.027
@@ -73,20 +73,13 @@ def stop_cells(feed_paths) -> set[tuple[int, int]]:
     cells = set()
     for path in feed_paths:
         with zipfile.ZipFile(path) as archive:
-            name = next(
-                (n for n in archive.namelist() if n.rsplit('/', 1)[-1] == 'stops.txt'), None
-            )
-            if name is None:
-                continue
-            with archive.open(name) as raw:
-                text = io.TextIOWrapper(raw, encoding='utf-8-sig', errors='replace')
-                for row in csv.DictReader(text):
-                    try:
-                        lat, lon = float(row['stop_lat']), float(row['stop_lon'])
-                    except (KeyError, TypeError, ValueError):
-                        continue
-                    i, j = int(lat // CELL_LAT), int(lon // CELL_LON)
-                    cells.update((i + di, j + dj) for di in (-1, 0, 1) for dj in (-1, 0, 1))
+            for row in gtfs.rows(archive, 'stops.txt'):
+                try:
+                    lat, lon = float(row['stop_lat']), float(row['stop_lon'])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                i, j = int(lat // CELL_LAT), int(lon // CELL_LON)
+                cells.update((i + di, j + dj) for di in (-1, 0, 1) for dj in (-1, 0, 1))
     return cells
 
 

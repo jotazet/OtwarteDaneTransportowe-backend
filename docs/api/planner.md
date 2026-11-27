@@ -93,7 +93,7 @@ Whether the planner answers now, which graph it serves and from which feeds. It 
 | --- | --- |
 | `available` | `false` when the API is off, the data is being rebuilt, or no graph exists yet. |
 | `reason` | `disabled`, `maintenance`, `no_graph` or `null`. |
-| `feeds[].outcome` | `fresh`: the newest published version. `stale`: an older version, because the newest could not be used; realtime data is not applied to it. |
+| `feeds[].outcome` | `fresh`: the newest published version. `pending`: the version running today, because the newest one starts later; realtime data is applied. `stale`: an older version, because the newest could not be used; realtime data is not applied to it. |
 | `feeds[].version_at` | When that version of the feed was obtained. |
 | `rental_networks` | Bike and scooter sharing systems the planner uses (`network` prefixes their station and vehicle IDs), with publisher and licence. |
 | `anonymous_limits` | Requests per minute per client without an API key, by [limit group](#limits). The current settings; read them instead of hardcoding them. |
@@ -533,7 +533,7 @@ How many of the chosen operators' trips under way now report a vehicle position:
 
 - `trips_under_way`: trips that have started and not yet finished now, by predicted times where the operator gives them (a delayed trip still counts), including trips after midnight from the previous service day; trips cancelled in realtime do not count.
 - `trips_with_position`: of those, how many a vehicle reports its position for (as in `vehicles/`). A vehicle waiting for a later trip does not count.
-- `vehicle_positions`: whether the planner receives the operator's vehicle positions at all. `false` when the operator publishes none, or its feed is currently served from an older version (which gets no realtime data); `coverage` is then `null`, not 0.
+- `vehicle_positions`: whether the planner receives the operator's vehicle positions at all. `false` when the operator publishes none, or its feed is currently served from an older version because the newest one could not be used (`stale`, which gets no realtime data; a `pending` feed does get it); `coverage` is then `null`, not 0.
 - `coverage`: their ratio, `null` when nothing runs (at night) or `vehicle_positions` is `false`.
 
 Trips under way are recounted at most once a minute per operator; while one request recounts, others get the previous count (at most 10 minutes old), or `503 planner.busy` with `Retry-After` when there is none yet (the first count after new timetables or after 10 minutes without requests). Vehicles are refreshed every 10 seconds. Operators not in the planner are left out. When the engine fails to resolve the start or end of a trip, every trip of that line variant is left out of both counts; the request fails with `503 planner.unavailable` only when the engine cannot answer for an operator at all.

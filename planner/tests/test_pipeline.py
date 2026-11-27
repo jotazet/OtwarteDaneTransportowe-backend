@@ -1,15 +1,16 @@
 """Graph build pipeline: per-feed isolation, failure policies, activation and recovery."""
 
 import os
-from datetime import timedelta
+import zipfile
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 from django.utils import timezone
 
-from planner import pipeline, services
+from planner import gtfs, otp_config, pipeline, schedules, services
 from planner.models import GraphBuild, PlannerFeed
-from planner.tests.conftest import GTFS_ZIP, gtfs_variant, set_feed_content
+from planner.tests.conftest import GTFS_ZIP, gtfs_running, gtfs_variant, set_feed_content
 
 pytestmark = pytest.mark.django_db
 
@@ -672,3 +673,142 @@ def test_snapshot_left_behind_by_a_crash_is_replaced_at_the_next_build(
 
     assert snapshot.read_bytes() == good
     assert not Path(f'{snapshot}.tmp').exists()
+
+
+# A newest version that has not started yet (ADR 0018)
+
+
+@pytest.fixture
+def one_updater_per_feed(monkeypatch):
+    monkeypatch.setattr(
+        otp_config,
+        'realtime_updaters',
+        lambda feeds: ([{'type': 'stop-time-updater', 'feedId': f.feed_id} for f in feeds], []),
+    )
+
+
+def test_newest_version_starting_tomorrow_waits_while_the_last_good_one_runs(
+    make_feed, fake_otp, one_updater_per_feed
+):
+    today = schedules.today()
+    current = gtfs_running(today - timedelta(days=3), today + timedelta(days=7))
+    feed = make_feed('poz', content=current, include_realtime=True)
+    build_now()
+    good_sha = PlannerFeed.objects.get(pk=feed.pk).last_good_sha256
+    set_feed_content(feed, gtfs_running(today + timedelta(days=1), today + timedelta(days=14)))
+    fake_otp.runs.clear()
+
+    build = build_now()
+
+    result = results(build)['poz']
+    assert build.status == GraphBuild.STATUS_SUCCEEDED
+    assert (result['outcome'], result['error_code']) == ('pending', 'planner.feed_not_started')
+    assert result['sha256'] == good_sha
+    assert result['realtime_polled'] == ['stop-time-updater']
+    assert fake_otp.kinds() == ['graph']  # the served version passed its test before
+    assert PlannerFeed.objects.get(pk=feed.pk).last_good_sha256 == good_sha
+    assert Path(pipeline.snapshot_path(feed)).read_bytes() == current
+
+
+def test_newest_version_starting_today_is_served(make_feed, fake_otp):
+    today = schedules.today()
+    feed = make_feed('poz', content=gtfs_running(today - timedelta(days=3), today))
+    build_now()
+    newest = gtfs_running(today, today + timedelta(days=14))
+    set_feed_content(feed, newest)
+
+    build = build_now()
+
+    assert results(build)['poz']['outcome'] == 'fresh'
+    assert Path(pipeline.snapshot_path(feed)).read_bytes() == newest
+
+
+def test_newest_version_is_served_when_the_last_good_one_no_longer_runs(make_feed, fake_otp):
+    today = schedules.today()
+    feed = make_feed(
+        'poz', content=gtfs_running(today - timedelta(days=9), today - timedelta(days=1))
+    )
+    build_now()
+    set_feed_content(feed, gtfs_running(today + timedelta(days=1), today + timedelta(days=14)))
+
+    build = build_now()
+
+    assert results(build)['poz']['outcome'] == 'fresh'
+
+
+def test_first_version_starting_tomorrow_is_served(make_feed, fake_otp):
+    today = schedules.today()
+    make_feed('poz', content=gtfs_running(today + timedelta(days=1), today + timedelta(days=14)))
+
+    build = build_now()
+
+    assert results(build)['poz']['outcome'] == 'fresh'
+
+
+def test_exclude_policy_also_waits_for_the_newest_version(make_feed, fake_otp):
+    today = schedules.today()
+    feed = make_feed(
+        'poz',
+        content=gtfs_running(today - timedelta(days=3), today + timedelta(days=7)),
+        failure_policy=PlannerFeed.POLICY_EXCLUDE,
+    )
+    build_now()
+    set_feed_content(feed, gtfs_running(today + timedelta(days=1), today + timedelta(days=14)))
+
+    build = build_now()
+
+    assert results(build)['poz']['outcome'] == 'pending'
+
+
+def test_pending_version_failing_after_an_otp_upgrade_is_excluded(make_feed, fake_otp, settings):
+    today = schedules.today()
+    make_feed('krk')
+    feed = make_feed(
+        'poz', content=gtfs_running(today - timedelta(days=3), today + timedelta(days=7))
+    )
+    build_now()
+    set_feed_content(feed, gtfs_running(today + timedelta(days=1), today + timedelta(days=14)))
+    settings.PLANNER_OTP_IMAGE = 'opentripplanner/opentripplanner:2.11.0'
+    fake_otp.failing_feeds['poz'] = (100, 'incompatible')
+
+    build = build_now()
+
+    result = results(build)['poz']
+    assert (result['outcome'], result['error_code']) == ('excluded', 'planner.feed_invalid')
+    assert build.status == GraphBuild.STATUS_SUCCEEDED
+
+
+def test_service_period_prefers_the_table_at_the_root(tmp_path):
+    archive = tmp_path / 'feed.zip'
+    with zipfile.ZipFile(archive, 'w') as zf:
+        zf.writestr('old/calendar_dates.txt', 'service_id,date,exception_type\nx,20250101,1\n')
+        zf.writestr('calendar_dates.txt', 'service_id,date,exception_type\nx,20261128,1\n')
+
+    assert gtfs.service_period(str(archive)) == (date(2026, 11, 28), date(2026, 11, 28))
+
+
+def test_service_period_reads_calendar_and_added_dates(tmp_path):
+    archive = tmp_path / 'feed.zip'
+    with zipfile.ZipFile(archive, 'w') as zf:
+        zf.writestr(
+            'calendar.txt',
+            '﻿service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,'
+            'start_date,end_date\n'
+            'never,0,0,0,0,0,0,0,20260101,20261231\n'
+            'week,1,1,1,1,1,0,0,20261128,20261213\n',
+        )
+        zf.writestr(
+            'calendar_dates.txt',
+            'service_id,date,exception_type\nextra,20261220,1\nweek,20261101,2\n',
+        )
+
+    assert gtfs.service_period(str(archive)) == (date(2026, 11, 28), date(2026, 12, 20))
+
+
+def test_service_period_of_an_unreadable_file_is_unknown(tmp_path):
+    archive = tmp_path / 'feed.zip'
+    with zipfile.ZipFile(archive, 'w') as zf:
+        zf.writestr('calendar_dates.txt', 'service_id,date,exception_type\nx,2026-13-01,1\n')
+
+    assert gtfs.service_period(str(archive)) is None
+    assert gtfs.service_period(str(tmp_path / 'missing.zip')) is None
